@@ -1,3 +1,4 @@
+import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { describe, expect, it, vi } from "vitest";
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Config, Env } from "../src/config.ts";
@@ -111,7 +112,7 @@ const post = (
       csrf,
       consent: "allow",
       usage_consent: "accept",
-      usage_version: "2026-10-03",
+      usage_version: USAGE_VERSION,
       action: "allow",
       ...extra,
     }),
@@ -123,12 +124,14 @@ describe("OAuth consent for ChatGPT", () => {
     const text = await page.text();
     expect(text).toContain("TOTP secret");
     expect(text).toContain("sent to ChatGPT");
+    expect(text).toContain("infrastructure providers used by its operator");
+    expect(text).not.toContain("Cloudflare");
     const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
     await expect(
       authorize(post(nonce, { usage_consent: "" }), f.env, f.config),
     ).rejects.toMatchObject({ code: "CONSENT_REQUIRED" });
     expect((await authorize(post(nonce), f.env, f.config)).status).toBe(302);
-    expect(await f.account.usage()).toMatchObject({ version: "2026-10-03" });
+    expect(await f.account.usage()).toMatchObject({ version: USAGE_VERSION });
   });
   it("redirects unauthenticated browsers to platform sign-in", async () => {
     const f = await fixture();
@@ -204,9 +207,10 @@ describe("browser and administrator boundaries", () => {
       f.env,
       f.config,
     );
-    const nonce = (await start.text()).match(
-      /name="nonce" value="([a-f0-9]+)"/,
-    )![1]!;
+    const loginHtml = await start.text();
+    expect(loginHtml).not.toContain(f.config.platforms.moodle.site_url);
+    expect(loginHtml).toContain("Then connect Ed, Moodle and OnTrack together");
+    const nonce = loginHtml.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
     const browser = start.headers.get("set-cookie")!.split(";")[0]!;
     const submit = (extra = {}, origin = f.config.issuer, cookie = browser) =>
       finishLogin(
@@ -219,7 +223,7 @@ describe("browser and administrator boundaries", () => {
             base_link: "https://moodle.example.edu",
             username: "claimed-user",
             password: "password-canary",
-            usage_version: "2026-10-03",
+            usage_version: USAGE_VERSION,
             usage_consent: "accept",
             ...extra,
           }),
@@ -245,7 +249,7 @@ describe("browser and administrator boundaries", () => {
     expect(JSON.stringify(await f.account.profile())).not.toContain(
       "claimed-user",
     );
-    expect(await f.account.usage()).toMatchObject({ version: "2026-10-03" });
+    expect(await f.account.usage()).toMatchObject({ version: USAGE_VERSION });
     const forwarded = fetch.mock.calls[0]![0] as Request;
     expect(new URL(forwarded.url).pathname).toBe("/v1/authenticate");
     expect(await forwarded.json()).toMatchObject({

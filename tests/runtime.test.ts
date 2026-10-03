@@ -1,3 +1,4 @@
+import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { createHash } from "node:crypto";
@@ -267,7 +268,7 @@ async function login(subject: string, invalid = false) {
           ? "ed-user-b"
           : "ed-user-a",
       usage_consent: "accept",
-      usage_version: "2026-10-03",
+      usage_version: USAGE_VERSION,
     }).toString(),
   });
   if (invalid) return { callback, cookie: "", csrf: "" };
@@ -334,7 +335,7 @@ async function connect(
       csrf: browser.csrf,
       consent: "allow",
       usage_consent: "accept",
-      usage_version: "2026-10-03",
+      usage_version: USAGE_VERSION,
       action: "allow",
     }).toString(),
   });
@@ -435,6 +436,30 @@ describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () =
     expect(a.profile).not.toBe(b.profile);
     expect(a.token).toBeTruthy();
     expect(a.refresh).toBeTruthy();
+  });
+  it("keeps deployment origins out of account pages and offers all three connections", async () => {
+    const pages = [
+      await request("/login"),
+      await request("/landing"),
+      await request("/landing", { headers: { cookie: a.cookie } }),
+    ];
+    const bodies: string[] = [];
+    for (const page of pages) {
+      expect(page.status).toBe(200);
+      const body = await page.text();
+      expect(body).not.toContain(new URL(moodle).hostname);
+      expect(body).not.toContain(new URL(ontrack).hostname);
+      expect(body).not.toContain("Cloudflare");
+      expect(body).toContain("infrastructure providers used by its operator");
+      bodies.push(body);
+    }
+    const connections = bodies[2]!;
+    expect(connections).toContain(
+      "You can connect Ed, Moodle and OnTrack together in this account",
+    );
+    expect(connections).toContain('action="/account/ed"');
+    for (const platform of ["moodle", "ontrack"])
+      expect(connections).toContain(`name="platform" value="${platform}"`);
   });
   it("binds Ed in the browser, discovers courses and calls the embedded upstream client", async () => {
     expect(
@@ -549,7 +574,12 @@ describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () =
     expect(
       (await call(a, "bind_course", { course: unit })).result.isError,
     ).not.toBe(true);
-    const status = JSON.stringify(await call(a, "connection_status"));
+    const connections = (await call(a, "connection_status")).result
+      .structuredContent;
+    expect(connections.ed.status).toBe("connected");
+    expect(connections.platforms.moodle.status).toBe("connected");
+    expect(connections.platforms.ontrack.status).toBe("connected");
+    const status = JSON.stringify(connections);
     expect(status).not.toContain("moodle-a");
     expect(status).not.toContain("ontrack-a");
     expect(

@@ -50,7 +50,7 @@ These operator files must be prepared for the target account; they are not inclu
 
 The signed-in browser must accept the current notice before platform connection, course discovery or client access. The suite records notice version and timestamp. OAuth consent includes the same acknowledgement and remains tied to the exact client and request. This is disclosure and user confirmation, not proof of institutional approval or a waiver of operator obligations.
 
-Review the notice against your real deployment: it discloses Cloudflare processing, client transfer of course/discussion/assessment data, password/TOTP storage, operator key access and deletion controls. Users must have the necessary account, content and AI-use permissions. Institutions and platform rules still apply regardless of the suite's branding. Read tools become available after acceptance and platform connection.
+Document the actual infrastructure providers and their data handling for your deployment. The supplied Worker deployment uses Cloudflare. Keep configured platform and SSO origins in operator configuration; do not display them in account pages or public metadata. Review the notice against your real deployment: it discloses service and infrastructure-provider processing, client transfer of course/discussion/assessment data, password/TOTP storage, operator key access and deletion controls. Users must have the necessary account, content and AI-use permissions. Institutions and platform rules still apply regardless of the suite's branding. Read tools become available after acceptance and platform connection.
 
 ## Validate and publish
 

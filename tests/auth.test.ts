@@ -1,3 +1,4 @@
+import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { describe, expect, it } from "vitest";
 import { AccountStore, READ_SCOPE, MANAGE_SCOPE } from "../src/auth/state.ts";
 import { decrypt, encrypt, digest } from "../src/auth/crypto.ts";
@@ -15,7 +16,7 @@ async function fixture() {
   let now = Date.now();
   const account = new AccountStore(storage, a, key, () => now);
   await account.putProfile({ id: a, name: "Student A" });
-  await account.acceptUsage("2026-10-03");
+  await account.acceptUsage(USAGE_VERSION);
   return { storage, account, tick: (n: number) => (now += n) };
 }
 describe("account authorization and isolation", () => {
@@ -29,7 +30,7 @@ describe("account authorization and isolation", () => {
     await expect(account.acceptUsage("old-version")).rejects.toMatchObject({
       code: "USAGE_REQUIRED",
     });
-    const accepted = await account.acceptUsage("2026-10-03");
+    const accepted = await account.acceptUsage(USAGE_VERSION);
     expect(accepted.accepted_at).toBeGreaterThan(0);
     await expect(account.approve(client, [READ_SCOPE])).resolves.toMatchObject({
       account_id: a,

@@ -50,6 +50,6 @@ OAuth records use KV. Suite account state and broker state use separate per-user
 | Forget saved sign-in         | Deletes the password, TOTP configuration and shared SSO browser cookies; retains connected platform sessions and OnTrack refresh cookies.                           |
 | Disconnect a platform        | Deletes its credentials/session and renewal material, and removes its course associations. Disconnecting both broker platforms also deletes the shared SSO sign-in. |
 
-Requested course data goes through Cloudflare to the authorized client. The notice explains this transfer before use. Platform content is untrusted source material. Attendance search returns text candidates with sources, dates and partial coverage; it does not submit attendance.
+Requested course data passes through the service and its hosting infrastructure to the authorized client. The notice explains this transfer before use. Platform content is untrusted source material. Attendance search returns text candidates with sources, dates and partial coverage; it does not submit attendance.
 
 An output boundary redacts credential fields, credential-bearing link parameters and known session secrets from MCP text and structured results, including errors. Administration and broker connection metadata receive the same protection. Internal session contracts retain the credentials needed for platform reads and renewal, require broker authentication, and use noncacheable responses. The output boundary is scoped to one account/request and does not retain secrets globally.

@@ -5,7 +5,7 @@ import { digest, randomToken } from "./crypto.ts";
 import { globalCall, stateCall } from "./client.ts";
 import { connectionSchema, type Profile } from "./state.ts";
 import { SuiteError } from "../errors.ts";
-import { cookie, html, escapeHtml as e } from "../http/common.ts";
+import { cookie, html } from "../http/common.ts";
 import { brokerCall } from "../platforms/broker.ts";
 import { platformFetch } from "../platforms/network.ts";
 import { USAGE_VERSION, usageNotice, usageLabel } from "../domain/usage.ts";
@@ -49,16 +49,9 @@ export async function startLogin(request: Request, env: Env, config: Config) {
     )
     .join("");
   return html(
-    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Learning MCP</title><style>body{font:16px system-ui;max-width:720px;margin:6vh auto;padding:24px;line-height:1.6;color:#172f2c}label{display:block;margin:16px 0}input:not([type=checkbox]),select{display:block;width:100%;box-sizing:border-box;padding:10px;font:inherit}button{padding:12px 20px}.notice{border-left:3px solid #375447;padding:8px 20px;margin:24px 0}</style><h1>Sign in with your learning account</h1><p>Use the same platform each time to return to the same Learning MCP account. Connect your other platforms after sign-in. No separate identity-provider application is required.</p>${usageNotice}${
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Learning MCP</title><style>body{font:16px system-ui;max-width:720px;margin:6vh auto;padding:24px;line-height:1.6;color:#172f2c}label{display:block;margin:16px 0}input:not([type=checkbox]),select{display:block;width:100%;box-sizing:border-box;padding:10px;font:inherit}button{padding:12px 20px}.notice{border-left:3px solid #375447;padding:8px 20px;margin:24px 0}</style><h1>Sign in with your learning account</h1><p>Verify one platform account to sign in. Then connect Ed, Moodle and OnTrack together from your connections page. Each course can use any combination of platforms.</p><p>To return to this Learning MCP account, sign in with the same platform account you used to create it.</p>${usageNotice}${
       sso
-        ? `<form method="post" action="/login">${fields}<label>Platform<select name="platform">${sso}</select></label><label>Platform base link<input name="base_link" type="url" required placeholder="https://your-platform.example" maxlength="2048"></label><p>Use a platform configured by this service: ${(
-            ["moodle", "ontrack"] as const
-          )
-            .filter((p) => config.platforms[p])
-            .map((p) => e(config.platforms[p]!.site_url))
-            .join(
-              " or ",
-            )}</p><label>SSO username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label><label>TOTP secret or otpauth URI (optional)<input name="totp_secret" type="password" autocomplete="off" maxlength="2048"></label><label>One-time MFA code (optional)<input name="mfa_code" autocomplete="one-time-code" maxlength="20"></label><label><input name="remember" type="checkbox" value="yes"> Save my encrypted password and optional TOTP secret for automatic sign-in</label>${approval}<button>Verify SSO and sign in</button></form>`
+        ? `<form method="post" action="/login">${fields}<label>Sign-in platform<select name="platform">${sso}</select></label><label>Platform base link<input name="base_link" type="url" required placeholder="https://your-platform.example" maxlength="2048"></label><p>Enter the base link you normally use to open this platform. The service must support that platform.</p><label>SSO username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label><label>TOTP secret or otpauth URI (optional)<input name="totp_secret" type="password" autocomplete="off" maxlength="2048"></label><label>One-time MFA code (optional)<input name="mfa_code" autocomplete="one-time-code" maxlength="20"></label><label><input name="remember" type="checkbox" value="yes"> Save my encrypted password and optional TOTP secret for automatic sign-in</label>${approval}<button>Verify SSO and sign in</button></form>`
         : ""
     }${config.platforms.ed ? `<details${sso ? "" : " open"}><summary>Sign in with an Ed API token</summary><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="ed"><label>Ed API token<input name="token" type="password" required autocomplete="off" maxlength="16000"></label>${approval}<button>Verify Ed and sign in</button></form></details>` : ""}`,
     200,

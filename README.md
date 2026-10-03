@@ -72,7 +72,7 @@ https://YOUR_SUITE_HOST/mcp
 1. Connect an OAuth-capable MCP client. Sign in with a configured Moodle / OnTrack base link, SSO username, password and optional TOTP, or with an Ed API token. Use the same platform for future sign-ins to return to the same suite account.
 2. Read and accept the data handling notice before entering credentials, then approve the client's requested access.
 3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.
-4. Connect Ed with an API token. Connect Moodle and OnTrack through the configured cloud SSO flow or an existing platform session. Enter credentials on the connection page.
+4. Add the other platforms to the same account: Ed uses an API token; Moodle and OnTrack use the configured SSO flow or an existing platform session. All three can be connected together. Moodle and OnTrack can reuse your saved SSO when available, with your approval. Enter credentials on the connection page.
 5. Discover your enrolled courses and confirm which platform courses belong together. This works through MCP tools or the connection page.
 6. Ask about course materials, discussions, deadlines, grades, tasks or attendance-code evidence.
 
@@ -107,7 +107,7 @@ The broker renews platform sessions over HTTP before using the cloud browser: Mo
 
 Credentials and platform sessions are encrypted in per-user Durable Object storage; OAuth records use KV. An operator holding the encryption keys can access stored credentials. **Forget saved sign-in** removes the saved password, TOTP secret and shared SSO cookies while retaining platform sessions, including OnTrack refresh cookies. Disconnect a platform to remove its session and renewal material. Disconnecting both broker platforms also removes the shared sign-in.
 
-Cloudflare processes credentials and course data, and requested content is sent to the authorized MCP client. Users see a versioned notice before connecting platforms or granting client access. Users and operators must have the necessary permissions for automated access, credential delegation and content transfer. Accepting the notice does not establish platform approval or waive operator obligations.
+The service and the infrastructure providers used by its operator process credentials and course data, and requested content is sent to the authorized MCP client. Users see a versioned notice before connecting platforms or granting client access. Users and operators must have the necessary permissions for automated access, credential delegation and content transfer. Accepting the notice does not establish platform approval or waive operator obligations.
 
 This is an independent project. Platform origins are configurable and there are no institution-specific defaults. Attendance search covers Ed and Moodle text; it may miss images, attachments or codes shown only in class.
 
