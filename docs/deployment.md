@@ -38,8 +38,8 @@ Secrets must not be committed or pasted in chat. `.dev.vars` files are ignored f
 For deployment-specific origins and resource IDs, keep separate Wrangler configurations under the ignored `.wrangler/deploy/` directory. Set their entrypoints to the project source and invoke the deployment wrapper with `--config`. Wrangler also accepts a local JSON secrets file through `--secrets-file`, uploading code and secrets together. Restrict these files to the operator, retain stable encryption keys across redeployments, and back them up securely. Do not replace real values with placeholders during a redeployment.
 
 ```sh
-pnpm deploy --config .wrangler/deploy/learning-sso-broker.jsonc --secrets-file .wrangler/deploy/broker-secrets.private.json
-pnpm deploy --config .wrangler/deploy/learning-mcp.jsonc --secrets-file .wrangler/deploy/suite-secrets.private.json
+pnpm run deploy --config .wrangler/deploy/learning-sso-broker.jsonc --secrets-file .wrangler/deploy/broker-secrets.private.json
+pnpm run deploy --config .wrangler/deploy/learning-mcp.jsonc --secrets-file .wrangler/deploy/suite-secrets.private.json
 ```
 
 These operator files must be prepared for the target account; they are not included in the repository. This setup keeps real platform configuration out of project history.
@@ -59,7 +59,7 @@ pnpm test
 pnpm test:runtime
 pnpm upstreams check
 pnpm deploy:broker
-pnpm deploy
+pnpm run deploy
 ```
 
 The broker deploys first. Both build scripts are dry runs; deploy scripts verify bundled source integrity and latest official bunizao commits before publishing. If upstreams have changed, run `pnpm upstreams sync` and repeat validation.

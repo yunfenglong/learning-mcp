@@ -52,7 +52,7 @@ Both Workers build and have unit and workerd integration tests. Authentication t
    pnpm test
    pnpm test:runtime
    pnpm deploy:broker
-   pnpm deploy
+   pnpm run deploy
    ```
 
 Deployment checks bundled client integrity and current upstream commits before publishing. If upstream sources have changed, run `pnpm upstreams sync`, review the changes and repeat validation.
