@@ -60,23 +60,38 @@ MCP client tokens issued by other services are not automatically valid: issuer, 
 
 ## Deploy to Cloudflare button
 
-Cloudflare provides an official README button for public GitHub and GitLab repositories:
+The planned button-based setup uses two deployments in the same Cloudflare account: **Deploy SSO Broker**, followed by **Deploy Learning MCP**. These steps are for the self-hosting operator. ChatGPT users connect to the resulting MCP endpoint and bind their accounts; they do not deploy either Worker.
+
+Cloudflare provides an official README button for public GitHub and GitLab repositories. It does not deploy multiple Workers together. This project is hosted at `yunfenglong/learning-mcp` as a private repository, so it is not a public deployment template. The example below shows button syntax only and is not a working deployment link:
 
 ```md
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/OWNER/SUITE_TEMPLATE)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/yunfenglong/learning-mcp)
 ```
 
-Replace the example repository with a published deployment template containing this suite. The template's default branch must contain the intended application. A README link alone does not prepare its resources or configuration.
+Before publishing buttons, publish the generated templates in a public repository and use that repository's URL. The project repository can remain private. Verify that each link selects the intended deployment template and release branch. A root link to a repository whose default branch contains a different application is not a valid suite deployment button.
 
-The current repository is not a turnkey template. Cloudflare's button does not automatically deploy multiple Workers together. The broker must exist before the public Worker's Service Binding can be deployed, and `broker/` currently depends on files and packages outside that directory. Linking a second button directly to that subdirectory would not produce an isolated application.
+### Step 1: Deploy SSO Broker
 
-To offer the official template flow:
+Deploy the private broker first. Set its platform origins and `LOGIN_ORIGINS`, enable Browser Run for the `BROWSER` binding, and supply `BROKER_CREDENTIALS_KEY` and `BROKER_SERVICE_TOKEN` as secrets. Keep public routes, workers.dev and preview URLs disabled. Record the deployed Worker name for the second step; the public suite reaches it through a Service Binding, so the broker needs no public URL.
 
-1. Prepare a standalone template for each Worker, including all of its source files and dependencies, and provide a separate button for each. Keep the broker private.
-2. Declare template resources in each Wrangler configuration. Provide example secret names in `.dev.vars.example` or `.env.example`, with setup descriptions under `cloudflare.bindings` in `package.json`. Supply required values during setup rather than embedding real secrets.
-3. Deploy the broker first, then configure the public Worker's binding to its actual deployed name. Both Workers need matching platform configuration and the same broker service token, with separate encryption keys.
-4. Finish OIDC callback registration, the public HTTPS origin, platform origins and Browser Run configuration, then test the complete user flow.
+### Step 2: Deploy Learning MCP
 
-For a single setup flow that provisions and deploys both Workers, a custom deployment workflow is needed. It must create the resources, configure both Workers, and deploy them in order; the native button does not orchestrate this automatically. Retain the manual setup below until such a workflow has been implemented and validated.
+Deploy the public suite and point its `SSO_BROKER` Service Binding at the name from step 1. Set its public `ISSUER`, OIDC configuration and platform origins. Supply a separate `CREDENTIALS_KEY`, the **same** `BROKER_SERVICE_TOKEN` used by the broker, and any required `OIDC_CLIENT_SECRET`. Complete the matching OIDC callback registration before testing sign-in. The Moodle and OnTrack origins must agree between both Workers.
+
+Cloudflare can provision supported resources such as KV and Durable Objects from template configuration. Browser Run enablement, OIDC registration and matching settings between the two deployments remain setup tasks. The buttons must explain these tasks rather than promise zero configuration.
+
+### Template preparation and current status
+
+The two deployable templates and their buttons are not implemented yet. The current `broker/` directory imports shared source and dependencies outside that directory; pointing a button directly at it would fail because Cloudflare treats a selected subdirectory as the new repository root. Use the manual deployment instructions above until both templates are prepared and validated.
+
+Prepare the templates as follows:
+
+1. Generate two self-contained directories, planned as `deploy/sso-broker/` and `deploy/learning-mcp/`, from the same project source. Each must include its required source, shared modules, vendored clients, upstream metadata, scripts, Wrangler configuration, `package.json` and pnpm lockfile. Do not maintain separate hand-edited copies of shared code.
+2. Give each template its own pnpm build and deploy commands. Preserve bundled-source integrity checks and the latest bunizao upstream check before deployment. Builds must not depend on files outside the selected template directory.
+3. Declare resources in each Wrangler configuration. Add placeholder secret names in `.dev.vars.example` or `.env.example` and setup descriptions under `cloudflare.bindings` in `package.json`. Include instructions for the shared broker service token and independent encryption keys; never include real secrets in generated templates or button URLs.
+4. Verify that the broker remains private after button deployment, that the public Service Binding targets the deployed broker, and that required bindings and secrets are available. Test each template from an isolated copy, then validate the complete two-user flow in a real Cloudflare account.
+5. Publish the templates and replace the README's deployment-guide link with two labeled buttons in deployment order. Verify the final links after the repository name and release branch are settled.
+
+A single setup flow that provisions and deploys both Workers would require a custom deployment workflow. The two-button plan uses Cloudflare's native template flow and keeps the deployment order explicit.
 
 See Cloudflare's [Deploy to Cloudflare documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/) for supported provisioning, secret prompts and template limitations.
