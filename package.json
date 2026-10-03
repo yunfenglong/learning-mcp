@@ -2,6 +2,7 @@
   "name": "learning-mcp-suite",
   "version": "0.3.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "packageManager": "pnpm@10.14.0",
   "description": "Cloud MCP suite with Okta SSO, Ed, Moodle and OnTrack connections",
   "type": "module",

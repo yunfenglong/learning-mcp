@@ -1,63 +1,137 @@
 # Learning MCP Suite
 
-A standalone, fully cloud-hosted MCP suite for ChatGPT/Claude clients, with Okta / SSO, Ed Discussion, Moodle and OnTrack. Each user connects their own accounts and confirms courses spanning any subset of the three platforms. Platform hosts, course codes, locations and timezones are configurable; the project has no institution-specific defaults.
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm_Noncommercial-6C47FF)](LICENSE)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](docs/deployment.md)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24-5FA04E?logo=nodedotjs&logoColor=white)](package.json)
+[![pnpm](https://img.shields.io/badge/pnpm-10.14.0-F69220?logo=pnpm&logoColor=white)](package.json)
 
-The public Cloudflare Worker embeds the official @bunizao clients. An independent private broker Worker handles encrypted platform sessions and cloud browser SSO. Full course content, discussion, deadlines, grades, task and attendance-code reads are supported. Attendance submission and learning-progress writes are absent.
+A cloud-hosted [Model Context Protocol](https://modelcontextprotocol.io/) server for Ed Discussion, Moodle and OnTrack. Connect your accounts once, link the platforms each course uses, and access learning materials through ChatGPT or another OAuth-capable MCP client.
 
-## User flow
+Runs on Cloudflare Workers with a private Okta / SSO broker. Users do not need to install a local connector.
 
-1. ChatGPT connects to `/mcp` using the suite's OAuth authorization.
-2. The user signs in to the suite through a configured OIDC provider, including Okta. This verifies suite identity; it does not itself supply platform sessions.
-3. Before granting client access or connecting platforms, the user reads and accepts the data handling and usage notice. Acceptance is versioned and recorded for the authenticated account.
-4. GPT can call `start_connection` to open an account-bound `/landing` link. Users can also visit the page directly.
-5. Connect Ed with an API token. Connect Moodle and OnTrack with the configured cloud SSO flow or existing platform sessions. Credentials belong on this HTTPS page, never in chat.
-6. For automatic sign-in, explicitly choose encrypted password/TOTP retention. Supply a Base32 TOTP secret or `otpauth://totp` URI, not an old six-digit code. Without retention, the broker only saves the resulting browser and platform sessions.
-7. GPT calls `discover_courses` and confirms course mappings using `bind_course`. The browser page also supports discovery and associations.
-8. GPT reads courses and searches attendance-code evidence. Users can remove associations, disconnect platforms, forget the shared sign-in, revoke client grants and sign out.
+## Features
 
-## Automatic authentication
+- **Ed Discussion** — browse lessons, threads and replies.
+- **Moodle** — read course materials, deadlines, grades, feedback and forum discussions.
+- **OnTrack** — read projects, tasks and progress.
+- **Course connections** — discover enrolled courses and confirm associations across any combination of platforms.
+- **Attendance-code search** — find candidates in Ed and Moodle text, with source links and dates. Does not submit attendance.
+- **Cloud SSO** — reuse platform sessions and optionally retain encrypted credentials for automatic sign-in.
+- **Per-user access** — separate accounts, configurable platform origins, scoped OAuth grants and revocation controls.
 
-The broker first reuses saved cookies. If authentication is required and the user authorized credential retention, it supplies the saved username/password and generates a fresh TOTP when the provider requests one. It supports SHA-1, SHA-256 and SHA-512 with six or eight digits, and URI-configured time steps. One-time codes are never stored. MFA methods requiring user interaction (including Push, Passkey and device verification), invalid credentials or changed policies may still require reconnection. No cybersecurity challenges are bypassed.
+Learning-platform operations are read-only. Connection and course-association tools manage the user's own suite account.
 
-Each attempt uses a separate cloud browser context, restores only that user's configured-origin cookies, and checks the resulting platform identity. Renewals are serialized per user, reuse very recent renewed sessions, and back off after failed sign-in. A changed identity is rejected. Forgetting the sign-in removes shared cookies/password/TOTP while existing platform sessions remain; disconnecting both broker platforms removes the shared sign-in too.
+## Self-hosting
 
-## Tools
+### Requirements
 
-| Tools                                                                                 | Purpose                                                       |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `get_profile`, `connection_status`, `start_connection`                                | Identity and account-bound connection setup                   |
-| `discover_courses`, `bind_course`, `unbind_course`, `course_units`                    | Enrolled courses and confirmed mappings                       |
-| `disconnect_platform`, `upstream_versions`                                            | Own connections and bundled client versions                   |
-| `ed_lessons`, `ed_lesson`, `ed_threads`, `ed_thread`                                  | Ed content                                                    |
-| `moodle_unit`, `moodle_due`, `moodle_grades`, `moodle_search_forums`, `moodle_thread` | Moodle content, deadlines, feedback and discussion            |
-| `ontrack_unit`, `ontrack_tasks`, `ontrack_task`                                       | OnTrack tasks and progress                                    |
-| `find_attendance_code`                                                                | Code candidates with source links, dates and partial coverage |
+- Node.js 24 or later and pnpm 10.14.0.
+- A Cloudflare account with Workers, KV and Durable Objects; Browser Run for cloud SSO.
+- An OIDC provider, such as Okta, for signing in to the suite.
+- Access to the platforms you want to enable.
 
-Ed requires verified enrollment. Administrators may restrict it using independently verified `institution_ids`; no institution restriction is applied by default. Moodle and OnTrack use exact administrator-configured HTTPS origins, with enrollment and ownership checks. Course associations are always user-confirmed.
+### Setup
 
-## Data handling and permissions
+1. Install dependencies:
 
-The service processes credentials and course data in Cloudflare and sends requested educational content to the authorized MCP client, including ChatGPT. It is independent of institutions and platform providers. Users must have permission for automated access, credential delegation and transfer of requested content, and must follow copyright, privacy, assessment and attendance rules. The usage notice records acknowledgement; it does not establish permission or certify compliance. Operators retain their own obligations, including handling data lawfully and accurately describing deployment practices.
+   ```sh
+   pnpm install --frozen-lockfile
+   ```
 
-Passwords and TOTP secrets can authorize future sign-ins. They are stored only with explicit retention opt-in, encrypted with an account-bound AES-GCM context in the private broker's Durable Object vault. Platform sessions are also encrypted; Ed credentials use the suite's separate key. Encryption protects stored data but does not make it inaccessible to an operator holding the keys. OAuth provider data uses KV; this vault uses Durable Objects for per-user serialized operations. No shared global credential picker is exposed.
+2. Configure the public Worker in [`wrangler.jsonc`](wrangler.jsonc) and the private broker in [`broker/wrangler.jsonc`](broker/wrangler.jsonc). Set the public HTTPS origin, OIDC application, OAuth KV namespace, broker Service Binding and platform origins. [`examples/config.json`](examples/config.json) provides a platform configuration example.
+3. Create the required resources and set the encryption keys, broker service token and any OIDC client secret. Follow the [deployment guide](docs/deployment.md) for the exact bindings and secret commands. Keep secrets out of source control.
+4. Validate and deploy the broker first, then the public Worker:
 
-OAuth scopes are `learning:read`, `learning:bindings` and `offline_access`. The browser flows enforce secure cookies and CSRF; grants enforce user/client/resource/scopes, expiry and immediate revocation. Source content is untrusted evidence. Attendance search is bounded to Ed and Moodle text; images, attachments and codes shown only in class can be missed. It never calls an attendance submission endpoint.
+   ```sh
+   pnpm check
+   pnpm test
+   pnpm test:runtime
+   pnpm deploy:broker
+   pnpm deploy
+   ```
 
-## Development and deployment
+Deployment checks bundled client integrity and current upstream commits before publishing. If upstream sources have changed, run `pnpm upstreams sync`, review the changes and repeat validation.
 
-Use pnpm only:
+The checked-in hostnames and resource IDs are placeholders. Live platform SSO compatibility must be verified for your deployment.
 
-```sh
-pnpm install --frozen-lockfile
-pnpm check
-pnpm test
-pnpm test:runtime
+For Cloudflare's official deployment button and the current two-Worker setup requirements, see [Deploy to Cloudflare](docs/deployment.md#deploy-to-cloudflare-button).
+
+## Usage
+
+Use your deployed server's MCP endpoint:
+
+```text
+https://YOUR_SUITE_HOST/mcp
 ```
 
-Both builds inside the runtime command are dry runs. See [deployment configuration](docs/deployment.md) for Cloudflare resources, OIDC, exact origins, secrets and acceptance checks. This project is not yet production-deployed or verified against a live platform SSO flow.
+1. Connect an OAuth-capable MCP client and sign in to the suite.
+2. Read and accept the data handling notice, then approve the client's requested access.
+3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.
+4. Connect Ed with an API token. Connect Moodle and OnTrack through the configured cloud SSO flow or an existing platform session. Enter credentials on the connection page.
+5. Discover your enrolled courses and confirm which platform courses belong together. This works through MCP tools or the connection page.
+6. Ask about course materials, discussions, deadlines, grades, tasks or attendance-code evidence.
 
-Official bunizao client sources, MIT notices, release versions, commit hashes and file hashes are included in `vendor/upstreams.json`. Use `pnpm upstreams check` to compare integrity and current upstream commits, and `pnpm upstreams sync` to refresh the pinned sources. Deployment stops if freshness or integrity checks fail.
+For example:
 
-The optional administrator API only lists or revokes grants, never reads credentials or binds accounts. Configure `LEARNING_MCP_URL` and `LEARNING_ADMIN_TOKEN` privately and run `pnpm admin grants ACCOUNT_ID` or `pnpm admin revoke ACCOUNT_ID GRANT_ID` (or `all`).
+- “Show my connected courses and upcoming Moodle deadlines.”
+- “Find the Ed discussion about this week's assignment.”
+- “Show my OnTrack tasks and their current status.”
+- “Look for an attendance code in today's course announcements and include the sources.”
 
-This project has its own OAuth issuer, grants, scopes and browser cookies. Previously issued tokens for another service are not automatically compatible. Reauthorization is required for clients of this suite.
+Users can remove course associations, disconnect platforms, forget saved sign-in credentials and revoke client access from the connection page.
+
+## Available tools
+
+| Category    | Tools                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------- |
+| Account     | `get_profile`, `connection_status`, `start_connection`, `disconnect_platform`         |
+| Courses     | `discover_courses`, `bind_course`, `unbind_course`, `course_units`                    |
+| Ed          | `ed_lessons`, `ed_lesson`, `ed_threads`, `ed_thread`                                  |
+| Moodle      | `moodle_unit`, `moodle_due`, `moodle_grades`, `moodle_search_forums`, `moodle_thread` |
+| OnTrack     | `ontrack_unit`, `ontrack_tasks`, `ontrack_task`                                       |
+| Attendance  | `find_attendance_code`                                                                |
+| Diagnostics | `upstream_versions`                                                                   |
+
+OAuth scopes are `learning:read`, `learning:bindings` and `offline_access`. Platform reads check enrollment and object ownership; course associations require user confirmation.
+
+## Authentication and data handling
+
+Suite sign-in establishes your identity. Moodle and OnTrack also need their own platform sessions; signing in to the suite does not automatically grant access to them.
+
+The broker reuses saved sessions where possible. With explicit opt-in, it can store an encrypted password and optional TOTP secret and generate fresh verification codes during sign-in. Push approvals, passkeys, device verification or changed provider policies may require user interaction. One-time MFA codes are not retained.
+
+Credentials and platform sessions are encrypted in per-user Durable Object storage; OAuth records use KV. An operator holding the encryption keys can access stored credentials. **Forget saved sign-in** removes the saved password, TOTP secret and shared SSO cookies while retaining existing platform sessions. Disconnecting both broker platforms also removes the shared sign-in.
+
+Cloudflare processes credentials and course data, and requested content is sent to the authorized MCP client. Users see a versioned notice before connecting platforms or granting client access. Users and operators must have the necessary permissions for automated access, credential delegation and content transfer. Accepting the notice does not establish platform approval or waive operator obligations.
+
+This is an independent project. Platform origins are configurable and there are no institution-specific defaults. Attendance search covers Ed and Moodle text; it may miss images, attachments or codes shown only in class.
+
+## Development
+
+| Command                | Purpose                                               |
+| ---------------------- | ----------------------------------------------------- |
+| `pnpm dev`             | Start the local public Worker development server      |
+| `pnpm check`           | Check TypeScript types                                |
+| `pnpm test`            | Run unit tests                                        |
+| `pnpm test:runtime`    | Build both Workers and run runtime integration tests  |
+| `pnpm build`           | Build the public Worker without deploying             |
+| `pnpm build:broker`    | Build the private broker without deploying            |
+| `pnpm upstreams check` | Check bundled source integrity and upstream freshness |
+| `pnpm upstreams sync`  | Refresh bundled client sources                        |
+
+Local development requires the relevant bindings and configuration. Use ignored `.dev.vars` files for local secrets. See the [deployment guide](docs/deployment.md) for configuration and end-to-end validation.
+
+For optional grant administration, configure `LEARNING_MCP_URL` and `LEARNING_ADMIN_TOKEN`, then use `pnpm admin grants ACCOUNT_ID` or `pnpm admin revoke ACCOUNT_ID GRANT_ID`. The administrator API lists and revokes grants; it does not expose credentials.
+
+## Acknowledgements
+
+Platform clients are bundled from bunizao's [edstem-cli](https://github.com/bunizao/edstem-cli), [moodle-cli](https://github.com/bunizao/moodle-cli) and [ontrack-cli](https://github.com/bunizao/ontrack-cli). They run inside the public Worker. The private broker is the only separate service.
+
+Pinned versions, commit hashes and file hashes are recorded in [`vendor/upstreams.json`](vendor/upstreams.json). Each bundled client retains its upstream MIT license notice under `vendor/`.
+
+## License
+
+The project's original code and documentation are available under the [PolyForm Noncommercial License 1.0.0](LICENSE). This is a source-available license that permits noncommercial use, modification and redistribution under its terms. It also expressly permits use by specified organizations, including educational institutions and charities, regardless of funding. Commercial use outside the license's permitted purposes is not authorized.
+
+Third-party clients and dependencies retain their own licenses. The bundled bunizao clients remain MIT-licensed; see [NOTICE](NOTICE) and the license files in `vendor/`.

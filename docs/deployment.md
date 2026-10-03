@@ -2,6 +2,29 @@
 
 The service consists of one public suite Worker and one private broker Worker in the same Cloudflare account. All platform clients run inside the public Worker. Users install no local connector.
 
+## Deploy to Cloudflare button
+
+Cloudflare provides an official README button for public GitHub and GitLab repositories:
+
+```md
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/OWNER/SUITE_TEMPLATE)
+```
+
+Replace the example repository with a published deployment template containing this suite. The template's default branch must contain the intended application. A README link alone does not prepare its resources or configuration.
+
+The current repository is not a turnkey template. Cloudflare's button does not automatically deploy multiple Workers together. The broker must exist before the public Worker's Service Binding can be deployed, and `broker/` currently depends on files and packages outside that directory. Linking a second button directly to that subdirectory would not produce an isolated application.
+
+To offer the official template flow:
+
+1. Prepare a standalone template for each Worker, including all of its source files and dependencies, and provide a separate button for each. Keep the broker private.
+2. Declare template resources in each Wrangler configuration. Provide example secret names in `.dev.vars.example` or `.env.example`, with setup descriptions under `cloudflare.bindings` in `package.json`. Supply required values during setup rather than embedding real secrets.
+3. Deploy the broker first, then configure the public Worker's binding to its actual deployed name. Both Workers need matching platform configuration and the same broker service token, with separate encryption keys.
+4. Finish OIDC callback registration, the public HTTPS origin, platform origins and Browser Run configuration, then test the complete user flow.
+
+For a single setup flow that provisions and deploys both Workers, a custom deployment workflow is needed. It must create the resources, configure both Workers, and deploy them in order; the native button does not orchestrate this automatically. Retain the manual setup below until such a workflow has been implemented and validated.
+
+See Cloudflare's [Deploy to Cloudflare documentation](https://developers.cloudflare.com/workers/platform/deploy-buttons/) for supported provisioning, secret prompts and template limitations.
+
 ## Suite identity
 
 Register a web application with an OIDC provider that supports authorization code flow, PKCE S256 and signed RS256/ES256 ID tokens. Okta supports this flow: [official guide](https://developer.okta.com/docs/guides/implement-grant-type/authcodepkce/main/). Register the exact callback `https://YOUR_SUITE_HOST/login/callback`. Set `OIDC_ISSUER` to the provider's exact issuer, `OIDC_CLIENT_ID`, optional `OIDC_CLIENT_SECRET`, and optional comma-separated `OIDC_ALLOWED_EMAIL_DOMAINS`. An Okta issuer may include an authorization-server path. Configuring a suite OIDC application does not register it as Moodle or OnTrack or grant platform sessions.

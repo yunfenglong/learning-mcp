@@ -1,0 +1,14 @@
+Required Notice: Copyright 2026 wanfunglung
+
+Learning MCP Suite's original code and documentation are provided under
+the PolyForm Noncommercial License 1.0.0 in LICENSE.
+
+Third-party code and dependencies retain their own licenses. The project
+license does not replace or restrict the licenses of these components:
+
+- vendor/ed: bunizao/edstem-cli, MIT; see vendor/ed/LICENSE.
+- vendor/moodle: bunizao/moodle-cli, MIT; see vendor/moodle/LICENSE.
+- vendor/ontrack: bunizao/ontrack-cli, MIT; see vendor/ontrack/LICENSE.
+
+See vendor/upstreams.json for pinned sources, versions and file hashes.
+Other dependencies retain the notices distributed with their packages.
