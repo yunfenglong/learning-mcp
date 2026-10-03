@@ -335,9 +335,10 @@ describe("browser and administrator boundaries", () => {
         f.env,
         f.config,
       );
-    await expect(submit({}, "https://evil.example")).rejects.toMatchObject({
-      code: "INVALID_ORIGIN",
-    });
+    for (const origin of ["https://evil.example", "null", ""])
+      await expect(submit({}, origin)).rejects.toMatchObject({
+        code: "INVALID_ORIGIN",
+      });
     await expect(submit({}, f.config.issuer, "")).rejects.toMatchObject({
       code: "LOGIN_FAILED",
     });

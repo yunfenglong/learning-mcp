@@ -172,7 +172,7 @@ export default {
         const { html, escapeHtml } = await import("./http/common.ts");
         return html(
           page(
-            `<span class="eyebrow">Connection needs attention</span><h1>Let's try that again.</h1><p>${escapeHtml(publicError(error).message)}</p><a class="button" href="/landing">Return to your connections</a>`,
+            `<span class="eyebrow">Connection needs attention</span><h1>Let's try that again.</h1><p>${escapeHtml(publicError(error).message)}</p>${new URL(original.url).pathname === "/login" ? '<a class="button" href="/login">Return to sign-in</a>' : '<a class="button" href="/landing">Return to your connections</a>'}`,
           ),
           error instanceof SuiteError ? error.status : 500,
         );

@@ -432,6 +432,37 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     expect((await login("bad", true)).callback.status).toBe(401);
     expect((await request("/landing")).status).toBe(200);
   });
+  it("keeps browser form origin checks strict and makes login errors retryable", async () => {
+    const started = await request("/login");
+    const text = await started.text();
+    const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    const cookie = started.headers.get("set-cookie")!.split(";")[0]!;
+    for (const invalidOrigin of [
+      undefined,
+      "null",
+      "https://foreign.example",
+    ]) {
+      const response = await request("/login", {
+        method: "POST",
+        headers: {
+          accept: "text/html",
+          cookie,
+          ...(invalidOrigin ? { origin: invalidOrigin } : {}),
+        },
+        body: new URLSearchParams({
+          nonce,
+          platform: "sso",
+          provider: "https://unsupported.example",
+          usage_version: USAGE_VERSION,
+          usage_consent: "accept",
+        }).toString(),
+      });
+      expect(response.status).toBe(403);
+      const error = await response.text();
+      expect(error).toContain("Open the sign-in page again.");
+      expect(error).toContain('href="/login"');
+    }
+  });
   it("connects two distinct profiles through login, consent and PKCE", async () => {
     a = await connect("student-a");
     b = await connect("student-b");

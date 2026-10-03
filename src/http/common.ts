@@ -5,7 +5,9 @@ export const securityHeaders = {
   "content-security-policy":
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
+  // Native form POSTs use Origin: null under no-referrer (Fetch Standard).
+  // Preserve same-origin form Origin; withhold referrers from other origins.
+  "referrer-policy": "same-origin",
 };
 export const escapeHtml = (value: unknown) =>
   String(value ?? "").replace(

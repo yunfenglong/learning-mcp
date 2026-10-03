@@ -197,6 +197,46 @@ describe("isolated broker browser SSO", () => {
     );
     expect(f.page.keyboard.press).toHaveBeenCalledWith("Enter");
   });
+  it("generates the code from TOTP without requiring a one-time MFA code", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(59000);
+    try {
+      for (const extra of [{}, { mfa_code: "999999" }]) {
+        const f = fixture(login, {
+          kind: "mfa",
+          selector: 'input[name="otp"]',
+        });
+        const submit = {
+          click: vi.fn(async () => {
+            f.page.url = () => site;
+            f.page.evaluate.mockImplementation(async (fn) =>
+              fn.toString().includes("M?.cfg") ? true : null,
+            );
+          }),
+          type: vi.fn(),
+        };
+        f.page.$.mockResolvedValue(submit);
+        await browserLogin({
+          binding: {} as Fetcher,
+          platform: "moodle",
+          site,
+          loginOrigins: [login],
+          input: {
+            username: "u",
+            password: "p",
+            totp: parseTotp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"),
+            ...extra,
+          },
+        });
+        expect(f.page.type).toHaveBeenCalledWith('input[name="otp"]', "287082");
+        expect(f.page.type).not.toHaveBeenCalledWith(
+          'input[name="otp"]',
+          "999999",
+        );
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it("creates a fresh context, restores only allowlisted cookies and closes it", async () => {
     const f = fixture();
     const result = await browserLogin({
