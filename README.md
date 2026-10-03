@@ -73,6 +73,8 @@ Use your deployed server's MCP endpoint:
 https://YOUR_SUITE_HOST/mcp
 ```
 
+See [client setup](docs/clients.md) for ChatGPT plugin setup and OAuth discovery details.
+
 1. Connect an OAuth-capable MCP client. Sign in with your supported SSO provider base link, username, password and optional TOTP, or with an Ed API token. Use the same provider account or Ed account for future sign-ins. Existing platform-based accounts can use their original sign-in entry.
 2. Read and accept the data handling notice before entering credentials, then approve the client's requested access.
 3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.

@@ -10,6 +10,10 @@ Provider accounts are anchored to the provider type, origin and verified user ID
 
 Set `ISSUER` to the exact public HTTPS suite origin. Configure a matching custom domain route, or enable workers.dev and use its exact origin. The checked-in origin is a placeholder, not an active deployment.
 
+For a Cloudflare custom domain, add a suite route such as `{ "pattern": "mcp.example.com", "custom_domain": true }` and set `ISSUER` to `https://mcp.example.com`. Cloudflare manages DNS and HTTPS for the custom domain. Keep `workers_dev` and `preview_urls` disabled when using only that domain. If another Worker owns the hostname, assign it to the suite and check that no old path routes intercept requests. Save the previous association so it can be restored if needed.
+
+Changing the public origin requires browser sign-in and MCP client authorization at the new address. Preserve encryption keys, namespace IDs and Service Bindings to retain user platform connections; use the same platform identity for the new browser sign-in. Clients connect to `https://mcp.example.com/mcp`, while users manage platform connections at `https://mcp.example.com/landing`. See [client setup](clients.md).
+
 ## Platform and SSO configuration
 
 Moodle and OnTrack base links are supplied by users on their first Connect and saved per account. Do not configure their addresses in Worker variables. Ed uses `https://edstem.org` automatically; `PLATFORM_CONFIG` is optional and can restrict Ed courses using verified `ed.institution_ids`. See the [configuration reference](configuration.md). Models cannot supply or override platform destinations through tools.
@@ -84,11 +88,11 @@ Before publishing buttons, publish the generated templates in a public repositor
 
 ### Step 1: Deploy SSO Broker
 
-Deploy the private broker first. Set its platform origins and `LOGIN_ORIGINS`, enable Browser Run for the `BROWSER` binding, and supply `BROKER_CREDENTIALS_KEY` and `BROKER_SERVICE_TOKEN` as secrets. Keep public routes, workers.dev and preview URLs disabled. Record the deployed Worker name for the second step; the public suite reaches it through a Service Binding, so the broker needs no public URL.
+Deploy the private broker first. Set its supported `SSO_PROVIDERS` and required `LOGIN_ORIGINS`, enable Browser Run for the `BROWSER` binding, and supply `BROKER_CREDENTIALS_KEY` and `BROKER_SERVICE_TOKEN` as secrets. Keep public routes, workers.dev and preview URLs disabled. Record the deployed Worker name for the second step; the public suite reaches it through a Service Binding, so the broker needs no public URL.
 
 ### Step 2: Deploy Learning MCP
 
-Deploy the public suite and point its `SSO_BROKER` Service Binding at the name from step 1. Set its public `ISSUER` and platform origins. Supply a separate `CREDENTIALS_KEY`, the **same** `BROKER_SERVICE_TOKEN` used by the broker. The Moodle and OnTrack origins must agree between both Workers.
+Deploy the public suite and point its `SSO_BROKER` Service Binding at the name from step 1. Set its public `ISSUER` and the same supported `SSO_PROVIDERS` as the broker. Supply a separate `CREDENTIALS_KEY`, the **same** `BROKER_SERVICE_TOKEN` used by the broker. Users supply Moodle and OnTrack base links on first Connect; neither Worker needs those addresses in deployment configuration.
 
 Cloudflare can provision supported resources such as KV and Durable Objects from template configuration. Browser Run enablement and matching settings between the two deployments remain setup tasks. The buttons must explain these tasks rather than promise zero configuration.
 
