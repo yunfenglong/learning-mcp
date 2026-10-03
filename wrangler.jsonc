@@ -39,7 +39,4 @@
   "observability": {
     "enabled": false,
   },
-  "limits": {
-    "cpu_ms": 30000,
-  },
 }

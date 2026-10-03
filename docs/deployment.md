@@ -22,6 +22,8 @@ Users may supply a one-time MFA code or optional Base32 TOTP secret / otpauth UR
 
 Run `pnpm exec wrangler login` to authenticate the deployment account. Create a new KV namespace with `pnpm exec wrangler kv namespace create OAUTH_KV` and set its returned ID on the suite's `OAUTH_KV` binding. Durable Object namespaces are created through the checked-in migrations. Keep the broker's workers.dev and public routes disabled. Its service name must match the suite's `SSO_BROKER` Service Binding.
 
+The default configuration uses the account plan's CPU limits. Explicit `limits.cpu_ms` settings require Workers Paid; Free deployments must omit that setting. Available CPU and Browser Run quotas still depend on the account plan and workload.
+
 Generate two independent 32-byte AES-GCM keys encoded as Base64, one for `CREDENTIALS_KEY` in the suite and another for `BROKER_CREDENTIALS_KEY` in the broker. Generate a separate random broker service token (at least 32 characters), set as `BROKER_SERVICE_TOKEN` on both Workers. Set an optional separate `ADMIN_TOKEN` for private grant administration.
 
 Use pnpm to invoke Wrangler secrets; enter their values interactively:
