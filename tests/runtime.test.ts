@@ -19,6 +19,7 @@ interface Connection {
   grant: string;
 }
 let a: Connection, b: Connection;
+let edCourseCode = "CSC1001";
 let moodleAccountChanged = false,
   moodleExpired = false,
   moodleOutputCanary = false,
@@ -60,7 +61,7 @@ async function platformFixture(req: Request): Promise<Response> {
               {
                 course: {
                   id: course,
-                  code: "CSC1001",
+                  code: edCourseCode,
                   name: "Example course",
                   year: "2026",
                   session: "S2",
@@ -799,6 +800,56 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       (await call(a, "upstream_versions")).result.structuredContent.upstreams.ed
         .sha,
     ).toHaveLength(40);
+  });
+  it("accepts slash-separated codes through both MCP and the browser binding form", async () => {
+    edCourseCode = "CS101/CS201";
+    try {
+      await call(b, "discover_courses");
+      const page = await request("/landing", { headers: { cookie: b.cookie } });
+      const pattern = (await page.text()).match(
+        /name="code"[^>]*pattern="([^"]+)"/,
+      )![1]!;
+      expect(new RegExp(`^(?:${pattern})$`, "v").test(edCourseCode)).toBe(true);
+      const course = {
+        ...unit,
+        key: "combined-course",
+        code: "cs101/cs201",
+        ed_course_id: 102,
+        moodle_course_id: undefined,
+        ontrack_unit_id: undefined,
+        ontrack_project_id: undefined,
+      };
+      const bound = (await call(b, "bind_course", { course })).result;
+      expect(bound.isError).not.toBe(true);
+      expect(bound.structuredContent.unit.code).toBe(edCourseCode);
+      expect(
+        (await call(b, "ed_lessons", { unit: "cs101/cs201" })).result.isError,
+      ).not.toBe(true);
+      await call(b, "unbind_course", { key: course.key });
+      const saved = await action(b, "bind", {
+        code: "cs101/cs201",
+        name: unit.name,
+        campus: unit.campus,
+        year: String(unit.year),
+        teaching_period: unit.teaching_period,
+        timezone: unit.timezone,
+        ed_course_id: "102",
+      });
+      expect(saved.status).toBe(303);
+      const units = (await call(b, "course_units")).result.structuredContent
+        .units;
+      expect(units).toHaveLength(1);
+      expect(units[0].code).toBe(edCourseCode);
+      expect(units[0].key).toMatch(/^[a-zA-Z0-9_-]+$/);
+      const hyphenatedKey =
+        `CS101-CS201-${unit.campus}-${unit.year}-${unit.teaching_period}`
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, "-");
+      expect(units[0].key).not.toBe(hyphenatedKey);
+      await call(b, "unbind_course", { key: units[0].key });
+    } finally {
+      edCourseCode = "CSC1001";
+    }
   });
   it("revokes one user's access immediately without revoking the other user", async () => {
     expect((await action(a, "revoke", { grant_id: a.grant })).status).toBe(303);

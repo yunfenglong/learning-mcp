@@ -3,6 +3,7 @@ import { z } from "zod";
 import { EdClient } from "../../vendor/ed/client.js";
 import type { Config, Env } from "../config.ts";
 import type { Platform, Unit } from "../domain/units.ts";
+import { COURSE_CODE_PATTERN } from "../domain/units.ts";
 import { AccountService } from "../accounts/service.ts";
 import type { Discovery } from "../accounts/courses.ts";
 import {
@@ -123,7 +124,7 @@ export async function landing(request: Request, env: Env, config: Config) {
       )
       .join("");
   const mapping = discovery
-    ? `<details open><summary>Confirm a course association</summary><p class="muted">Choose the platforms used by this course. Leave others empty. Check campus and semester before saving.</p><form method="post" action="/account/bind">${hidden(session.csrf)}<div class="fields"><label>Course code<input name="code" placeholder="CSC1001" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*"></label><label>Course name<input name="name" required maxlength="200"></label><label>Campus / location<input name="campus" placeholder="main or online" required maxlength="100"></label><label>Year<input name="year" type="number" min="2020" max="2100" required></label><label>Teaching period<input name="teaching_period" placeholder="S2" required maxlength="50"></label><label>Timezone<input name="timezone" placeholder="UTC or an IANA timezone" required></label><label>Ed course<select name="ed_course_id"><option value="">No Ed course</option>${options("ed")}</select></label><label>Moodle course<select name="moodle_course_id"><option value="">No Moodle course</option>${options("moodle")}</select></label><label>OnTrack project<select name="ontrack_project_id"><option value="">No OnTrack project</option>${options("ontrack")}</select></label></div><button>Save course association</button></form></details><details><summary>Review discovered courses</summary>${discovery.courses.map((c) => `<p>${e(c.platform)} / ${e(c.name)} <span class="muted">${e(c.code ?? "")} · ${e(c.year ?? "year unknown")} · ${e(c.teaching_period ?? "period unknown")} · ${e(c.campus ?? "campus unknown")}</span><br><small>${e(c.institution_basis)}</small></p>`).join("") || "<p>No courses found. Check your platform connections.</p>"}</details>`
+    ? `<details open><summary>Confirm a course association</summary><p class="muted">Choose the platforms used by this course. Leave others empty. Check campus and semester before saving.</p><form method="post" action="/account/bind">${hidden(session.csrf)}<div class="fields"><label>Course code<input name="code" placeholder="CSC1001" required maxlength="64" pattern="${e(COURSE_CODE_PATTERN)}"></label><label>Course name<input name="name" required maxlength="200"></label><label>Campus / location<input name="campus" placeholder="main or online" required maxlength="100"></label><label>Year<input name="year" type="number" min="2020" max="2100" required></label><label>Teaching period<input name="teaching_period" placeholder="S2" required maxlength="50"></label><label>Timezone<input name="timezone" placeholder="UTC or an IANA timezone" required></label><label>Ed course<select name="ed_course_id"><option value="">No Ed course</option>${options("ed")}</select></label><label>Moodle course<select name="moodle_course_id"><option value="">No Moodle course</option>${options("moodle")}</select></label><label>OnTrack project<select name="ontrack_project_id"><option value="">No OnTrack project</option>${options("ontrack")}</select></label></div><button>Save course association</button></form></details><details><summary>Review discovered courses</summary>${discovery.courses.map((c) => `<p>${e(c.platform)} / ${e(c.name)} <span class="muted">${e(c.code ?? "")} · ${e(c.year ?? "year unknown")} · ${e(c.teaching_period ?? "period unknown")} · ${e(c.campus ?? "campus unknown")}</span><br><small>${e(c.institution_basis)}</small></p>`).join("") || "<p>No courses found. Check your platform connections.</p>"}</details>`
     : "";
   return html(
     page(
@@ -283,10 +284,14 @@ export async function accountAction(
       year = Number(form.get("year")),
       campus = String(form.get("campus")),
       period = String(form.get("teaching_period"));
+    const keyLabel = `${code}-${campus}-${year}-${period}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, "-");
     const unit: Record<string, unknown> = {
-      key: `${code}-${campus}-${year}-${period}`
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]/g, "-"),
+      // A slash-containing code must not overwrite a different hyphenated code.
+      key: code.includes("/")
+        ? `${keyLabel.slice(0, 87)}-${(await digest(JSON.stringify([code, campus, year, period]))).slice(0, 12)}`
+        : keyLabel,
       code,
       name: String(form.get("name") ?? ""),
       year,

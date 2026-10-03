@@ -1,9 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig, type Env } from "../src/config.ts";
-import { unitSchema } from "../src/domain/units.ts";
+import {
+  COURSE_CODE_PATTERN,
+  resolveUnit,
+  unitSchema,
+} from "../src/domain/units.ts";
 import { finishDiscovery, normalizeCourse } from "../src/accounts/courses.ts";
 import { unit } from "./support.ts";
 describe("generic deployment scope", () => {
+  it("preserves slash-separated course codes in validation and lookup", () => {
+    const combined = unitSchema.parse({ ...unit, code: "cs101/cs201" });
+    expect(combined.code).toBe("CS101/CS201");
+    expect(resolveUnit([combined], "cs101/cs201")).toEqual(combined);
+    const browserPattern = new RegExp(`^(?:${COURSE_CODE_PATTERN})$`, "v");
+    expect(browserPattern.test(combined.code)).toBe(true);
+    for (const code of [
+      "CS101\\CS201",
+      "CS101\nCS201",
+      "CS101<script>",
+      "A".repeat(65),
+    ])
+      expect(unitSchema.safeParse({ ...unit, code }).success).toBe(false);
+  });
   const env = () => ({ ISSUER: "https://suite.example" }) as Env;
   it("defaults to Ed and accepts optional verified Ed institution scope", () => {
     expect(loadConfig(env()).platforms).toEqual({

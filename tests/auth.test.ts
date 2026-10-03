@@ -97,6 +97,32 @@ describe("account authorization and isolation", () => {
   });
 });
 describe("user-confirmed course associations", () => {
+  it("binds a slash-separated discovered code without treating its parts as aliases", async () => {
+    const f = await fixture();
+    await f.account.discovered(
+      finishDiscovery(
+        [
+          normalizeCourse("ed", {
+            id: 101,
+            code: "CS101/CS201",
+            scope_verified: true,
+          }),
+        ],
+        [],
+      ),
+    );
+    const combined = {
+      ...unit,
+      code: "cs101/cs201",
+      moodle_course_id: undefined,
+      ontrack_unit_id: undefined,
+      ontrack_project_id: undefined,
+    };
+    expect((await f.account.bind(combined)).unit.code).toBe("CS101/CS201");
+    await expect(
+      f.account.bind({ ...combined, code: "CS101" }),
+    ).rejects.toMatchObject({ code: "COURSE_MISMATCH" });
+  });
   it("allows any subset of platforms, including an Ed-only course within the deployment scope", async () => {
     const f = await fixture();
     await f.account.discovered(

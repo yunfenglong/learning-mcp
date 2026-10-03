@@ -29,7 +29,7 @@ Configure `SSO_PROVIDERS` on **both Workers** as a JSON string. For example:
 
 Users enter their own provider base link; it must match one of these exact HTTPS origins. Origins are not listed in account pages or public metadata. This setting identifies providers whose current-session identity API is supported; `LOGIN_ORIGINS` separately allows the resource hosts needed during browser sign-in. Adding a host to `LOGIN_ORIGINS` alone does not enable provider sign-in. The first adapter supports Okta; other provider types require an identity-verification adapter. Keep the list empty to offer Ed and existing platform-based sign-in only.
 
-Course associations are created by users from fresh discovery. The example course association is illustrative; it is not a deployment variable or a seed record.
+Course associations are created by users from fresh discovery. Course codes may contain letters, digits, dots, underscores, hyphens and slashes, such as `CS101/CS201`, up to 64 characters. A slash-separated code is preserved as one complete code, not treated as aliases. Course keys use letters, digits, underscores and hyphens; use the key returned by `course_units` when a code is ambiguous. The example course association is illustrative; it is not a deployment variable or a seed record.
 
 ## Bindings
 

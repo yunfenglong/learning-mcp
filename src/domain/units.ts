@@ -2,6 +2,8 @@ import { z } from "zod";
 import { SuiteError } from "../errors.ts";
 
 const id = z.number().int().positive();
+// Shared by the API schema and the browser's Unicode-set input pattern.
+export const COURSE_CODE_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9_.\/\-]*`;
 export const unitSchema = z
   .object({
     key: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
@@ -9,7 +11,7 @@ export const unitSchema = z
       .string()
       .min(1)
       .max(64)
-      .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/)
+      .regex(new RegExp(`^${COURSE_CODE_PATTERN}$`))
       .toUpperCase(),
     name: z.string().min(1).max(200),
     campus: z.string().min(1).max(100),
