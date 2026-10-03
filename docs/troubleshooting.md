@@ -10,6 +10,10 @@ Discovery expires after ten minutes. If binding reports stale discovery, discove
 
 Start a fresh authorization from the MCP client after updating the service. A successful form submission consumes its nonce, so submitting the old page again fails. Operators should check that the consent page and its redirect response allow the registered callback origin in `Content-Security-Policy: form-action`; a global `form-action 'self'` can block the browser's return to the client. Use the [native browser regression fixtures](../tests/browser/README.md) to verify both redirects and Origin handling.
 
+## Binding prompts for authorization after reading works
+
+`INSUFFICIENT_SCOPE` means the client has read-only permission. It does not mean the login expired. First-time connection discovery requests `learning:read learning:bindings` so setup can finish without a later permission prompt. Existing read-only grants require one explicit permission upgrade to connect platforms or change course mappings; their reading access remains usable. Client interfaces may display a generic reconnect message for the OAuth upgrade.
+
 ## Sign-in or renewal needs attention
 
 | Error                               | Next step                                                                                                                                                                                              |

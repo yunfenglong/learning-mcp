@@ -742,6 +742,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     const denied = (await call(reader, "start_connection", { platform: "ed" }))
       .result;
     expect(denied.structuredContent.code).toBe("INSUFFICIENT_SCOPE");
+    expect(denied.structuredContent.message).toContain("permission upgrade");
     expect(denied._meta["mcp/www_authenticate"][0]).toContain(
       "insufficient_scope",
     );
@@ -764,6 +765,16 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     expect(refreshed.refresh_token).not.toBe(reader.refresh);
   });
   it("publishes OAuth policies, the profile schema and exact upstream commits", async () => {
+    const metadata = await request("/.well-known/oauth-protected-resource/mcp");
+    expect(((await metadata.json()) as any).scopes_supported).toEqual([
+      "learning:read",
+      "learning:bindings",
+    ]);
+    const unauthenticated = await request("/mcp");
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get("www-authenticate")).toContain(
+      'scope="learning:read learning:bindings"',
+    );
     const response = await request("/mcp", {
       method: "POST",
       headers: {

@@ -132,7 +132,9 @@ export default {
         accessTokenTTL: 900,
         refreshTokenTTL: 30 * 86400,
         scopesSupported: [READ_SCOPE, MANAGE_SCOPE, "offline_access"],
-        requiredScopes: [READ_SCOPE],
+        // Advertise the complete setup flow at first connection. Tool guards still
+        // permit explicit read-only grants and require bindings for account changes.
+        requiredScopes: [READ_SCOPE, MANAGE_SCOPE],
         tokenExchangeCallback: async (options) => {
           try {
             if (

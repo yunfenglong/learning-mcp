@@ -118,6 +118,25 @@ const post = (
     }),
   });
 describe("OAuth client consent", () => {
+  it("explains setup permission while preserving an explicitly read-only consent", async () => {
+    const full = await fixture();
+    expect(
+      await (await authorize(get(), full.env, full.config)).text(),
+    ).toContain("These permissions cover setup as well as reading");
+    const reader = await fixture();
+    reader.auth.scope = [READ_SCOPE];
+    const page = await authorize(get(), reader.env, reader.config);
+    const text = await page.text();
+    expect(text).toContain("reading permission only");
+    const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    expect(
+      (await authorize(post(nonce), reader.env, reader.config)).status,
+    ).toBe(302);
+    expect(reader.complete.mock.calls[0]![0].scope).toEqual([READ_SCOPE]);
+    expect((await reader.account.grants()).grants[0]!.scopes).toEqual([
+      READ_SCOPE,
+    ]);
+  });
   it("permits only the verified client's callback origin on the consent page and redirect", async () => {
     const f = await fixture();
     f.auth.redirectUri = "https://client.example/callback?account=1";
