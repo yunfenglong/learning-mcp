@@ -2,18 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { key, unit } from "./support.ts";
 const origin = "https://suite.example",
-  idp = "https://idp.example",
   moodle = "https://moodle.example.edu",
   ontrack = "https://ontrack.example.edu",
   brokerSecret = "b".repeat(64);
-let runtime: Miniflare, privateKey: any, jwk: any;
-const logins = new Map<
-  string,
-  { nonce: string; challenge: string; subject: string; badNonce?: boolean }
->();
+let runtime: Miniflare;
 interface Connection {
   token: string;
   refresh: string;
@@ -43,41 +37,6 @@ async function request(
 }
 async function platformFixture(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  if (url.origin === idp) {
-    if (url.pathname === "/.well-known/openid-configuration")
-      return Response.json({
-        issuer: idp,
-        authorization_endpoint: `${idp}/authorize`,
-        token_endpoint: `${idp}/token`,
-        jwks_uri: `${idp}/jwks`,
-      });
-    if (url.pathname === "/jwks") return Response.json({ keys: [jwk] });
-    if (url.pathname === "/token") {
-      const form = await req.formData(),
-        login = logins.get(String(form.get("code")));
-      if (
-        !login ||
-        createHash("sha256")
-          .update(String(form.get("code_verifier")))
-          .digest("base64url") !== login.challenge
-      )
-        return new Response(null, { status: 400 });
-      const id_token = await new SignJWT({
-        nonce: login.badNonce ? "wrong" : login.nonce,
-        email: `${login.subject}@student.example.edu`,
-        email_verified: true,
-        name: login.subject,
-      })
-        .setProtectedHeader({ alg: "RS256", kid: "test" })
-        .setIssuer(idp)
-        .setAudience("learning-client")
-        .setSubject(login.subject)
-        .setIssuedAt()
-        .setExpirationTime("5m")
-        .sign(privateKey);
-      return Response.json({ id_token });
-    }
-  }
   if (url.origin === "https://edstem.org") {
     const token = req.headers.get("authorization");
     const who =
@@ -232,14 +191,6 @@ async function platformFixture(req: Request): Promise<Response> {
   return new Response(null, { status: 404 });
 }
 beforeAll(async () => {
-  const pair = await generateKeyPair("RS256", { extractable: true });
-  privateKey = pair.privateKey;
-  jwk = {
-    ...(await exportJWK(pair.publicKey)),
-    kid: "test",
-    alg: "RS256",
-    use: "sig",
-  };
   const platforms = JSON.stringify({
     ed: { site_url: "https://edstem.org" },
     moodle: { site_url: moodle },
@@ -262,9 +213,6 @@ beforeAll(async () => {
             ISSUER: origin,
             CREDENTIALS_KEY: key,
             ADMIN_TOKEN: "x".repeat(64),
-            OIDC_ISSUER: idp,
-            OIDC_CLIENT_ID: "learning-client",
-            OIDC_ALLOWED_EMAIL_DOMAINS: "student.example.edu",
             PLATFORM_CONFIG: platforms,
             BROKER_SERVICE_TOKEN: brokerSecret,
           },
@@ -296,24 +244,34 @@ beforeAll(async () => {
 afterAll(async () => {
   await runtime?.dispose();
 });
-async function login(subject: string, badNonce = false) {
+async function login(subject: string, invalid = false) {
   const started = await request("/login?return_to=%2Flanding");
-  expect(started.status).toBe(302);
-  const target = new URL(started.headers.get("location")!),
-    browser = started.headers.get("set-cookie")!.split(";")[0]!;
-  const code = `code-${subject}-${Math.random()}`;
-  logins.set(code, {
-    subject,
-    nonce: target.searchParams.get("nonce")!,
-    challenge: target.searchParams.get("code_challenge")!,
-    badNonce,
+  expect(started.status).toBe(200);
+  const browser = started.headers.get("set-cookie")!.split(";")[0]!;
+  const nonce = (await started.text()).match(
+    /name="nonce" value="([a-f0-9]+)"/,
+  )![1]!;
+  const callback = await request("/login", {
+    method: "POST",
+    headers: {
+      origin,
+      cookie: browser,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      nonce,
+      platform: "ed",
+      token: invalid
+        ? "invalid-token"
+        : subject === "student-b"
+          ? "ed-user-b"
+          : "ed-user-a",
+      usage_consent: "accept",
+      usage_version: "2026-10-03",
+    }).toString(),
   });
-  const callback = await request(
-    `/login/callback?${new URLSearchParams({ code, state: target.searchParams.get("state")! })}`,
-    { headers: { cookie: browser } },
-  );
-  if (badNonce) return { callback, cookie: "", csrf: "" };
-  if (callback.status !== 302)
+  if (invalid) return { callback, cookie: "", csrf: "" };
+  if (callback.status !== 303)
     throw new Error(
       `Login failed: ${callback.status} ${await callback.text()}`,
     );
@@ -458,7 +416,7 @@ async function action(
   });
 }
 describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () => {
-  it("requires OAuth and validates an OIDC nonce", async () => {
+  it("requires OAuth and rejects unverified platform sign-in", async () => {
     expect(
       (
         await request("/mcp", {
@@ -774,5 +732,20 @@ describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () =
     });
     expect(refreshed.status).toBe(400);
     expect(((await refreshed.json()) as any).error).toBe("invalid_grant");
+  });
+  it("limits unauthenticated sign-in attempts before upstream credential verification", async () => {
+    let limited = false;
+    for (let i = 0; i < 21; i++) {
+      const attempt = await login("bad", true);
+      const text = await attempt.callback.text();
+      expect(text).not.toContain("invalid-token");
+      if (attempt.callback.status === 429) {
+        expect(JSON.parse(text).code).toBe("AUTH_RETRY_LATER");
+        limited = true;
+        break;
+      }
+      expect(attempt.callback.status).toBe(401);
+    }
+    expect(limited).toBe(true);
   });
 });

@@ -14,7 +14,7 @@ Discovery expires after ten minutes. If binding reports stale discovery, discove
 | `SSO_LOGIN_REQUIRED`                | The saved SSO cookies no longer authenticate you. Reconnect, or provide credentials with explicit retention consent if you want automatic sign-in.                                                     |
 | `MFA_REQUIRED`                      | Provide the requested current code or a supported TOTP configuration on the account page.                                                                                                              |
 | `SSO_INTERACTION_REQUIRED`          | The provider requires a challenge the cloud flow cannot complete. Complete sign-in in your browser and connect a verified existing platform session, or ask the operator to verify the supported flow. |
-| `AUTH_RETRY_LATER`                  | A renewal failed recently. Wait one minute before retrying, or reconnect with corrected credentials.                                                                                                   |
+| `AUTH_RETRY_LATER`                  | Wait one minute after a failed renewal, or ten minutes after the sign-in attempt limit. Reconnect with corrected credentials.                                                                                                   |
 | `UPSTREAM_UNAVAILABLE`              | The platform or renewal endpoint could not complete the request. Retry after the service recovers.                                                                                                     |
 | `ACCOUNT_CHANGED`                   | Renewal returned a different platform identity. Reconnect explicitly; existing course associations may need confirmation.                                                                              |
 | `SSO_ACCOUNT_CHANGED`               | Disconnect both broker platforms before switching the saved SSO account.                                                                                                                               |
@@ -31,6 +31,6 @@ Search covers bounded Ed and Moodle text. Images, attachments, older posts and i
 
 ## Deployment problems
 
-Check the [configuration reference](configuration.md): `PLATFORM_CONFIG` takes the inner platform object, the broker Service Binding must match its deployed name, both Workers need the same service token, and encryption keys must decode to 32 bytes. Register the exact OIDC callback and public suite origin.
+Check the [configuration reference](configuration.md): `PLATFORM_CONFIG` takes the inner platform object, the broker Service Binding must match its deployed name, both Workers need the same service token, and encryption keys must decode to 32 bytes. Set the exact public suite origin and verify the configured platform SSO flow.
 
 If deployment stops at the upstream check, run `pnpm upstreams sync`, review the bundled changes and repeat validation. Builds and tests do not publish Workers. A successful dry run does not validate real credentials, platform policy or live SSO.

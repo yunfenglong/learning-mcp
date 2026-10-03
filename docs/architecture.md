@@ -6,21 +6,20 @@ Learning MCP Suite runs as two Workers in the same Cloudflare account. The publi
 flowchart LR
   Client[ChatGPT / MCP client] --> Suite[Public suite Worker]
   Browser[User's browser] --> Suite
-  Suite --> Identity[Suite OIDC provider]
   Suite --> Platforms[Ed / Moodle / OnTrack reads]
   Suite --> Broker[Private SSO broker]
   Broker --> Login[Platform SSO and session renewal]
 ```
 
-## Three separate authentication flows
+## Authentication flows
 
-| Flow                | Purpose                                             | Renewal                                                                                                |
-| ------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Suite OIDC sign-in  | Identify the user on the account and consent pages  | The user signs in again when their browser session expires.                                            |
-| MCP client OAuth    | Authorize a client to call suite tools as that user | `offline_access` enables suite OAuth refresh tokens. Revocation removes client access.                 |
-| Platform connection | Access that user's Ed, Moodle or OnTrack account    | Ed uses a user-supplied API token. Moodle and OnTrack have independent sessions renewed by the broker. |
+| Flow                      | Purpose                                                         | Renewal                                                                                                |
+| ------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Verified platform sign-in | Establish the suite account and its initial platform connection | A fresh SSO sign-in or verified Ed token restores the browser session.                                 |
+| MCP client OAuth          | Authorize a client to call suite tools as that user             | `offline_access` enables suite OAuth refresh tokens. Revocation removes client access.                 |
+| Platform connection       | Access that user's Ed, Moodle or OnTrack account                | Ed uses a user-supplied API token. Moodle and OnTrack have independent sessions renewed by the broker. |
 
-A suite OIDC login does not create a platform session. A suite OAuth refresh token does not renew an OnTrack token or Moodle session. Existing tokens from another MCP service require their original issuer and grant storage; they do not authorize this suite.
+A suite account is derived from the verified sign-in platform, origin and user ID. SSO sign-in connects that platform and optionally retains encrypted credentials for reuse by the same user's other platforms. Users must use the same platform when signing in again. A separate sign-in through another platform creates a different suite account. Login uses a single-use, browser-bound nonce, exact Origin checks, a notice acknowledgement before credentials are processed, and a per-source attempt limit. A suite OAuth refresh token does not renew an OnTrack token or Moodle session. Existing tokens from another MCP service require their original issuer and grant storage; they do not authorize this suite.
 
 ## Connecting a course
 

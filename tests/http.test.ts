@@ -6,7 +6,12 @@ import { authorize, requestFingerprint } from "../src/http/authorize.ts";
 import { admin } from "../src/http/admin.ts";
 import { boundedRequest } from "../src/http/common.ts";
 import { digest } from "../src/auth/crypto.ts";
-import { safeReturn, checkCsrf } from "../src/auth/login.ts";
+import {
+  safeReturn,
+  checkCsrf,
+  startLogin,
+  finishLogin,
+} from "../src/auth/login.ts";
 import { MemoryStore, key } from "./support.ts";
 const id = "a".repeat(64),
   sessionToken = "s".repeat(64).replace(/s/g, "a"),
@@ -45,6 +50,12 @@ async function fixture() {
           const state = name === "identity" ? global : account;
           let result: any;
           switch (new URL(request.url).pathname) {
+            case "/profile/put":
+              result = await state.putProfile(v);
+              break;
+            case "/login/rate":
+              result = { ok: true };
+              break;
             case "/ephemeral/put":
               result = await state.ephemeralPut(v.key, v.value, v.expires_at);
               break;
@@ -119,7 +130,7 @@ describe("OAuth consent for ChatGPT", () => {
     expect((await authorize(post(nonce), f.env, f.config)).status).toBe(302);
     expect(await f.account.usage()).toMatchObject({ version: "2026-10-03" });
   });
-  it("redirects unauthenticated browsers to OIDC sign-in", async () => {
+  it("redirects unauthenticated browsers to platform sign-in", async () => {
     const f = await fixture();
     const result = await authorize(
       new Request("https://suite.example/authorize"),
@@ -180,6 +191,69 @@ describe("OAuth consent for ChatGPT", () => {
   });
 });
 describe("browser and administrator boundaries", () => {
+  it("binds platform sign-in to browser, notice, origin and a single-use nonce", async () => {
+    const f = await fixture();
+    f.config.platforms.moodle = { site_url: "https://moodle.example.edu" };
+    const fetch = vi.fn(async (_request: Request) =>
+      Response.json({ id, name: "Verified account" }),
+    );
+    f.env.SSO_BROKER = { fetch } as any;
+    f.env.BROKER_SERVICE_TOKEN = "b".repeat(64);
+    const start = await startLogin(
+      new Request("https://suite.example/login"),
+      f.env,
+      f.config,
+    );
+    const nonce = (await start.text()).match(
+      /name="nonce" value="([a-f0-9]+)"/,
+    )![1]!;
+    const browser = start.headers.get("set-cookie")!.split(";")[0]!;
+    const submit = (extra = {}, origin = f.config.issuer, cookie = browser) =>
+      finishLogin(
+        new Request("https://suite.example/login", {
+          method: "POST",
+          headers: { origin, cookie },
+          body: new URLSearchParams({
+            nonce,
+            platform: "moodle",
+            base_link: "https://moodle.example.edu",
+            username: "claimed-user",
+            password: "password-canary",
+            usage_version: "2026-10-03",
+            usage_consent: "accept",
+            ...extra,
+          }),
+        }),
+        f.env,
+        f.config,
+      );
+    await expect(submit({}, "https://evil.example")).rejects.toMatchObject({
+      code: "INVALID_ORIGIN",
+    });
+    await expect(submit({}, f.config.issuer, "")).rejects.toMatchObject({
+      code: "LOGIN_FAILED",
+    });
+    await expect(submit({ usage_consent: "" })).rejects.toMatchObject({
+      code: "USAGE_REQUIRED",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    const signed = await submit();
+    expect(signed.status).toBe(303);
+    expect(signed.headers.get("set-cookie")).toContain(
+      "__Host-learning-session=",
+    );
+    expect(JSON.stringify(await f.account.profile())).not.toContain(
+      "claimed-user",
+    );
+    expect(await f.account.usage()).toMatchObject({ version: "2026-10-03" });
+    const forwarded = fetch.mock.calls[0]![0] as Request;
+    expect(new URL(forwarded.url).pathname).toBe("/v1/authenticate");
+    expect(await forwarded.json()).toMatchObject({
+      input: { password: "password-canary", remember: false },
+    });
+    await expect(submit()).rejects.toMatchObject({ code: "LOGIN_FAILED" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
   it("rejects arbitrary return URLs and browser CSRF", () => {
     expect(safeReturn("/landing?ticket=abc", "https://suite.example")).toBe(
       "/landing?ticket=abc",

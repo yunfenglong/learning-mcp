@@ -2,7 +2,7 @@
 
 Learning MCP Suite is a cloud MCP service for ChatGPT and other OAuth-capable clients. It runs entirely on Cloudflare: one public suite Worker and one private broker Worker. pnpm owns its package and lockfile.
 
-A **suite user** is identified by verified OIDC issuer and subject. Its OAuth grants, notice acceptance, Ed credentials, platform sessions and course mappings are isolated from other users. Okta is supported through OIDC for suite identity and through a configured platform SSO browser flow for platform access; these are separate credentials.
+A **suite user** is identified by the verified sign-in platform, its configured HTTPS origin and its authenticated platform user ID. A fresh Okta / SSO browser login or a verified Ed API token establishes the account. Its OAuth grants, notice acceptance, credentials, platform sessions and course mappings are isolated from other users. The private broker can reuse that user's saved SSO across configured platforms. No independent OIDC application is required; future sign-ins must use the same platform identity anchor.
 
 A **platform connection** is a verified Ed, Moodle or OnTrack account. The broker may reuse one user's SSO cookies between the configured Moodle and OnTrack origins. With explicit retention consent, it also keeps the user's encrypted password and optional TOTP configuration for automatic reauthentication. A one-time MFA code is transient. TOTP does not satisfy Push, Passkey, device checks or provider policy changes.
 

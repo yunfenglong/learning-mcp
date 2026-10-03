@@ -4,7 +4,9 @@ The service consists of one public suite Worker and one private broker Worker in
 
 ## Suite identity
 
-Register a web application with an OIDC provider that supports authorization code flow, PKCE S256 and signed RS256/ES256 ID tokens. Okta supports this flow: [official guide](https://developer.okta.com/docs/guides/implement-grant-type/authcodepkce/main/). Register the exact callback `https://YOUR_SUITE_HOST/login/callback`. Set `OIDC_ISSUER` to the provider's exact issuer, `OIDC_CLIENT_ID`, optional `OIDC_CLIENT_SECRET`, and optional comma-separated `OIDC_ALLOWED_EMAIL_DOMAINS`. An Okta issuer may include an authorization-server path. Configuring a suite OIDC application does not register it as Moodle or OnTrack or grant platform sessions.
+Users sign in on `/login` with a configured Moodle / OnTrack base link, SSO username, password and optional TOTP secret or one-time MFA code. The private broker starts a fresh cloud browser and verifies the resulting platform session before establishing the suite account. Ed users can sign in with a verified API token. No separate OIDC application or callback registration is required.
+
+Accounts are anchored to the verified platform, its origin and its authenticated user ID. Users must return through the same platform for future sign-ins; signing in independently through another platform creates a different suite account. Connect additional platforms from the signed-in account page. Password / TOTP retention requires an explicit checkbox; one-time codes are not stored.
 
 Set `ISSUER` to the exact public HTTPS suite origin. Configure a matching custom domain route, or enable workers.dev and use its exact origin. The checked-in origin is a placeholder, not an active deployment.
 
@@ -20,19 +22,27 @@ Users may supply a one-time MFA code or optional Base32 TOTP secret / otpauth UR
 
 Run `pnpm exec wrangler login` to authenticate the deployment account. Create a new KV namespace with `pnpm exec wrangler kv namespace create OAUTH_KV` and set its returned ID on the suite's `OAUTH_KV` binding. Durable Object namespaces are created through the checked-in migrations. Keep the broker's workers.dev and public routes disabled. Its service name must match the suite's `SSO_BROKER` Service Binding.
 
-Generate two independent 32-byte AES-GCM keys encoded as Base64, one for `CREDENTIALS_KEY` in the suite and another for `BROKER_CREDENTIALS_KEY` in the broker. Generate a separate random broker service token (at least 32 characters), set as `BROKER_SERVICE_TOKEN` on both Workers. Set `OIDC_CLIENT_SECRET` if the identity provider requires it, and optionally a separate `ADMIN_TOKEN` for private grant administration.
+Generate two independent 32-byte AES-GCM keys encoded as Base64, one for `CREDENTIALS_KEY` in the suite and another for `BROKER_CREDENTIALS_KEY` in the broker. Generate a separate random broker service token (at least 32 characters), set as `BROKER_SERVICE_TOKEN` on both Workers. Set an optional separate `ADMIN_TOKEN` for private grant administration.
 
 Use pnpm to invoke Wrangler secrets; enter their values interactively:
 
 ```sh
 pnpm exec wrangler secret put CREDENTIALS_KEY
-pnpm exec wrangler secret put OIDC_CLIENT_SECRET
 pnpm exec wrangler secret put BROKER_SERVICE_TOKEN
 pnpm exec wrangler secret put BROKER_CREDENTIALS_KEY --config broker/wrangler.jsonc
 pnpm exec wrangler secret put BROKER_SERVICE_TOKEN --config broker/wrangler.jsonc
 ```
 
 Secrets must not be committed or pasted in chat. `.dev.vars` files are ignored for local development. Encryption does not remove the operator's access through its keys. OAuth records use KV; credentials and session state use per-user encrypted Durable Object storage with serialized broker operations. Plan appropriate retention, deletion, access control and key management for your deployment.
+
+For deployment-specific origins and resource IDs, keep separate Wrangler configurations under the ignored `.wrangler/deploy/` directory. Set their entrypoints to the project source and invoke the deployment wrapper with `--config`. Wrangler also accepts a local JSON secrets file through `--secrets-file`, uploading code and secrets together. Restrict these files to the operator, retain stable encryption keys across redeployments, and back them up securely. Do not replace real values with placeholders during a redeployment.
+
+```sh
+pnpm deploy --config .wrangler/deploy/learning-sso-broker.jsonc --secrets-file .wrangler/deploy/broker-secrets.private.json
+pnpm deploy --config .wrangler/deploy/learning-mcp.jsonc --secrets-file .wrangler/deploy/suite-secrets.private.json
+```
+
+These operator files must be prepared for the target account; they are not included in the repository. This setup keeps real platform configuration out of project history.
 
 ## Usage notice
 
@@ -76,9 +86,9 @@ Deploy the private broker first. Set its platform origins and `LOGIN_ORIGINS`, e
 
 ### Step 2: Deploy Learning MCP
 
-Deploy the public suite and point its `SSO_BROKER` Service Binding at the name from step 1. Set its public `ISSUER`, OIDC configuration and platform origins. Supply a separate `CREDENTIALS_KEY`, the **same** `BROKER_SERVICE_TOKEN` used by the broker, and any required `OIDC_CLIENT_SECRET`. Complete the matching OIDC callback registration before testing sign-in. The Moodle and OnTrack origins must agree between both Workers.
+Deploy the public suite and point its `SSO_BROKER` Service Binding at the name from step 1. Set its public `ISSUER` and platform origins. Supply a separate `CREDENTIALS_KEY`, the **same** `BROKER_SERVICE_TOKEN` used by the broker. The Moodle and OnTrack origins must agree between both Workers.
 
-Cloudflare can provision supported resources such as KV and Durable Objects from template configuration. Browser Run enablement, OIDC registration and matching settings between the two deployments remain setup tasks. The buttons must explain these tasks rather than promise zero configuration.
+Cloudflare can provision supported resources such as KV and Durable Objects from template configuration. Browser Run enablement and matching settings between the two deployments remain setup tasks. The buttons must explain these tasks rather than promise zero configuration.
 
 ### Template preparation and current status
 

@@ -1,109 +1,83 @@
-import { createRemoteJWKSet, jwtVerify, customFetch } from "jose";
 import { z } from "zod";
+import { EdClient } from "../../vendor/ed/client.js";
 import type { Config, Env } from "../config.ts";
 import { digest, randomToken } from "./crypto.ts";
 import { globalCall, stateCall } from "./client.ts";
-import type { Profile } from "./state.ts";
+import { connectionSchema, type Profile } from "./state.ts";
 import { SuiteError } from "../errors.ts";
-import { cookie } from "../http/common.ts";
-import { safeJsonFetch } from "../platforms/network.ts";
+import { cookie, html, escapeHtml as e } from "../http/common.ts";
+import { brokerCall } from "../platforms/broker.ts";
+import { platformFetch } from "../platforms/network.ts";
+import { USAGE_VERSION, usageNotice, usageLabel } from "../domain/usage.ts";
+
 export const SESSION_COOKIE = "__Host-learning-session";
 export interface BrowserSession {
   profile: Profile;
   csrf: string;
 }
 interface Login {
-  verifier: string;
-  nonce: string;
   browser: string;
   return_to: string;
 }
-const https = z
-  .string()
-  .url()
-  .refine((v) => {
-    const u = new URL(v);
-    return u.protocol === "https:" && !u.username && !u.password && !u.hash;
-  });
 export function safeReturn(value: string, issuer: string) {
   const u = new URL(value, issuer);
   if (u.origin !== issuer || !["/landing", "/authorize"].includes(u.pathname))
     throw new SuiteError("INVALID_RETURN", "Invalid sign-in return address.");
   return u.pathname + u.search;
 }
-async function metadata(env: Env) {
-  const issuer = https.parse(env.OIDC_ISSUER).replace(/\/$/, "");
-  const v = z
-    .object({
-      issuer: z.string(),
-      authorization_endpoint: https,
-      token_endpoint: https,
-      jwks_uri: https,
-    })
-    .passthrough()
-    .parse(await safeJsonFetch(`${issuer}/.well-known/openid-configuration`));
-  if (v.issuer !== env.OIDC_ISSUER)
-    throw new SuiteError(
-      "OIDC_CONFIG",
-      "Identity provider issuer mismatch.",
-      503,
-    );
-  return v;
-}
 export async function startLogin(request: Request, env: Env, config: Config) {
-  const meta = await metadata(env),
-    state = randomToken(),
-    browser = randomToken(),
-    nonce = randomToken(),
-    verifier = randomToken();
+  if (request.method !== "GET")
+    throw new SuiteError("METHOD_NOT_ALLOWED", "Use GET or POST.", 405);
+  const nonce = randomToken(),
+    browser = randomToken();
   const return_to = safeReturn(
     new URL(request.url).searchParams.get("return_to") ?? "/landing",
     config.issuer,
   );
   await globalCall(env, "/ephemeral/put", {
-    key: `login:${await digest(state)}`,
-    value: { verifier, nonce, browser: await digest(browser), return_to },
+    key: `login:${await digest(nonce)}`,
+    value: { browser: await digest(browser), return_to },
     expires_at: Date.now() + 600_000,
   });
-  const challenge = btoa(
-    String.fromCharCode(
-      ...new Uint8Array(
-        await crypto.subtle.digest(
-          "SHA-256",
-          new TextEncoder().encode(verifier),
-        ),
-      ),
-    ),
-  )
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-  const target = new URL(meta.authorization_endpoint);
-  target.search = new URLSearchParams({
-    response_type: "code",
-    client_id: env.OIDC_CLIENT_ID,
-    redirect_uri: `${config.issuer}/login/callback`,
-    scope: "openid profile email",
-    state,
-    nonce,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-  }).toString();
-  return new Response(null, {
-    status: 302,
-    headers: {
-      location: target.toString(),
+  const fields = `<input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}">`;
+  const approval = `<label><input type="checkbox" name="usage_consent" value="accept" required> ${usageLabel}</label>`;
+  const sso = (["moodle", "ontrack"] as const)
+    .filter((p) => config.platforms[p])
+    .map(
+      (p) =>
+        `<option value="${p}">${p === "moodle" ? "Moodle" : "OnTrack"}</option>`,
+    )
+    .join("");
+  return html(
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Learning MCP</title><style>body{font:16px system-ui;max-width:720px;margin:6vh auto;padding:24px;line-height:1.6;color:#172f2c}label{display:block;margin:16px 0}input:not([type=checkbox]),select{display:block;width:100%;box-sizing:border-box;padding:10px;font:inherit}button{padding:12px 20px}.notice{border-left:3px solid #375447;padding:8px 20px;margin:24px 0}</style><h1>Sign in with your learning account</h1><p>Use the same platform each time to return to the same Learning MCP account. Connect your other platforms after sign-in. No separate identity-provider application is required.</p>${usageNotice}${
+      sso
+        ? `<form method="post" action="/login">${fields}<label>Platform<select name="platform">${sso}</select></label><label>Platform base link<input name="base_link" type="url" required placeholder="https://your-platform.example" maxlength="2048"></label><p>Use a platform configured by this service: ${(
+            ["moodle", "ontrack"] as const
+          )
+            .filter((p) => config.platforms[p])
+            .map((p) => e(config.platforms[p]!.site_url))
+            .join(
+              " or ",
+            )}</p><label>SSO username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label><label>TOTP secret or otpauth URI (optional)<input name="totp_secret" type="password" autocomplete="off" maxlength="2048"></label><label>One-time MFA code (optional)<input name="mfa_code" autocomplete="one-time-code" maxlength="20"></label><label><input name="remember" type="checkbox" value="yes"> Save my encrypted password and optional TOTP secret for automatic sign-in</label>${approval}<button>Verify SSO and sign in</button></form>`
+        : ""
+    }${config.platforms.ed ? `<details${sso ? "" : " open"}><summary>Sign in with an Ed API token</summary><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="ed"><label>Ed API token<input name="token" type="password" required autocomplete="off" maxlength="16000"></label>${approval}<button>Verify Ed and sign in</button></form></details>` : ""}`,
+    200,
+    {
       "set-cookie": `__Host-learning-login=${browser}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
     },
-  });
+  );
 }
 export async function finishLogin(request: Request, env: Env, config: Config) {
-  const url = new URL(request.url),
-    state = url.searchParams.get("state"),
-    code = url.searchParams.get("code");
-  if (!state || !/^[a-f0-9]{64}$/.test(state) || !code || code.length > 4096)
-    throw new SuiteError("LOGIN_FAILED", "Start sign-in again.", 401);
-  const key = `login:${await digest(state)}`;
+  if (request.method !== "POST")
+    throw new SuiteError("METHOD_NOT_ALLOWED", "Use POST.", 405);
+  if (request.headers.get("origin") !== config.issuer)
+    throw new SuiteError("INVALID_ORIGIN", "Open the sign-in page again.", 403);
+  const form = await request.formData();
+  const nonce = z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .parse(form.get("nonce"));
+  const key = `login:${await digest(nonce)}`;
   const pending = await globalCall<Login | null>(env, "/ephemeral/get", {
     key,
   });
@@ -116,92 +90,113 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
       "Sign-in belongs to another browser or has expired.",
       401,
     );
-  const login = await globalCall<Login | null>(env, "/ephemeral/get", {
-    key,
-    take: true,
-  });
-  if (!login)
-    throw new SuiteError(
-      "LOGIN_FAILED",
-      "Sign-in has already been consumed.",
-      401,
-    );
-  const meta = await metadata(env);
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    client_id: env.OIDC_CLIENT_ID,
-    redirect_uri: `${config.issuer}/login/callback`,
-    code_verifier: login.verifier,
-  });
-  if (env.OIDC_CLIENT_SECRET) body.set("client_secret", env.OIDC_CLIENT_SECRET);
-  const tokens = z
-    .object({ id_token: z.string().max(16000) })
-    .passthrough()
-    .parse(
-      await safeJsonFetch(meta.token_endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
-      }),
-    );
-  const jwks = createRemoteJWKSet(new URL(meta.jwks_uri), {
-    [customFetch]: async (input, init) =>
-      fetch(input, {
-        ...init,
-        redirect: "manual",
-        signal: AbortSignal.timeout(15000),
-      }),
-  });
-  const { payload } = await jwtVerify(tokens.id_token, jwks, {
-    issuer: meta.issuer,
-    audience: env.OIDC_CLIENT_ID,
-    algorithms: ["RS256", "ES256"],
-    maxTokenAge: 600,
-    clockTolerance: 5,
-  });
   if (
-    payload.nonce !== login.nonce ||
-    !payload.sub ||
-    typeof payload.exp !== "number" ||
-    (payload.azp && payload.azp !== env.OIDC_CLIENT_ID) ||
-    (Array.isArray(payload.aud) &&
-      payload.aud.length > 1 &&
-      payload.azp !== env.OIDC_CLIENT_ID)
-  )
-    throw new SuiteError("LOGIN_FAILED", "Identity verification failed.", 401);
-  const domains = (env.OIDC_ALLOWED_EMAIL_DOMAINS ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (
-    domains.length &&
-    (payload.email_verified !== true ||
-      typeof payload.email !== "string" ||
-      !domains.includes(payload.email.split("@").at(-1)!.toLowerCase()))
+    form.get("usage_consent") !== "accept" ||
+    form.get("usage_version") !== USAGE_VERSION
   )
     throw new SuiteError(
-      "LOGIN_DENIED",
-      "Use an allowed, verified account.",
+      "USAGE_REQUIRED",
+      "Review and accept the current usage notice.",
       403,
     );
-  const profile: Profile = {
-    id: await digest(`${meta.issuer}\0${payload.sub}`),
-    ...(typeof payload.name === "string"
-      ? { name: payload.name.slice(0, 200) }
-      : {}),
-    ...(typeof payload.email === "string" && payload.email_verified === true
-      ? { email: payload.email.slice(0, 254) }
-      : {}),
-  };
-  await stateCall(env, profile.id, "/profile/put", profile);
+  const p = z.enum(["ed", "moodle", "ontrack"]).parse(form.get("platform"));
+  if (!config.platforms[p])
+    throw new SuiteError(
+      "PLATFORM_UNAVAILABLE",
+      "This platform is not configured.",
+      503,
+    );
+  if (!(await globalCall(env, "/ephemeral/get", { key, take: true })))
+    throw new SuiteError("LOGIN_FAILED", "Start a new sign-in.", 401);
+  await globalCall(env, "/login/rate", {
+    key: `loginrate:${await digest(request.headers.get("cf-connecting-ip") ?? "local")}`,
+  });
+  let profile: Profile;
+  if (p === "ed") {
+    const token = connectionSchema.shape.token.parse(form.get("token"));
+    let user: any;
+    try {
+      user = (
+        await new EdClient({
+          token,
+          apiBaseUrl: "https://edstem.org/api/",
+          fetch: platformFetch("https://edstem.org"),
+          maxRetries: 0,
+        }).fetchUser()
+      ).user;
+    } catch {
+      throw new SuiteError(
+        "LOGIN_FAILED",
+        "The Ed token could not be verified.",
+        401,
+      );
+    }
+    if (!Number.isSafeInteger(user?.id) || user.id <= 0)
+      throw new SuiteError(
+        "LOGIN_FAILED",
+        "Ed did not return a verified account.",
+        401,
+      );
+    profile = {
+      id: await digest(`platform-sso\0ed\0https://edstem.org\0${user.id}`),
+      name: "Ed account",
+    };
+    await stateCall(env, profile.id, "/profile/put", profile);
+    await stateCall(
+      env,
+      profile.id,
+      "/connection/put",
+      connectionSchema.parse({
+        token,
+        profile_id: String(user.id),
+        display_name: "Ed account",
+      }),
+    );
+  } else {
+    const base = z.string().url().max(2048).parse(form.get("base_link"));
+    if (
+      new URL(base).origin !== new URL(config.platforms[p]!.site_url).origin ||
+      new URL(base).username ||
+      new URL(base).password ||
+      new URL(base).search ||
+      new URL(base).hash
+    )
+      throw new SuiteError(
+        "INVALID_BASE_LINK",
+        "Use this platform's configured base link.",
+        400,
+      );
+    profile = z
+      .object({
+        id: z.string().regex(/^[a-f0-9]{64}$/),
+        name: z.string().max(200).optional(),
+      })
+      .strict()
+      .parse(
+        await brokerCall(env, randomToken(), "/v1/authenticate", {
+          platform: p,
+          base_link: base,
+          input: {
+            username: String(form.get("username") ?? ""),
+            password: String(form.get("password") ?? ""),
+            mfa_code: String(form.get("mfa_code") ?? ""),
+            remember: form.get("remember") === "yes",
+            ...(form.get("totp_secret")
+              ? { totp_secret: String(form.get("totp_secret")) }
+              : {}),
+          },
+        }),
+      );
+    await stateCall(env, profile.id, "/profile/put", profile);
+  }
+  await stateCall(env, profile.id, "/usage/accept", { version: USAGE_VERSION });
   const session = randomToken();
   await globalCall(env, "/ephemeral/put", {
     key: `session:${await digest(session)}`,
     value: { profile, csrf: randomToken() },
     expires_at: Date.now() + 7 * 86400_000,
   });
-  const headers = new Headers({ location: login.return_to });
+  const headers = new Headers({ location: pending.return_to });
   headers.append(
     "set-cookie",
     `${SESSION_COOKIE}=${session}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`,
@@ -210,7 +205,7 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
     "set-cookie",
     "__Host-learning-login=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
   );
-  return new Response(null, { status: 302, headers });
+  return new Response(null, { status: 303, headers });
 }
 export async function browserSession(
   request: Request,

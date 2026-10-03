@@ -40,7 +40,6 @@ export async function admin(request: Request, env: Env) {
     env.ADMIN_TOKEN,
     env.CREDENTIALS_KEY,
     env.BROKER_SERVICE_TOKEN,
-    env.OIDC_CLIENT_SECRET,
   );
   return json(
     output.redact(

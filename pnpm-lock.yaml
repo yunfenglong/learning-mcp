@@ -17,9 +17,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.0
         version: 1.32.0(zod@4.6.2)
-      jose:
-        specifier: 6.2.12
-        version: 6.2.12
       node-html-parser:
         specifier: 7.1.0
         version: 7.1.0

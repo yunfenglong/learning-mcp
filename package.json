@@ -26,7 +26,6 @@
     "@cloudflare/puppeteer": "1.4.0",
     "@cloudflare/workers-oauth-provider": "1.2.1",
     "@modelcontextprotocol/sdk": "1.32.0",
-    "jose": "6.2.12",
     "node-html-parser": "7.1.0",
     "zod": "4.6.2"
   },

@@ -9,10 +9,6 @@ export interface Env {
   ISSUER: string;
   CREDENTIALS_KEY: string;
   ADMIN_TOKEN?: string;
-  OIDC_ISSUER: string;
-  OIDC_CLIENT_ID: string;
-  OIDC_CLIENT_SECRET?: string;
-  OIDC_ALLOWED_EMAIL_DOMAINS?: string;
   PLATFORM_CONFIG: string;
   SSO_BROKER?: Fetcher;
   BROKER_SERVICE_TOKEN?: string;

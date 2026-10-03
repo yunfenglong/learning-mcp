@@ -32,7 +32,7 @@ Both Workers build and have unit and workerd integration tests. Authentication t
 
 - Node.js 24 or later and pnpm 10.14.0.
 - A Cloudflare account with Workers, KV and Durable Objects; Browser Run for cloud SSO.
-- An OIDC provider, such as Okta, for signing in to the suite.
+- Platform SSO access for Moodle / OnTrack, or an Ed API token for Ed sign-in.
 - Access to the platforms you want to enable.
 
 ### Setup
@@ -43,8 +43,8 @@ Both Workers build and have unit and workerd integration tests. Authentication t
    pnpm install --frozen-lockfile
    ```
 
-2. Configure the public Worker in [`wrangler.jsonc`](wrangler.jsonc) and the private broker in [`broker/wrangler.jsonc`](broker/wrangler.jsonc). Set the public HTTPS origin, OIDC application, OAuth KV namespace, broker Service Binding and platform origins. Use the `platforms` object in [`examples/config.json`](examples/config.json) as `PLATFORM_CONFIG`; the whole example file is not a Worker configuration. See the [configuration reference](docs/configuration.md).
-3. Create the required resources and set the encryption keys, broker service token and any OIDC client secret. Follow the [deployment guide](docs/deployment.md) for the exact bindings and secret commands. Keep secrets out of source control.
+2. Configure the public Worker in [`wrangler.jsonc`](wrangler.jsonc) and the private broker in [`broker/wrangler.jsonc`](broker/wrangler.jsonc). Set the public HTTPS origin, OAuth KV namespace, broker Service Binding and platform origins. Use the `platforms` object in [`examples/config.json`](examples/config.json) as `PLATFORM_CONFIG`; the whole example file is not a Worker configuration. See the [configuration reference](docs/configuration.md).
+3. Create the required resources and set the encryption keys and broker service token. Follow the [deployment guide](docs/deployment.md) for the exact bindings and secret commands. Keep secrets out of source control.
 4. Validate and deploy the broker first, then the public Worker:
 
    ```sh
@@ -69,8 +69,8 @@ Use your deployed server's MCP endpoint:
 https://YOUR_SUITE_HOST/mcp
 ```
 
-1. Connect an OAuth-capable MCP client and sign in to the suite.
-2. Read and accept the data handling notice, then approve the client's requested access.
+1. Connect an OAuth-capable MCP client. Sign in with a configured Moodle / OnTrack base link, SSO username, password and optional TOTP, or with an Ed API token. Use the same platform for future sign-ins to return to the same suite account.
+2. Read and accept the data handling notice before entering credentials, then approve the client's requested access.
 3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.
 4. Connect Ed with an API token. Connect Moodle and OnTrack through the configured cloud SSO flow or an existing platform session. Enter credentials on the connection page.
 5. Discover your enrolled courses and confirm which platform courses belong together. This works through MCP tools or the connection page.

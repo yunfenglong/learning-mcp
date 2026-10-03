@@ -6,6 +6,7 @@ import {
   decrypt,
   encrypt,
   equalSecret,
+  digest,
   type EncryptedRecord,
 } from "../src/auth/crypto.ts";
 import { SuiteError, publicError } from "../src/errors.ts";
@@ -337,7 +338,11 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           });
         return json({ ok: Boolean(primary) });
       }
-      if (path !== "/v1/connect" && path !== "/v1/renew")
+      if (
+        path !== "/v1/connect" &&
+        path !== "/v1/renew" &&
+        path !== "/v1/bootstrap"
+      )
         throw new SuiteError("NOT_FOUND", "Unknown broker route.", 404);
       const previous = await load<any>(`session:${p}`);
       if (path === "/v1/renew") {
@@ -428,7 +433,8 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           );
         const stored = await load<SavedLogin>("sso"),
           fresh =
-            path === "/v1/connect" && data.input != null
+            (path === "/v1/connect" || path === "/v1/bootstrap") &&
+            data.input != null
               ? inputSchema.parse(data.input)
               : undefined;
         const totp = fresh?.totp_secret
@@ -470,14 +476,17 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           .parse(JSON.parse(this.env.LOGIN_ORIGINS));
         let result: Awaited<ReturnType<typeof browserLogin>>;
         try {
-          result = await browserLogin({
-            binding: this.env.BROWSER,
-            site,
-            platform: p,
-            loginOrigins: origins,
-            cookies: stored?.cookies,
-            input: credentials,
-          });
+          result =
+            path === "/v1/bootstrap"
+              ? data.result
+              : await browserLogin({
+                  binding: this.env.BROWSER,
+                  site,
+                  platform: p,
+                  loginOrigins: origins,
+                  cookies: stored?.cookies,
+                  input: credentials,
+                });
         } catch (error) {
           await this.ctx.storage.put(`retry_after:${p}`, Date.now() + 60000);
           throw error;
@@ -536,6 +545,16 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           "Renewal returned a different account. Reconnect explicitly.",
           409,
         );
+      if (
+        path === "/v1/bootstrap" &&
+        account !==
+          (await digest(`platform-sso\0${p}\0${site}\0${verified.profile_id}`))
+      )
+        throw new SuiteError(
+          "ACCOUNT_CHANGED",
+          "Sign-in identity could not be verified.",
+          409,
+        );
       await save(`session:${p}`, verified);
       output.rememberSession(verified);
       if (refreshCookies) await save("refresh:ontrack", refreshCookies);
@@ -582,6 +601,8 @@ export function platformOrigin(value: string) {
 }
 export default {
   async fetch(original: Request, env: BrokerEnv): Promise<Response> {
+    const output = new OutputBoundary();
+    output.remember(env.BROKER_SERVICE_TOKEN, env.BROKER_CREDENTIALS_KEY);
     try {
       const token =
         original.headers
@@ -604,12 +625,92 @@ export default {
       if (original.method !== "POST")
         throw new SuiteError("METHOD_NOT_ALLOWED", "Use POST.", 405);
       const request = await boundedRequest(original);
+      if (new URL(request.url).pathname === "/v1/authenticate") {
+        const data = (await request.json()) as any;
+        const p = platform.parse(data.platform);
+        const input = inputSchema.parse(data.input);
+        output.remember(input.password, input.mfa_code, input.totp_secret);
+        const configs = JSON.parse(env.PLATFORM_CONFIG);
+        const site = configs[p]?.site_url;
+        const base = new URL(z.string().url().max(2048).parse(data.base_link));
+        if (
+          !site ||
+          !platformOrigin(site) ||
+          base.origin !== new URL(site).origin ||
+          base.username ||
+          base.password ||
+          base.search ||
+          base.hash
+        )
+          throw new SuiteError(
+            "INVALID_BASE_LINK",
+            "Use the configured platform base link.",
+            400,
+          );
+        if (!env.BROWSER)
+          throw new SuiteError(
+            "SSO_NOT_CONFIGURED",
+            "Configure cloud browser SSO.",
+            503,
+          );
+        const totp = input.totp_secret
+          ? parseTotp(input.totp_secret)
+          : undefined;
+        if (totp) output.remember(totp.secret);
+        // A fresh browser proves the login before any credential record is written.
+        const result = await browserLogin({
+          binding: env.BROWSER,
+          site: new URL(site).origin,
+          platform: p,
+          loginOrigins: z
+            .array(z.string().url())
+            .max(30)
+            .parse(JSON.parse(env.LOGIN_ORIGINS)),
+          input: {
+            username: input.username,
+            password: input.password,
+            ...(input.mfa_code ? { mfa_code: input.mfa_code } : {}),
+            ...(totp ? { totp } : {}),
+          },
+        });
+        output.rememberSession(result.session);
+        output.rememberSession({ cookies: result.cookies });
+        const verified = await validateSession(
+          new URL(site).origin,
+          p,
+          result.session,
+        );
+        output.rememberSession(verified);
+        const id = await digest(
+          `platform-sso\0${p}\0${new URL(site).origin}\0${verified.profile_id}`,
+        );
+        const saved = await env.BROKER_STATE.get(
+          env.BROKER_STATE.idFromName(id),
+        ).fetch(
+          new Request("https://broker/v1/bootstrap", {
+            method: "POST",
+            headers: {
+              "x-suite-account": id,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ platform: p, input, result }),
+          }),
+        );
+        if (!saved.ok) return saved;
+        await saved.body?.cancel();
+        return json(
+          output.redact({
+            id,
+            name: verified.display_name ?? "Learning account",
+          }),
+        );
+      }
       return env.BROKER_STATE.get(env.BROKER_STATE.idFromName(account)).fetch(
         request,
       );
     } catch (error) {
       return json(
-        publicError(error),
+        output.redact(publicError(error)),
         error instanceof SuiteError ? error.status : 400,
       );
     }

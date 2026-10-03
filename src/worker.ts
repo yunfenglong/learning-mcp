@@ -107,8 +107,10 @@ export default {
                 version: "0.3.0",
               });
             if (p === "/" || p === "/landing") return landing(r, e, config);
-            if (p === "/login") return startLogin(r, e, config);
-            if (p === "/login/callback") return finishLogin(r, e, config);
+            if (p === "/login")
+              return r.method === "POST"
+                ? finishLogin(r, e, config)
+                : startLogin(r, e, config);
             if (p === "/authorize") return authorize(r, e, config);
             if (p.startsWith("/account/")) return accountAction(r, e, config);
             if (p.startsWith("/admin/")) return admin(r, e);

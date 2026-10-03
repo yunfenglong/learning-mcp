@@ -23,6 +23,35 @@ export class AccountState extends DurableObject<Env> {
       );
       let result: unknown;
       switch (new URL(request.url).pathname) {
+        case "/login/rate":
+          if (account !== "identity")
+            throw new SuiteError(
+              "ACCESS_DENIED",
+              "Invalid login operation.",
+              403,
+            );
+          z.string()
+            .regex(/^loginrate:[a-f0-9]{64}$/)
+            .parse(v.key);
+          result = await this.ctx.storage.transaction(async (storage) => {
+            const previous = await storage.get<{
+              count: number;
+              expires_at: number;
+            }>(v.key);
+            const current =
+              previous && previous.expires_at > Date.now()
+                ? previous
+                : { count: 0, expires_at: Date.now() + 600_000 };
+            if (current.count >= 20)
+              throw new SuiteError(
+                "AUTH_RETRY_LATER",
+                "Too many sign-in attempts. Try again later.",
+                429,
+              );
+            await storage.put(v.key, { ...current, count: current.count + 1 });
+            return { ok: true };
+          });
+          break;
         case "/profile/put":
           result = await state.putProfile(v as Profile);
           break;

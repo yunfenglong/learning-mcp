@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "learning-mcp-suite",
+  "name": "learning-mcp",
   "main": "src/worker.ts",
   "compatibility_date": "2026-10-03",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
@@ -34,9 +34,6 @@
   ],
   "vars": {
     "ISSUER": "https://suite.example.com",
-    "OIDC_ISSUER": "https://YOUR_IDENTITY_PROVIDER.example",
-    "OIDC_CLIENT_ID": "REPLACE_WITH_OIDC_CLIENT_ID",
-    "OIDC_ALLOWED_EMAIL_DOMAINS": "",
     "PLATFORM_CONFIG": "{}",
   },
   "observability": {
