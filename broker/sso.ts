@@ -1,3 +1,4 @@
+import { z } from "zod";
 import puppeteer from "@cloudflare/puppeteer";
 import { SuiteError } from "../src/errors.ts";
 import { safeJsonFetch } from "../src/platforms/network.ts";
@@ -15,11 +16,26 @@ export interface LoginInput {
 export interface BrowserLoginOptions {
   binding: Fetcher;
   site: string;
-  platform: "moodle" | "ontrack";
+  platform: "moodle" | "ontrack" | "okta";
   loginOrigins: string[];
   cookies?: any[];
   input?: LoginInput;
 }
+export const oktaIdentitySchema = z
+  .object({
+    status: z.literal("ACTIVE"),
+    userId: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    expiresAt: z.string().refine((v) => Date.parse(v) > Date.now()),
+  })
+  .transform((v) => ({
+    status: v.status,
+    userId: v.userId,
+    expiresAt: v.expiresAt,
+  }));
 export async function browserLogin(
   options: BrowserLoginOptions,
 ): Promise<{ session: unknown; cookies: any[] }> {
@@ -67,7 +83,7 @@ export async function browserLogin(
     });
     const validCookies = scopedCookies(options.cookies ?? [], [...allowed]);
     if (validCookies.length) await page.setCookie(...validCookies);
-    let destination = `${site.origin}${options.platform === "moodle" ? "/login/index.php" : "/"}`;
+    let destination = `${site.origin}${options.platform === "moodle" ? "/login/index.php" : options.platform === "okta" ? "/login/login.htm" : "/"}`;
     if (options.platform === "ontrack") {
       const method = (await safeJsonFetch(
         `${site.origin}/api/auth/method`,
@@ -102,7 +118,34 @@ export async function browserLogin(
           403,
         );
       if (current.origin === site.origin) {
-        if (options.platform === "moodle") {
+        if (options.platform === "okta") {
+          // Verify identity in the provider's own browser origin, with its HttpOnly session cookies.
+          const identity = await page.evaluate(async () => {
+            try {
+              const response = await (globalThis.fetch as any)(
+                "/api/v1/sessions/me",
+                {
+                  credentials: "include",
+                  redirect: "error",
+                  signal: AbortSignal.timeout(5000),
+                },
+              );
+              if (!response.ok) return null;
+              const text = await response.text();
+              return text.length <= 16384 ? JSON.parse(text) : null;
+            } catch {
+              return null;
+            }
+          });
+          const verified = oktaIdentitySchema.safeParse(identity);
+          if (verified.success)
+            return {
+              session: verified.data,
+              cookies: scopedCookies(await page.cookies(...allowed), [
+                ...allowed,
+              ]),
+            };
+        } else if (options.platform === "moodle") {
           const logged = await page.evaluate(() => {
             const cfg = (globalThis as any).M?.cfg;
             return (

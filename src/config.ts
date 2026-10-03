@@ -10,6 +10,7 @@ export interface Env {
   CREDENTIALS_KEY: string;
   ADMIN_TOKEN?: string;
   PLATFORM_CONFIG: string;
+  SSO_PROVIDERS?: string;
   SSO_BROKER?: Fetcher;
   BROKER_SERVICE_TOKEN?: string;
 }
@@ -27,6 +28,17 @@ export const httpsOrigin = z
       u.pathname === "/"
     );
   }, "Use an HTTPS origin.");
+export const ssoProvidersSchema = z
+  .array(
+    z
+      .object({
+        type: z.literal("okta"),
+        origin: httpsOrigin.transform((v) => new URL(v).origin),
+      })
+      .strict(),
+  )
+  .max(10);
+export type SsoProvider = z.infer<typeof ssoProvidersSchema>[number];
 export const platformConfigSchema = z
   .object({
     site_url: httpsOrigin,
@@ -38,6 +50,7 @@ export interface Config {
   issuer: string;
   units: Unit[];
   platforms: Partial<Record<Platform, PlatformConfig>>;
+  ssoProviders?: SsoProvider[];
 }
 export function loadConfig(env: Env): Config {
   try {
@@ -52,7 +65,14 @@ export function loadConfig(env: Env): Config {
       .parse(JSON.parse(env.PLATFORM_CONFIG));
     if (platforms.ed && platforms.ed.site_url !== "https://edstem.org")
       throw new Error("Use the supported Ed API origin");
-    return { issuer, units: [], platforms };
+    return {
+      issuer,
+      units: [],
+      platforms,
+      ssoProviders: ssoProvidersSchema.parse(
+        JSON.parse(env.SSO_PROVIDERS ?? "[]"),
+      ),
+    };
   } catch {
     throw new SuiteError(
       "INVALID_CONFIG",

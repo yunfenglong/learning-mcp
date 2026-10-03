@@ -8,7 +8,10 @@ vi.mock("cloudflare:workers", () => ({
     ) {}
   },
 }));
-vi.mock("../broker/sso.ts", () => ({ browserLogin: login }));
+vi.mock("../broker/sso.ts", async (original) => ({
+  ...(await original<typeof import("../broker/sso.ts")>()),
+  browserLogin: login,
+}));
 import entrypoint, { BrokerState } from "../broker/worker.ts";
 import { decrypt } from "../src/auth/crypto.ts";
 import { MemoryStore, key } from "./support.ts";
@@ -22,6 +25,7 @@ function fixture(browser = true) {
       BROKER_CREDENTIALS_KEY: key,
       BROWSER: browser ? {} : undefined,
       LOGIN_ORIGINS: '["https://tenant.okta.example"]',
+      SSO_PROVIDERS: '[{"type":"okta","origin":"https://tenant.okta.example"}]',
       PLATFORM_CONFIG: JSON.stringify({
         moodle: { site_url: "https://moodle.example.edu" },
         ontrack: { site_url: "https://ontrack.example.edu" },
@@ -137,6 +141,148 @@ describe("private credential vault", () => {
     expect(failed.status).not.toBe(200);
     expect(await failed.text()).not.toContain("password-secret");
     expect(stores.size).toBe(1);
+  });
+  it("anchors provider accounts to verified subjects and saves only scoped, opted-in secrets", async () => {
+    const stores = new Map<string, ReturnType<typeof fixture>>();
+    const env = {
+      ...fixture().env,
+      BROKER_SERVICE_TOKEN: "b".repeat(64),
+      BROKER_STATE: {
+        idFromName: (id: string) => id,
+        get: (id: string) => ({
+          fetch: (request: Request) => {
+            let f = stores.get(id);
+            if (!f) {
+              f = fixture();
+              stores.set(id, f);
+            }
+            return new BrokerState(
+              { storage: f.storage } as any,
+              env as any,
+            ).fetch(request);
+          },
+        }),
+      },
+    };
+    const identity = {
+      status: "ACTIVE",
+      userId: "00uVerified",
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+    };
+    login.mockResolvedValue({
+      session: identity,
+      cookies: [
+        {
+          name: "idx",
+          value: "provider-cookie-secret",
+          domain: "tenant.okta.example",
+          path: "/",
+        },
+        {
+          name: "other",
+          value: "foreign-secret",
+          domain: "foreign.example",
+          path: "/",
+        },
+      ],
+    });
+    const authenticate = (
+      provider = "https://tenant.okta.example",
+      extra = {},
+    ) =>
+      entrypoint.fetch(
+        new Request("https://broker/v1/authenticate-sso", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${env.BROKER_SERVICE_TOKEN}`,
+            "x-suite-account": "c".repeat(64),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            provider,
+            input: {
+              username: "claimed-user",
+              password: "password-secret",
+              totp_secret: seed,
+              mfa_code: "123456",
+              remember: true,
+              ...extra,
+            },
+          }),
+        }),
+        env as any,
+      );
+    const first = await authenticate();
+    expect(first.status).toBe(200);
+    const profile = (await first.json()) as any;
+    expect(profile.id).toMatch(/^[a-f0-9]{64}$/);
+    const stored = await stores.get(profile.id)!.storage.get<any>("sso");
+    expect(stored).toHaveProperty("ciphertext");
+    const saved = await decrypt<any>(key, `${profile.id}:sso`, stored);
+    expect(saved.subject).toBe(identity.userId);
+    expect(saved.cookies).toHaveLength(1);
+    expect(saved.input.password).toBe("password-secret");
+    expect(JSON.stringify(saved)).not.toContain("123456");
+    expect(JSON.stringify(profile)).not.toContain(identity.userId);
+    expect(
+      (
+        (await (
+          await authenticate("https://tenant.okta.example", {
+            username: "alias",
+            remember: false,
+          })
+        ).json()) as any
+      ).id,
+    ).toBe(profile.id);
+    expect(
+      await decrypt<any>(
+        key,
+        `${profile.id}:sso`,
+        await stores.get(profile.id)!.storage.get<any>("sso"),
+      ),
+    ).not.toHaveProperty("input");
+    const calls = login.mock.calls.length;
+    expect((await authenticate("https://foreign.example")).status).toBe(400);
+    expect(login.mock.calls).toHaveLength(calls);
+    login.mockResolvedValueOnce({
+      session: { ...identity, userId: "00uOther" },
+      cookies: [],
+    });
+    expect(((await (await authenticate()).json()) as any).id).not.toBe(
+      profile.id,
+    );
+    const count = stores.size;
+    const owner = stores.get(profile.id)!;
+    const mismatched = await owner.call(
+      "/v1/bootstrap-sso",
+      {
+        provider: "https://tenant.okta.example",
+        input: {
+          username: "user",
+          password: "password-secret",
+          remember: true,
+        },
+        result: {
+          session: { ...identity, userId: "00uDifferent" },
+          cookies: [],
+        },
+      },
+      profile.id,
+    );
+    expect(mismatched.status).toBe(409);
+    expect(
+      await decrypt<any>(
+        key,
+        `${profile.id}:sso`,
+        await owner.storage.get<any>("sso"),
+      ),
+    ).toMatchObject({ subject: identity.userId });
+    login.mockResolvedValueOnce({
+      session: { ...identity, status: "MFA_REQUIRED" },
+      cookies: [],
+    });
+    expect((await authenticate()).status).not.toBe(200);
+    expect(stores.size).toBe(count);
   });
   it("rejects browser-origin requests before accessing account storage", async () => {
     const get = vi.fn();

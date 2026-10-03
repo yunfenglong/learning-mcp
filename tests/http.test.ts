@@ -117,13 +117,33 @@ const post = (
       ...extra,
     }),
   });
-describe("OAuth consent for ChatGPT", () => {
+describe("OAuth client consent", () => {
+  it("uses each OAuth client's supplied name and accepts its own callback", async () => {
+    for (const name of ["Claude", "Grok", undefined]) {
+      const f = await fixture();
+      vi.spyOn(f.env.OAUTH_PROVIDER, "lookupClient").mockResolvedValue({
+        clientName: name,
+      } as any);
+      f.auth.redirectUri = "https://client.example/callback";
+      const text = await (await authorize(get(), f.env, f.config)).text();
+      expect(text).toContain(`Connect Learning to ${name ?? "MCP client"}`);
+      expect(text).not.toContain("ChatGPT");
+      const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+      expect((await authorize(post(nonce), f.env, f.config)).status).toBe(302);
+      expect(f.complete.mock.calls[0]![0]).toMatchObject({
+        request: { redirectUri: "https://client.example/callback" },
+      });
+      expect((await f.account.grants()).grants[0]!.client_name).toBe(
+        name ?? "MCP client",
+      );
+    }
+  });
   it("rejects consent without usage acknowledgement and lets the browser correct it", async () => {
     const f = await fixture(),
       page = await authorize(get(), f.env, f.config);
     const text = await page.text();
     expect(text).toContain("TOTP secret");
-    expect(text).toContain("sent to ChatGPT");
+    expect(text).toContain("sent to the MCP client you authorize");
     expect(text).toContain("infrastructure providers used by its operator");
     expect(text).not.toContain("Cloudflare");
     const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
@@ -194,6 +214,90 @@ describe("OAuth consent for ChatGPT", () => {
   });
 });
 describe("browser and administrator boundaries", () => {
+  it("signs in through a supported provider without choosing a learning platform", async () => {
+    const f = await fixture();
+    f.config.ssoProviders = [
+      { type: "okta", origin: "https://tenant.okta.example" },
+    ];
+    const fetch = vi.fn(async (_request: Request) =>
+      Response.json({ id, name: "SSO account" }),
+    );
+    f.env.SSO_BROKER = { fetch } as any;
+    f.env.BROKER_SERVICE_TOKEN = "b".repeat(64);
+    const start = await startLogin(
+      new Request("https://suite.example/login"),
+      f.env,
+      f.config,
+    );
+    const text = await start.text();
+    expect(text).toContain('name="provider"');
+    expect(text).not.toContain("tenant.okta.example");
+    const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    const cookie = start.headers.get("set-cookie")!.split(";")[0]!;
+    const submit = (extra = {}) =>
+      finishLogin(
+        new Request("https://suite.example/login", {
+          method: "POST",
+          headers: { origin: f.config.issuer, cookie },
+          body: new URLSearchParams({
+            nonce,
+            platform: "sso",
+            provider: "https://tenant.okta.example",
+            username: "user",
+            password: "provider-password",
+            usage_version: USAGE_VERSION,
+            usage_consent: "accept",
+            ...extra,
+          }),
+        }),
+        f.env,
+        f.config,
+      );
+    await expect(submit({ usage_consent: "" })).rejects.toMatchObject({
+      code: "USAGE_REQUIRED",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await submit()).status).toBe(303);
+    const forwarded = fetch.mock.calls[0]![0];
+    expect(new URL(forwarded.url).pathname).toBe("/v1/authenticate-sso");
+    expect(await forwarded.json()).toMatchObject({
+      provider: "https://tenant.okta.example",
+      input: { remember: false },
+    });
+    await expect(submit()).rejects.toMatchObject({ code: "LOGIN_FAILED" });
+    expect(fetch).toHaveBeenCalledOnce();
+    const second = await startLogin(
+      new Request("https://suite.example/login"),
+      f.env,
+      f.config,
+    );
+    const nextNonce = (await second.text()).match(
+      /name="nonce" value="([a-f0-9]+)"/,
+    )![1]!;
+    await expect(
+      finishLogin(
+        new Request("https://suite.example/login", {
+          method: "POST",
+          headers: {
+            origin: f.config.issuer,
+            cookie: second.headers.get("set-cookie")!.split(";")[0]!,
+          },
+          body: new URLSearchParams({
+            nonce: nextNonce,
+            platform: "sso",
+            provider: "https://foreign.example",
+            username: "user",
+            password: "provider-password",
+            usage_version: USAGE_VERSION,
+            usage_consent: "accept",
+          }),
+        }),
+        f.env,
+        f.config,
+      ),
+    ).rejects.toMatchObject({ code: "SSO_PROVIDER_UNAVAILABLE" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
   it("binds platform sign-in to browser, notice, origin and a single-use nonce", async () => {
     const f = await fixture();
     f.config.platforms.moodle = { site_url: "https://moodle.example.edu" };

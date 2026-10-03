@@ -34,6 +34,24 @@ describe("generic deployment scope", () => {
     ])
       expect(() => loadConfig(env(site))).toThrow();
   });
+  it("accepts only explicitly configured provider types and HTTPS origins", () => {
+    const base = env("https://courses.example");
+    expect(
+      loadConfig({
+        ...base,
+        SSO_PROVIDERS:
+          '[{"type":"okta","origin":"https://tenant.okta.example/"}]',
+      }).ssoProviders,
+    ).toEqual([{ type: "okta", origin: "https://tenant.okta.example" }]);
+    for (const provider of [
+      { type: "unknown", origin: "https://tenant.example" },
+      { type: "okta", origin: "http://tenant.example" },
+      { type: "okta", origin: "https://tenant.example/path" },
+    ])
+      expect(() =>
+        loadConfig({ ...base, SSO_PROVIDERS: JSON.stringify([provider]) }),
+      ).toThrow();
+  });
   it("supports generic course codes and locations without inferring Ed scope from other courses", () => {
     expect(
       unitSchema.parse({ ...unit, code: "cs-101", campus: "north-campus" }),

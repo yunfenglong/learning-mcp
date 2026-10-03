@@ -68,7 +68,7 @@ export async function landing(request: Request, env: Env, config: Config) {
   if (!session)
     return html(
       page(
-        `<span class="eyebrow">One connection. Your semester.</span><h1>Your courses,<br>within reach.</h1><p class="intro">Connect your Ed, Moodle and OnTrack accounts. Ask ChatGPT about learning materials, deadlines and attendance-code evidence across the platforms your courses use.</p><a class="button" href="/login?return_to=${e(encodeURIComponent(url.pathname === "/" ? "/landing" : url.pathname + url.search))}">Sign in to connect</a><p class="muted">You choose which platforms and courses to link.</p>${usageNotice}`,
+        `<span class="eyebrow">One connection. Your semester.</span><h1>Your courses,<br>within reach.</h1><p class="intro">Connect your Ed, Moodle and OnTrack accounts. Use your MCP client to ask about learning materials, deadlines and attendance-code evidence across the platforms your courses use.</p><a class="button" href="/login?return_to=${e(encodeURIComponent(url.pathname === "/" ? "/landing" : url.pathname + url.search))}">Sign in to connect</a><p class="muted">You choose which platforms and courses to link.</p>${usageNotice}`,
       ),
     );
   const accepted = await stateCall<UsageAcceptance | null>(
@@ -130,7 +130,7 @@ export async function landing(request: Request, env: Env, config: Config) {
             (g) =>
               `<div class="row"><div>${e(g.client_name)}<div class="muted">${e(g.scopes.join(", "))}</div></div><form method="post" action="/account/revoke">${hidden(session.csrf)}<input type="hidden" name="grant_id" value="${e(g.id)}"><button class="secondary">Revoke access</button></form></div>`,
           )
-          .join("") || "<p>No active ChatGPT or other client connection.</p>"
+          .join("") || "<p>No active MCP client connection.</p>"
       }</section><details><summary>Data handling and usage notice</summary>${usageNotice}</details><form method="post" action="/account/logout">${hidden(session.csrf)}<button class="secondary">Sign out of this page</button></form>`,
     ),
   );

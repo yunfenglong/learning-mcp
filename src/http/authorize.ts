@@ -61,7 +61,7 @@ export async function authorize(
       expires_at: Date.now() + 600_000,
     });
     return html(
-      `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Learning</title><style>body{font:16px system-ui;max-width:650px;margin:8vh auto;padding:24px;color:#172f2c;line-height:1.6}button{padding:12px 20px}dd{overflow-wrap:anywhere;margin:0 0 16px}a{color:#056256}</style><h1>Connect Learning to ${e(client.clientName ?? "ChatGPT")}</h1><p>Signed in as ${e(session.profile.name ?? session.profile.email ?? "Learning MCP account")}</p><dl><dt>Client</dt><dd>${e(auth.clientId)}</dd><dt>Return address</dt><dd>${e(auth.redirectUri)}</dd></dl><p>Read your linked courses, learning materials, deadlines, grades and attendance-code evidence.${auth.scope.includes(MANAGE_SCOPE) ? " Also manage your platform connections and course mappings." : ""}</p><p><a href="/landing" target="_blank" rel="noopener">Connect or review Ed, Moodle and OnTrack in this account</a></p>${usageNotice}<form method="post"><input type="hidden" name="csrf" value="${e(session.csrf)}"><input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}"><label><input type="checkbox" name="usage_consent" value="accept" required> ${usageLabel}</label><br><label><input type="checkbox" name="consent" value="allow" required> I approve these permissions.</label><p><button name="action" value="allow">Connect</button><button name="action" value="deny" formnovalidate>Cancel</button></p></form></html>`,
+      `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Learning</title><style>body{font:16px system-ui;max-width:650px;margin:8vh auto;padding:24px;color:#172f2c;line-height:1.6}button{padding:12px 20px}dd{overflow-wrap:anywhere;margin:0 0 16px}a{color:#056256}</style><h1>Connect Learning to ${e(client.clientName ?? "MCP client")}</h1><p>Signed in as ${e(session.profile.name ?? session.profile.email ?? "Learning MCP account")}</p><dl><dt>Client</dt><dd>${e(auth.clientId)}</dd><dt>Return address</dt><dd>${e(auth.redirectUri)}</dd></dl><p>Read your linked courses, learning materials, deadlines, grades and attendance-code evidence.${auth.scope.includes(MANAGE_SCOPE) ? " Also manage your platform connections and course mappings." : ""}</p><p><a href="/landing" target="_blank" rel="noopener">Connect or review Ed, Moodle and OnTrack in this account</a></p>${usageNotice}<form method="post"><input type="hidden" name="csrf" value="${e(session.csrf)}"><input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}"><label><input type="checkbox" name="usage_consent" value="accept" required> ${usageLabel}</label><br><label><input type="checkbox" name="consent" value="allow" required> I approve these permissions.</label><p><button name="action" value="allow">Connect</button><button name="action" value="deny" formnovalidate>Cancel</button></p></form></html>`,
     );
   }
   if (request.method !== "POST")
@@ -126,7 +126,7 @@ export async function authorize(
   const grant = await stateCall<Grant>(env, session.profile.id, "/approve", {
     client: {
       id: auth.clientId,
-      name: (client.clientName ?? "ChatGPT").slice(0, 200),
+      name: (client.clientName ?? "MCP client").slice(0, 200),
       redirect_uri: auth.redirectUri,
     },
     scopes: auth.scope,

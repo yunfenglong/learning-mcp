@@ -4,9 +4,9 @@ The service consists of one public suite Worker and one private broker Worker in
 
 ## Suite identity
 
-Users sign in on `/login` with a configured Moodle / OnTrack base link, SSO username, password and optional TOTP secret or one-time MFA code. The private broker starts a fresh cloud browser and verifies the resulting platform session before establishing the suite account. Ed users can sign in with a verified API token. No separate OIDC application or callback registration is required.
+Users sign in on `/login` with their supported SSO provider base link, username, password and optional TOTP secret or one-time MFA code. The private broker starts a fresh cloud browser and verifies the provider's active session and stable user ID before establishing the suite account. Configure `SSO_PROVIDERS` on both Workers. The current provider adapter supports Okta. Ed users can sign in with a verified API token. No separate OIDC application or callback registration is required.
 
-Accounts are anchored to the verified platform, its origin and its authenticated user ID. Users must return through the same platform for future sign-ins; signing in independently through another platform creates a different suite account. Connect additional platforms from the signed-in account page. Password / TOTP retention requires an explicit checkbox; one-time codes are not stored.
+Provider accounts are anchored to the provider type, origin and verified user ID. Users return with the same provider account and connect learning platforms from the signed-in account page. Ed accounts retain their Ed identity anchor. Existing Moodle / OnTrack-based accounts retain their original login entry and identity anchor; provider sign-in creates a separate account and does not merge existing data or client grants. Password / TOTP retention requires an explicit checkbox; one-time codes are not stored.
 
 Set `ISSUER` to the exact public HTTPS suite origin. Configure a matching custom domain route, or enable workers.dev and use its exact origin. The checked-in origin is a placeholder, not an active deployment.
 
@@ -14,7 +14,7 @@ Set `ISSUER` to the exact public HTTPS suite origin. Configure a matching custom
 
 `PLATFORM_CONFIG` starts empty. Set it in both Worker configurations using the `platforms` object in [`examples/config.json`](../examples/config.json): the suite includes any enabled Ed/Moodle/OnTrack platforms; the broker includes Moodle/OnTrack. Do not paste the example’s outer object or its `course_association_example` into `PLATFORM_CONFIG`. Both configurations must agree on their shared origins. See the [configuration reference](configuration.md). Moodle and OnTrack accept administrator-configured HTTPS origins with no username, password, path, query or fragment. There is no institution-specific domain allowlist. Ed uses `https://edstem.org`; optional `ed.institution_ids` restricts its courses by verified raw institutional metadata. Models and users cannot override network destinations through tools.
 
-Set broker `LOGIN_ORIGINS` to a JSON array of exact HTTPS origins required by the actual SSO flow, including permitted identity-provider and resource origins. Browser requests outside this set plus the configured platform origin are blocked. Enable Cloudflare Browser Run for its `BROWSER` binding. With no browser binding, verified existing-session connection remains available. The broker supports common Okta username/password/TOTP forms; test the actual login flow before claiming compatibility. Unsupported challenges require user interaction, not bypasses.
+Set matching `SSO_PROVIDERS` on both Workers using the [configuration reference](configuration.md). Keep provider addresses in operator configuration. Set broker `LOGIN_ORIGINS` to a JSON array of exact HTTPS origins required by the actual SSO flow, including permitted identity-provider and resource origins. Browser requests outside this set plus the configured platform origin are blocked. Enable Cloudflare Browser Run for its `BROWSER` binding. With no browser binding, verified existing-session connection remains available. The broker supports common Okta username/password/TOTP forms; test the actual login flow before claiming compatibility. Unsupported challenges require user interaction, not bypasses.
 
 Users may supply a one-time MFA code or optional Base32 TOTP secret / otpauth URI. Password and TOTP retention is opt-in. Secrets stay in the private broker and do not appear in MCP output or administrator responses. Sessions are reusable; stored password/TOTP can reauthenticate after expiry when the provider accepts that method. TOTP does not satisfy a provider's Push, Passkey, device requirements or changed authentication policy.
 
@@ -72,7 +72,7 @@ MCP client tokens issued by other services are not automatically valid: issuer, 
 
 ## Deploy to Cloudflare button
 
-The planned button-based setup uses two deployments in the same Cloudflare account: **Deploy SSO Broker**, followed by **Deploy Learning MCP**. These steps are for the self-hosting operator. ChatGPT users connect to the resulting MCP endpoint and bind their accounts; they do not deploy either Worker.
+The planned button-based setup uses two deployments in the same Cloudflare account: **Deploy SSO Broker**, followed by **Deploy Learning MCP**. These steps are for the self-hosting operator. MCP client users connect to the resulting MCP endpoint and bind their accounts; they do not deploy either Worker.
 
 Cloudflare provides an official README button for public GitHub and GitLab repositories. It does not deploy multiple Workers together. This project is hosted at `yunfenglong/learning-mcp` as a private repository, so it is not a public deployment template. The example below shows button syntax only and is not a working deployment link:
 

@@ -1,6 +1,6 @@
 # Learning MCP Suite
 
-This is a standalone cloud MCP project for ChatGPT and other OAuth-capable MCP clients.
+This is a standalone cloud MCP project for OAuth-capable MCP clients.
 
 - Use pnpm 10.14.0 and pnpm-lock.yaml only.
 - The public Worker embeds the official bunizao Ed, Moodle and OnTrack clients pinned in vendor/upstreams.json for platform reads; the broker also uses clients for session validation. Do not invoke external platform MCP services or spawn CLIs.

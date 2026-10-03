@@ -8,6 +8,7 @@ Configure the suite in [`wrangler.jsonc`](../wrangler.jsonc) and the broker in [
 | ----------------- | ------ | ------------------------------------------------------------------------------------------------------- |
 | `ISSUER`          | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
 | `PLATFORM_CONFIG` | Both   | JSON string containing the enabled platform entries below.                                              |
+| `SSO_PROVIDERS`   | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
 | `LOGIN_ORIGINS`   | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed. |
 
 Use the **`platforms` object** from [`examples/config.json`](../examples/config.json), not the whole file:
@@ -21,6 +22,14 @@ Use the **`platforms` object** from [`examples/config.json`](../examples/config.
 ```
 
 Serialize this object as a string for Wrangler's `vars.PLATFORM_CONFIG`. Remove disabled platforms. The broker needs only Moodle and OnTrack entries, matching the suite's origins. These origins must use HTTPS with no credentials, application path, query or fragment. Deployments under a path prefix are not supported. Optional `ed.institution_ids` can restrict Ed courses using verified numeric metadata.
+
+Configure `SSO_PROVIDERS` on **both Workers** as a JSON string. For example:
+
+```json
+[{ "type": "okta", "origin": "https://tenant.okta.example" }]
+```
+
+Users enter their own provider base link; it must match one of these exact HTTPS origins. Origins are not listed in account pages or public metadata. This setting identifies providers whose current-session identity API is supported; `LOGIN_ORIGINS` separately allows the resource hosts needed during browser sign-in. Adding a host to `LOGIN_ORIGINS` alone does not enable provider sign-in. The first adapter supports Okta; other provider types require an identity-verification adapter. Keep the list empty to offer Ed and existing platform-based sign-in only.
 
 Course associations are created by users from fresh discovery. The example course association is illustrative; it is not a deployment variable or a seed record.
 
@@ -47,4 +56,4 @@ Set deployed secrets interactively with Wrangler as described in the [deployment
 
 Changing an encryption key without re-encrypting existing records makes them unreadable. Keep keys stable across redeployments. Changing issuer, platform identity anchors, namespaces or grant storage can require clients and users to reconnect.
 
-Suite sign-in uses a verified platform identity; no independent OIDC application is needed. Users enter a base link whose origin matches the configured Moodle or OnTrack origin. Keep the same sign-in platform and origin to retain the same suite account.
+Provider sign-in uses the verified provider type, origin and stable user ID as the account anchor; no independent OIDC application is needed. Keep that provider and account stable. Ed sign-in keeps its verified Ed identity anchor. Existing platform-based accounts keep their platform identity anchors and original login flow; provider sign-in creates a separate account rather than automatically merging identities.

@@ -17,7 +17,8 @@ import {
   moodleSessionSchema,
   ontrackSessionSchema,
 } from "../src/platforms/broker.ts";
-import { browserLogin, type LoginInput } from "./sso.ts";
+import { browserLogin, oktaIdentitySchema, type LoginInput } from "./sso.ts";
+import { ssoProvidersSchema } from "../src/config.ts";
 import { parseTotp } from "./totp.ts";
 import {
   cookieFetch,
@@ -39,6 +40,7 @@ export interface BrokerEnv {
   BROKER_CREDENTIALS_KEY: string;
   PLATFORM_CONFIG: string;
   LOGIN_ORIGINS: string;
+  SSO_PROVIDERS?: string;
   BROWSER?: Fetcher;
 }
 const platform = z.enum(["moodle", "ontrack"]),
@@ -60,6 +62,8 @@ const inputSchema = z
 interface SavedLogin {
   cookies: any[];
   username: string;
+  provider?: string;
+  subject?: string;
   input?: LoginInput;
 }
 export async function validateSession(
@@ -270,6 +274,44 @@ export class BrokerState extends DurableObject<BrokerEnv> {
         await this.ctx.storage.delete("retry_after");
         await this.ctx.storage.delete("retry_after:moodle");
         await this.ctx.storage.delete("retry_after:ontrack");
+        return json({ ok: true });
+      }
+      if (path === "/v1/bootstrap-sso") {
+        const provider = configuredProvider(this.env, data.provider);
+        const identity = oktaIdentitySchema.parse(data.result?.session);
+        if (
+          account !==
+          (await digest(
+            `provider-sso\0okta\0${provider.origin}\0${identity.userId}`,
+          ))
+        )
+          throw new SuiteError(
+            "ACCOUNT_CHANGED",
+            "Sign-in identity could not be verified.",
+            409,
+          );
+        const fresh = inputSchema.parse(data.input);
+        const totp = fresh.totp_secret
+          ? parseTotp(fresh.totp_secret)
+          : undefined;
+        const login: SavedLogin = {
+          provider: provider.origin,
+          subject: identity.userId,
+          username: fresh.username,
+          cookies: scopedCookies(cookiesSchema.parse(data.result.cookies), [
+            provider.origin,
+          ]),
+          ...(fresh.remember
+            ? {
+                input: {
+                  username: fresh.username,
+                  password: fresh.password,
+                  ...(totp ? { totp } : {}),
+                },
+              }
+            : {}),
+        };
+        await save("sso", login);
         return json({ ok: true });
       }
       const p = platform.parse(data.platform);
@@ -599,6 +641,22 @@ export function platformOrigin(value: string) {
     return false;
   }
 }
+function configuredProvider(env: BrokerEnv, value: unknown) {
+  const providers = ssoProvidersSchema.parse(
+    JSON.parse(env.SSO_PROVIDERS ?? "[]"),
+  );
+  const candidate = ssoProvidersSchema.element.shape.origin.safeParse(value);
+  const provider = candidate.success
+    ? providers.find((p) => p.origin === candidate.data)
+    : undefined;
+  if (!provider)
+    throw new SuiteError(
+      "SSO_PROVIDER_UNAVAILABLE",
+      "This SSO provider is not supported by this service.",
+      400,
+    );
+  return provider;
+}
 export default {
   async fetch(original: Request, env: BrokerEnv): Promise<Response> {
     const output = new OutputBoundary();
@@ -625,6 +683,57 @@ export default {
       if (original.method !== "POST")
         throw new SuiteError("METHOD_NOT_ALLOWED", "Use POST.", 405);
       const request = await boundedRequest(original);
+      if (new URL(request.url).pathname === "/v1/authenticate-sso") {
+        const data = (await request.json()) as any;
+        const provider = configuredProvider(env, data.provider);
+        const input = inputSchema.parse(data.input);
+        output.remember(input.password, input.mfa_code, input.totp_secret);
+        if (!env.BROWSER)
+          throw new SuiteError(
+            "SSO_NOT_CONFIGURED",
+            "Configure cloud browser SSO.",
+            503,
+          );
+        const totp = input.totp_secret
+          ? parseTotp(input.totp_secret)
+          : undefined;
+        if (totp) output.remember(totp.secret);
+        const result = await browserLogin({
+          binding: env.BROWSER,
+          site: provider.origin,
+          platform: "okta",
+          loginOrigins: z
+            .array(z.string().url())
+            .max(30)
+            .parse(JSON.parse(env.LOGIN_ORIGINS)),
+          input: {
+            username: input.username,
+            password: input.password,
+            ...(input.mfa_code ? { mfa_code: input.mfa_code } : {}),
+            ...(totp ? { totp } : {}),
+          },
+        });
+        output.rememberSession({ cookies: result.cookies });
+        const identity = oktaIdentitySchema.parse(result.session);
+        const id = await digest(
+          `provider-sso\0okta\0${provider.origin}\0${identity.userId}`,
+        );
+        const saved = await env.BROKER_STATE.get(
+          env.BROKER_STATE.idFromName(id),
+        ).fetch(
+          new Request("https://broker/v1/bootstrap-sso", {
+            method: "POST",
+            headers: {
+              "x-suite-account": id,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ provider: provider.origin, input, result }),
+          }),
+        );
+        if (!saved.ok) return saved;
+        await saved.body?.cancel();
+        return json({ id, name: "SSO account" });
+      }
       if (new URL(request.url).pathname === "/v1/authenticate") {
         const data = (await request.json()) as any;
         const p = platform.parse(data.platform);

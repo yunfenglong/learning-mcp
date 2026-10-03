@@ -51,6 +51,65 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("isolated broker browser SSO", () => {
+  it("verifies an Okta session in the provider browser and returns its stable subject", async () => {
+    const f = fixture(login);
+    f.page.cookies.mockResolvedValue([
+      {
+        name: "idx",
+        value: "provider-secret",
+        domain: "tenant.okta.example",
+        path: "/",
+      },
+    ] as any);
+    const fetch = vi.fn(async () =>
+      Response.json({
+        status: "ACTIVE",
+        userId: "00uVerified",
+        expiresAt: new Date(Date.now() + 600000).toISOString(),
+        id: "session-secret",
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const result = await browserLogin({
+      binding: {} as Fetcher,
+      platform: "okta",
+      site: login,
+      loginOrigins: [],
+    });
+    expect(f.page.goto).toHaveBeenCalledWith(
+      `${login}/login/login.htm`,
+      expect.anything(),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/sessions/me",
+      expect.objectContaining({ credentials: "include", redirect: "error" }),
+    );
+    expect(result.session).toMatchObject({ userId: "00uVerified" });
+    expect(result.session).not.toHaveProperty("id");
+    expect(f.context.close).toHaveBeenCalledOnce();
+    expect(f.browser.close).toHaveBeenCalledOnce();
+  });
+  it("does not accept a provider session without a verified active subject", async () => {
+    const f = fixture(login, {
+      kind: "username",
+      selector: "input[name=username]",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ status: "ACTIVE", login: "claimed-user" }),
+      ),
+    );
+    await expect(
+      browserLogin({
+        binding: {} as Fetcher,
+        platform: "okta",
+        site: login,
+        loginOrigins: [],
+      }),
+    ).rejects.toMatchObject({ code: "SSO_LOGIN_REQUIRED" });
+    expect(f.context.close).toHaveBeenCalledOnce();
+  });
   it("ignores expired cookies and captures a Moodle session suffix at the AJAX path", async () => {
     const f = fixture();
     f.page.cookies.mockResolvedValue([

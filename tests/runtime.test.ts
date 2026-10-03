@@ -212,6 +212,8 @@ beforeAll(async () => {
           },
           bindings: {
             ISSUER: origin,
+            SSO_PROVIDERS:
+              '[{"type":"okta","origin":"https://tenant.okta.example"}]',
             CREDENTIALS_KEY: key,
             ADMIN_TOKEN: "x".repeat(64),
             PLATFORM_CONFIG: platforms,
@@ -295,7 +297,7 @@ async function connect(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      client_name: "ChatGPT fixture",
+      client_name: "Compatible MCP fixture",
       redirect_uris: ["https://chatgpt.com/callback"],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
@@ -416,7 +418,7 @@ async function action(
     body: new URLSearchParams({ csrf: c.csrf, ...fields }).toString(),
   });
 }
-describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () => {
+describe("real workerd: client OAuth, user binding and in-Worker clients", () => {
   it("requires OAuth and rejects unverified platform sign-in", async () => {
     expect(
       (
@@ -450,9 +452,13 @@ describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () =
       expect(body).not.toContain(new URL(moodle).hostname);
       expect(body).not.toContain(new URL(ontrack).hostname);
       expect(body).not.toContain("Cloudflare");
+      expect(body).not.toContain("ChatGPT");
+      expect(body).not.toContain("tenant.okta.example");
       expect(body).toContain("infrastructure providers used by its operator");
       bodies.push(body);
     }
+    expect(bodies[0]).toContain('name="provider"');
+    expect(bodies[0]).toContain('name="platform" value="sso"');
     const connections = bodies[2]!;
     expect(connections).toContain(
       "You can connect Ed, Moodle and OnTrack together in this account",

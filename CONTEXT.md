@@ -1,8 +1,8 @@
 # Domain context
 
-Learning MCP Suite is a cloud MCP service for ChatGPT and other OAuth-capable clients. It runs entirely on Cloudflare: one public suite Worker and one private broker Worker. pnpm owns its package and lockfile.
+Learning MCP Suite is a cloud MCP service for OAuth-capable MCP clients. It runs entirely on Cloudflare: one public suite Worker and one private broker Worker. pnpm owns its package and lockfile.
 
-A **suite user** is identified by the verified sign-in platform, its configured HTTPS origin and its authenticated platform user ID. A fresh Okta / SSO browser login or a verified Ed API token establishes the account. Its OAuth grants, notice acceptance, credentials, platform sessions and course mappings are isolated from other users. The private broker can reuse that user's saved SSO across configured platforms. No independent OIDC application is required; future sign-ins must use the same platform identity anchor.
+A **suite user** is identified by a verified identity anchor. Provider sign-in uses the provider type, configured HTTPS origin and stable authenticated user ID; the first provider adapter supports Okta. Ed sign-in uses the verified Ed user ID. Existing platform-based accounts retain their platform origin and user ID anchors and original login entry; provider sign-in creates a separate account and does not merge identities. OAuth grants, notice acceptance, credentials, platform sessions and course mappings are isolated from other users. The private broker can reuse that user's saved SSO across configured platforms. No independent OIDC application is required; future sign-ins must use the same identity anchor.
 
 A **platform connection** is a verified Ed, Moodle or OnTrack account. The broker may reuse one user's SSO cookies between the configured Moodle and OnTrack origins. With explicit retention consent, it also keeps the user's encrypted password and optional TOTP configuration for automatic reauthentication. A one-time MFA code is transient. TOTP does not satisfy Push, Passkey, device checks or provider policy changes.
 

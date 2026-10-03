@@ -6,7 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24-5FA04E?logo=nodedotjs&logoColor=white)](package.json)
 [![pnpm](https://img.shields.io/badge/pnpm-10.14.0-F69220?logo=pnpm&logoColor=white)](package.json)
 
-A cloud-hosted [Model Context Protocol](https://modelcontextprotocol.io/) server for Ed Discussion, Moodle and OnTrack. Connect your accounts once, link the platforms each course uses, and access learning materials through ChatGPT or another OAuth-capable MCP client.
+A cloud-hosted [Model Context Protocol](https://modelcontextprotocol.io/) server for Ed Discussion, Moodle and OnTrack. Connect your accounts once, link the platforms each course uses, and access learning materials through an OAuth-capable MCP client.
 
 Runs on Cloudflare Workers with a private Okta / SSO broker. Users do not need to install a local connector.
 
@@ -32,7 +32,7 @@ Both Workers build and have unit and workerd integration tests. Authentication t
 
 - Node.js 24 or later and pnpm 10.14.0.
 - A Cloudflare account with Workers, KV and Durable Objects; Browser Run for cloud SSO.
-- Platform SSO access for Moodle / OnTrack, or an Ed API token for Ed sign-in.
+- A supported Okta SSO provider for provider sign-in, or an Ed API token for Ed sign-in.
 - Access to the platforms you want to enable.
 
 ### Setup
@@ -57,11 +57,15 @@ Both Workers build and have unit and workerd integration tests. Authentication t
 
 Deployment checks bundled client integrity and current upstream commits before publishing. If upstream sources have changed, run `pnpm upstreams sync`, review the changes and repeat validation.
 
+Set `SSO_PROVIDERS` on both Workers to the supported provider entries described in the configuration reference. Provider sign-in verifies an Okta session before creating the suite account; learning platforms are connected afterwards. Existing platform-based accounts remain accessible through their original sign-in entry.
+
 The checked-in hostnames and resource IDs are placeholders. Live platform SSO compatibility must be verified for your deployment.
 
 For Cloudflare's official deployment button and the current two-Worker setup requirements, see [Deploy to Cloudflare](docs/deployment.md#deploy-to-cloudflare-button).
 
 ## Usage
+
+Use any client that supports remote MCP over Streamable HTTP and this service's OAuth authorization flow, including PKCE S256 and resource indicators. Client brand is not restricted; availability depends on the client's own MCP support. Authorization pages display the registered client name.
 
 Use your deployed server's MCP endpoint:
 
@@ -69,7 +73,7 @@ Use your deployed server's MCP endpoint:
 https://YOUR_SUITE_HOST/mcp
 ```
 
-1. Connect an OAuth-capable MCP client. Sign in with a configured Moodle / OnTrack base link, SSO username, password and optional TOTP, or with an Ed API token. Use the same platform for future sign-ins to return to the same suite account.
+1. Connect an OAuth-capable MCP client. Sign in with your supported SSO provider base link, username, password and optional TOTP, or with an Ed API token. Use the same provider account or Ed account for future sign-ins. Existing platform-based accounts can use their original sign-in entry.
 2. Read and accept the data handling notice before entering credentials, then approve the client's requested access.
 3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.
 4. Add the other platforms to the same account: Ed uses an API token; Moodle and OnTrack use the configured SSO flow or an existing platform session. All three can be connected together. Moodle and OnTrack can reuse your saved SSO when available, with your approval. Enter credentials on the connection page.
