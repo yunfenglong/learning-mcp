@@ -4,25 +4,30 @@ import { unitSchema } from "../src/domain/units.ts";
 import { finishDiscovery, normalizeCourse } from "../src/accounts/courses.ts";
 import { unit } from "./support.ts";
 describe("generic deployment scope", () => {
-  const env = (moodle: string, ontrack = "https://tasks.company.example") =>
-    ({
-      ISSUER: "https://suite.example",
-      PLATFORM_CONFIG: JSON.stringify({
-        moodle: { site_url: moodle },
-        ontrack: { site_url: ontrack },
-      }),
-    }) as Env;
-  it("accepts legacy HTTPS platform configuration and an empty deployment", () => {
-    expect(
-      loadConfig(env("https://courses.school.example")).platforms.moodle
-        ?.site_url,
-    ).toBe("https://courses.school.example");
+  const env = () => ({ ISSUER: "https://suite.example" }) as Env;
+  it("defaults to Ed and accepts optional verified Ed institution scope", () => {
+    expect(loadConfig(env()).platforms).toEqual({
+      ed: { site_url: "https://edstem.org" },
+    });
     expect(
       loadConfig({
-        ...env("https://courses.school.example"),
-        PLATFORM_CONFIG: "{}",
-      }).platforms,
-    ).toEqual({ ed: { site_url: "https://edstem.org" } });
+        ...env(),
+        PLATFORM_CONFIG: JSON.stringify({
+          ed: { site_url: "https://edstem.org", institution_ids: [123] },
+        }),
+      }).platforms.ed?.institution_ids,
+    ).toEqual([123]);
+  });
+  it("rejects operator-supplied Moodle and OnTrack addresses", () => {
+    for (const platform of ["moodle", "ontrack"])
+      expect(() =>
+        loadConfig({
+          ...env(),
+          PLATFORM_CONFIG: JSON.stringify({
+            [platform]: { site_url: "https://courses.school.example" },
+          }),
+        }),
+      ).toThrow();
   });
   it("rejects insecure origins, credentials and non-origin URL components", () => {
     for (const site of [
@@ -32,10 +37,15 @@ describe("generic deployment scope", () => {
       "https://courses.example/?token=x",
       "https://courses.example/#fragment",
     ])
-      expect(() => loadConfig(env(site))).toThrow();
+      expect(() =>
+        loadConfig({
+          ...env(),
+          PLATFORM_CONFIG: JSON.stringify({ ed: { site_url: site } }),
+        }),
+      ).toThrow();
   });
   it("accepts only explicitly configured provider types and HTTPS origins", () => {
-    const base = env("https://courses.example");
+    const base = env();
     expect(
       loadConfig({
         ...base,

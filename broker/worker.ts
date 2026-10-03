@@ -39,14 +39,12 @@ export interface BrokerEnv {
   BROKER_STATE: DurableObjectNamespace;
   BROKER_SERVICE_TOKEN: string;
   BROKER_CREDENTIALS_KEY: string;
-  PLATFORM_CONFIG?: string;
   LOGIN_ORIGINS: string;
   SSO_PROVIDERS?: string;
   BROWSER?: Fetcher;
 }
 const platform = z.enum(["moodle", "ontrack"]),
   accountSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const legacyAccount = () => digest("legacy-platform-sites-v1");
 const secret = z
   .string()
   .min(1)
@@ -228,10 +226,6 @@ export class BrokerState extends DurableObject<BrokerEnv> {
         initialPath = new URL(request.url).pathname;
       let path = initialPath;
       const data = (await request.json()) as any;
-      const configs = JSON.parse(this.env.PLATFORM_CONFIG ?? "{}") as Record<
-        string,
-        { site_url: string }
-      >;
       const load = async <T>(key: string) => {
         const record = await this.ctx.storage.get<EncryptedRecord>(key);
         const value = record
@@ -256,66 +250,8 @@ export class BrokerState extends DurableObject<BrokerEnv> {
       const readSite = async (p: "moodle" | "ontrack") => {
         const saved = await load<string>(`site:${p}`);
         if (saved) return platformBaseLink(saved);
-        // Assign the original deployment address only to a connection that already exists.
-        if (await this.ctx.storage.get(`session:${p}`)) {
-          let legacy = configs[p]?.site_url;
-          if (!legacy && this.env.BROKER_STATE) {
-            const migration = await legacyAccount();
-            const response = await this.env.BROKER_STATE.get(
-              this.env.BROKER_STATE.idFromName(migration),
-            ).fetch(
-              new Request("https://broker/v1/read-legacy-sites", {
-                method: "POST",
-                headers: {
-                  "x-suite-account": migration,
-                  "content-type": "application/json",
-                },
-                body: "{}",
-              }),
-            );
-            if (!response.ok)
-              throw new SuiteError(
-                "MIGRATION_UNAVAILABLE",
-                "The existing connection's base link could not be assigned. Try again shortly.",
-                503,
-              );
-            const sites = (await response.json()) as Record<string, string>;
-            legacy = sites[p];
-          }
-          if (legacy) {
-            const site = platformBaseLink(legacy);
-            await save(`site:${p}`, site);
-            return site;
-          }
-        }
         return undefined;
       };
-      if (
-        path === "/v1/store-legacy-sites" ||
-        path === "/v1/read-legacy-sites"
-      ) {
-        if (account !== (await legacyAccount()))
-          throw new SuiteError(
-            "ACCESS_DENIED",
-            "Invalid migration account.",
-            403,
-          );
-        const existing =
-          (await load<Record<string, string>>("legacy-sites")) ?? {};
-        if (path === "/v1/store-legacy-sites") {
-          const sites = z
-            .object({
-              moodle: z.string().transform(platformBaseLink).optional(),
-              ontrack: z.string().transform(platformBaseLink).optional(),
-            })
-            .strict()
-            .parse(data.sites);
-          // Keep the original addresses. New connections never use this compatibility record.
-          await save("legacy-sites", { ...sites, ...existing });
-          return json({ ok: true });
-        }
-        return json(existing);
-      }
       if (path === "/v1/sites") {
         const sites: Record<string, { site_url: string }> = {};
         for (const p of ["moodle", "ontrack"] as const) {
@@ -389,6 +325,17 @@ export class BrokerState extends DurableObject<BrokerEnv> {
         await save("sso", login);
         return json({ ok: true });
       }
+      if (
+        ![
+          "/v1/disconnect",
+          "/v1/session",
+          "/v1/cookies",
+          "/v1/connect",
+          "/v1/renew",
+          "/v1/bootstrap",
+        ].includes(path)
+      )
+        throw new SuiteError("NOT_FOUND", "Unknown broker route.", 404);
       const p = platform.parse(data.platform);
       if (path === "/v1/disconnect") {
         await this.ctx.storage.delete(`site:${p}`);
@@ -784,25 +731,6 @@ export default {
       if (original.method !== "POST")
         throw new SuiteError("METHOD_NOT_ALLOWED", "Use POST.", 405);
       const request = await boundedRequest(original);
-      if (new URL(request.url).pathname === "/v1/seed-legacy-sites") {
-        const old = JSON.parse(env.PLATFORM_CONFIG ?? "{}");
-        const sites: Record<string, string> = {};
-        for (const p of ["moodle", "ontrack"] as const)
-          if (old[p]?.site_url) sites[p] = platformBaseLink(old[p].site_url);
-        const migration = await legacyAccount();
-        return env.BROKER_STATE.get(
-          env.BROKER_STATE.idFromName(migration),
-        ).fetch(
-          new Request("https://broker/v1/store-legacy-sites", {
-            method: "POST",
-            headers: {
-              "x-suite-account": migration,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ sites }),
-          }),
-        );
-      }
       if (new URL(request.url).pathname === "/v1/authenticate-sso") {
         const data = (await request.json()) as any;
         const provider = configuredProvider(env, data.provider);

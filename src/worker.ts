@@ -5,8 +5,6 @@ import OAuthProvider, {
 } from "@cloudflare/workers-oauth-provider";
 import { loadConfig, type Env } from "./config.ts";
 import { stateCall } from "./auth/client.ts";
-import { digest } from "./auth/crypto.ts";
-import { brokerCall } from "./platforms/broker.ts";
 import { READ_SCOPE, MANAGE_SCOPE, type Profile } from "./auth/state.ts";
 import { startLogin, finishLogin } from "./auth/login.ts";
 import { authorize } from "./http/authorize.ts";
@@ -104,12 +102,6 @@ export default {
           fetch: async (r, e) => {
             const p = new URL(r.url).pathname;
             if (p === "/healthz") {
-              if (config.platforms.moodle || config.platforms.ontrack)
-                await brokerCall(
-                  env,
-                  await digest("legacy-platform-sites-v1"),
-                  "/v1/seed-legacy-sites",
-                );
               return json({
                 ok: true,
                 service: "learning-mcp-suite",

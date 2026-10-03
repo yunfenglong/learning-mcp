@@ -27,10 +27,6 @@ function fixture(browser = true) {
       BROWSER: browser ? {} : undefined,
       LOGIN_ORIGINS: '["https://tenant.okta.example"]',
       SSO_PROVIDERS: '[{"type":"okta","origin":"https://tenant.okta.example"}]',
-      PLATFORM_CONFIG: JSON.stringify({
-        moodle: { site_url: "https://moodle.example.edu" },
-        ontrack: { site_url: "https://ontrack.example.edu" },
-      }),
     } as any,
   );
   const call = (path: string, body: any = {}, who = account) =>
@@ -85,30 +81,33 @@ beforeEach(() => {
   });
 });
 describe("private credential vault", () => {
-  it("preserves the old address after removing Worker configuration and never gives it to a new account", async () => {
-    const migration = fixture(false), f = fixture(false);
-    const id = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("legacy-platform-sites-v1"));
-    const migrationId = [...new Uint8Array(id)].map(v => v.toString(16).padStart(2, "0")).join("");
-    await migration.call("/v1/store-legacy-sites", {sites: {moodle: "https://moodle.example.edu"}}, migrationId);
-    const namespace = {
-      idFromName: (value: string) => value,
-      get: () => ({fetch: async (request: Request) => migration.call(new URL(request.url).pathname, await request.json(), migrationId)}),
-    };
-    await f.call("/v1/connect", {platform: "moodle", mode: "session", input: {cookie_name: "MoodleSession", cookie_value: "valid"}});
+  it("does not expose retired address migration operations", async () => {
+    const f = fixture(false);
+    for (const path of [
+      "/v1/seed-legacy-sites",
+      "/v1/store-legacy-sites",
+      "/v1/read-legacy-sites",
+    ])
+      expect((await f.call(path)).status).toBe(404);
+    expect(f.storage.data.size).toBe(0);
+  });
+  it("does not infer a missing base link from an existing session", async () => {
+    const f = fixture(false);
+    await f.call("/v1/connect", {
+      platform: "moodle",
+      mode: "session",
+      input: { cookie_name: "MoodleSession", cookie_value: "valid" },
+    });
+    const original = await f.storage.get("session:moodle");
     await f.storage.delete("site:moodle");
-    f.env.PLATFORM_CONFIG = "{}";
-    f.env.BROKER_STATE = namespace;
-    expect(await (await f.call("/v1/sites")).json()).toEqual({moodle: {site_url: "https://moodle.example.edu"}});
-    expect(await f.storage.get("site:moodle")).toBeDefined();
-    const newcomer = fixture(false);
-    newcomer.env.PLATFORM_CONFIG = "{}";
-    newcomer.env.BROKER_STATE = namespace;
-    expect((await newcomer.call("/v1/connect", {platform: "moodle", base_link: null, mode: "session", input: {cookie_name: "MoodleSession", cookie_value: "valid"}})).status).toBe(409);
-    expect(await (await newcomer.call("/v1/sites")).json()).toEqual({});
+    expect(await (await f.call("/v1/sites")).json()).toEqual({});
+    expect((await f.call("/v1/renew", { platform: "moodle" })).status).toBe(
+      409,
+    );
+    expect(await f.storage.get("session:moodle")).toEqual(original);
   });
   it("requires a base link for the first connection and stores it per user without deployment sites", async () => {
     const f = fixture(false);
-    f.env.PLATFORM_CONFIG = "{}";
     const input = { cookie_name: "MoodleSession", cookie_value: "valid" };
     expect(
       (
@@ -162,28 +161,6 @@ describe("private credential vault", () => {
     await f.call("/v1/disconnect", { platform: "moodle" });
     expect(await (await f.call("/v1/sites")).json()).toEqual({});
   });
-  it("assigns the original base link to an existing session without replacing its credentials", async () => {
-    const f = fixture(false);
-    await f.call("/v1/connect", {
-      platform: "moodle",
-      mode: "session",
-      input: { cookie_name: "MoodleSession", cookie_value: "valid" },
-    });
-    const original = await f.storage.get("session:moodle");
-    await f.storage.delete("site:moodle");
-    expect(await (await f.call("/v1/sites")).json()).toEqual({
-      moodle: { site_url: "https://moodle.example.edu" },
-    });
-    expect(await f.storage.get("session:moodle")).toEqual(original);
-    f.env.PLATFORM_CONFIG = "{}";
-    expect(await (await f.call("/v1/sites")).json()).toEqual({
-      moodle: { site_url: "https://moodle.example.edu" },
-    });
-    const other = fixture(false);
-    other.env.PLATFORM_CONFIG = "{}";
-    expect(await (await other.call("/v1/sites")).json()).toEqual({});
-  });
-
   it("authenticates SSO before deriving the account and saving credentials", async () => {
     const stores = new Map<string, ReturnType<typeof fixture>>();
     const env = {
@@ -531,7 +508,6 @@ describe("private credential vault", () => {
     await f.call("/v1/forget-login");
     expect(await f.storage.get("sso")).toBeUndefined();
     expect(await f.storage.get("refresh:ontrack")).toBeDefined();
-    f.env.PLATFORM_CONFIG = "{}";
     expect(
       (await f.call("/v1/disconnect", { platform: "ontrack" })).status,
     ).toBe(200);
@@ -601,6 +577,14 @@ describe("private credential vault", () => {
     const f = fixture(false);
     // Browser SSO supplies refresh cookies; use the encrypted vault fixture to model a previous connection.
     const { encrypt } = await import("../src/auth/crypto.ts");
+    await f.storage.put(
+      "site:ontrack",
+      await encrypt(
+        key,
+        `${account}:site:ontrack`,
+        "https://ontrack.example.edu",
+      ),
+    );
     await f.storage.put(
       "session:ontrack",
       await encrypt(key, `${account}:session:ontrack`, {

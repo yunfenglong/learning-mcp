@@ -21,8 +21,6 @@ Ed uses `https://edstem.org` automatically. Optional Ed scope can be supplied th
 
 The number is illustrative; use verified numeric Ed metadata. Platform base links must be HTTPS origins without credentials, application paths, queries or fragments. IP literals and internal hostnames are rejected. Deployments under a path prefix are not supported. Network requests stay on the user's saved origin; MCP tools cannot supply or override addresses. SSO passwords and codes are entered only at the supported identity provider, never into a user-selected platform's login form.
 
-For existing deployments, the upgrade preserves the original platform addresses in a private compatibility record. A connection without a saved base link receives its original address when it is next accessed. Only already-existing sessions use this record; new connections still require a user-supplied base link. Keep the old configuration until the upgrade's compatibility initialization succeeds, then remove its Moodle and OnTrack entries.
-
 Configure `SSO_PROVIDERS` on **both Workers** as a JSON string. For example:
 
 ```json

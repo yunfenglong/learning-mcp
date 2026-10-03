@@ -232,7 +232,6 @@ beforeAll(async () => {
           bindings: {
             BROKER_SERVICE_TOKEN: brokerSecret,
             BROKER_CREDENTIALS_KEY: btoa("b".repeat(32)),
-            PLATFORM_CONFIG: platforms,
             LOGIN_ORIGINS: "[]",
           },
           outboundService: platformFixture,

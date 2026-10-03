@@ -33,6 +33,6 @@ Search covers bounded Ed and Moodle text. Images, attachments, older posts and i
 
 ## Deployment problems
 
-Check the [configuration reference](configuration.md): Moodle and OnTrack require each user to enter a valid HTTPS base link on first Connect. The broker Service Binding must match its deployed name, both Workers need the same service token, and encryption keys must decode to 32 bytes. Set the exact public suite origin and verify the identity-provider flow. Existing connections receive their original addresses through the upgrade compatibility record.
+Check the [configuration reference](configuration.md): Moodle and OnTrack require each user to enter a valid HTTPS base link on first Connect. The broker Service Binding must match its deployed name, both Workers need the same service token, and encryption keys must decode to 32 bytes. Set the exact public suite origin and verify the identity-provider flow.
 
 If deployment stops at the upstream check, run `pnpm upstreams sync`, review the bundled changes and repeat validation. Builds and tests do not publish Workers. A successful dry run does not validate real credentials, platform policy or live SSO.

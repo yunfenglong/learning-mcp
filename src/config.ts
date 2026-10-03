@@ -58,8 +58,6 @@ export function loadConfig(env: Env): Config {
     const platforms = z
       .object({
         ed: platformConfigSchema.optional(),
-        moodle: platformConfigSchema.optional(),
-        ontrack: platformConfigSchema.optional(),
       })
       .strict()
       .parse(JSON.parse(env.PLATFORM_CONFIG ?? "{}"));
