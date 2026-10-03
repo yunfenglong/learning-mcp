@@ -21,7 +21,6 @@
     },
   ],
   "vars": {
-    "PLATFORM_CONFIG": "{}",
     "SSO_PROVIDERS": "[]",
     "LOGIN_ORIGINS": "[]",
   },

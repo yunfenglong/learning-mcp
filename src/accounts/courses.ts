@@ -58,7 +58,7 @@ export function normalizeCourse(
         ? row.scope_verified === false
           ? "Outside the configured Ed institution scope"
           : "Verified enrollment; deployment Ed scope"
-        : "Verified enrollment at the configured platform origin",
+        : "Verified enrollment at the account's saved platform base link",
   };
 }
 export function finishDiscovery(

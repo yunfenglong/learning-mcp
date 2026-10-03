@@ -13,7 +13,10 @@ export class MoodleAdapter {
   ) {}
   private async checkSite() {
     if (!this.config)
-      throw new SuiteError("PLATFORM_NOT_CONFIGURED", "Configure Moodle.");
+      throw new SuiteError(
+        "PLATFORM_NOT_CONFIGURED",
+        "Connect Moodle and enter its base link.",
+      );
     this.checked ??= (async () => {
       const user = object(object(await this.backend.call("get_user", {})).user);
       if (
@@ -22,7 +25,7 @@ export class MoodleAdapter {
       )
         throw new SuiteError(
           "SITE_NOT_ALLOWED",
-          "The authenticated Moodle site does not match this Learning deployment.",
+          "The authenticated Moodle site does not match your saved base link.",
           403,
         );
     })();

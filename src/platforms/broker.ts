@@ -2,6 +2,8 @@ import { z } from "zod";
 import type { Env } from "../config.ts";
 import { SuiteError } from "../errors.ts";
 import { cookiesSchema } from "./session-cookies.ts";
+import { platformBaseLink } from "./base-link.ts";
+const site = z.string().transform(platformBaseLink).optional();
 const secret = z
   .string()
   .min(1)
@@ -16,6 +18,7 @@ export const moodleSessionSchema = z
     userid: z.number().int().positive(),
     profile_id: z.string().min(1),
     display_name: z.string().optional(),
+    site_url: site,
   })
   .strict();
 export const ontrackSessionSchema = z
@@ -25,6 +28,7 @@ export const ontrackSessionSchema = z
     expires_at: z.string().datetime().optional(),
     profile_id: z.string().min(1),
     display_name: z.string().optional(),
+    site_url: site,
   })
   .strict();
 export type MoodleSession = z.infer<typeof moodleSessionSchema>;

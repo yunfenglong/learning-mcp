@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Config, Env } from "../config.ts";
+import { platformConfigSchema, type Config, type Env } from "../config.ts";
 import type { Platform, Unit } from "../domain/units.ts";
 import type { Profile, Connection } from "../auth/state.ts";
 import { stateCall, globalCall } from "../auth/client.ts";
@@ -49,6 +49,18 @@ export class AccountService {
       ),
     };
   }
+  async loadSites() {
+    const sites = z
+      .object({
+        moodle: platformConfigSchema.optional(),
+        ontrack: platformConfigSchema.optional(),
+      })
+      .strict()
+      .parse(await brokerCall(this.env, this.profile.id, "/v1/sites"));
+    delete this.config.platforms.moodle;
+    delete this.config.platforms.ontrack;
+    Object.assign(this.config.platforms, sites);
+  }
   async status() {
     let ed: unknown = { platform: "ed", status: "not_connected" };
     try {
@@ -72,6 +84,7 @@ export class AccountService {
         status: z.enum(["connected", "not_connected", "unavailable"]),
         display_name: z.string().max(200).optional(),
         profile_id: z.string().max(200).optional(),
+        site_url: z.string().optional(),
       });
       platforms = z
         .object({
@@ -103,6 +116,7 @@ export class AccountService {
     };
   }
   async discover() {
+    await this.loadSites();
     const v = await discover(this.config, this.backends);
     return stateCall(this.env, this.profile.id, "/discovery", v);
   }

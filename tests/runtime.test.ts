@@ -194,8 +194,6 @@ async function platformFixture(req: Request): Promise<Response> {
 beforeAll(async () => {
   const platforms = JSON.stringify({
     ed: { site_url: "https://edstem.org" },
-    moodle: { site_url: moodle },
-    ontrack: { site_url: ontrack },
   });
   runtime = new Miniflare(
     convertV4MiniflareOptions({
@@ -580,6 +578,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
   it("validates Moodle and OnTrack sessions in the private broker and keeps users isolated", async () => {
     const connected = await action(a, "platform", {
       platform: "moodle",
+      base_link: moodle,
       mode: "session",
       cookie_name: "MoodleSession",
       cookie_value: "moodle-a",
@@ -593,6 +592,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       (
         await action(a, "platform", {
           platform: "ontrack",
+          base_link: ontrack,
           mode: "session",
           username: "a",
           token: "ontrack-a",

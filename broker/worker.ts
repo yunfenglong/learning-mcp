@@ -13,6 +13,7 @@ import { SuiteError, publicError } from "../src/errors.ts";
 import { boundedRequest, json } from "../src/http/common.ts";
 import { OutputBoundary } from "../src/security/output.ts";
 import { platformFetch } from "../src/platforms/network.ts";
+import { platformBaseLink } from "../src/platforms/base-link.ts";
 import {
   moodleSessionSchema,
   ontrackSessionSchema,
@@ -38,13 +39,14 @@ export interface BrokerEnv {
   BROKER_STATE: DurableObjectNamespace;
   BROKER_SERVICE_TOKEN: string;
   BROKER_CREDENTIALS_KEY: string;
-  PLATFORM_CONFIG: string;
+  PLATFORM_CONFIG?: string;
   LOGIN_ORIGINS: string;
   SSO_PROVIDERS?: string;
   BROWSER?: Fetcher;
 }
 const platform = z.enum(["moodle", "ontrack"]),
   accountSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const legacyAccount = () => digest("legacy-platform-sites-v1");
 const secret = z
   .string()
   .min(1)
@@ -226,7 +228,7 @@ export class BrokerState extends DurableObject<BrokerEnv> {
         initialPath = new URL(request.url).pathname;
       let path = initialPath;
       const data = (await request.json()) as any;
-      const configs = JSON.parse(this.env.PLATFORM_CONFIG) as Record<
+      const configs = JSON.parse(this.env.PLATFORM_CONFIG ?? "{}") as Record<
         string,
         { site_url: string }
       >;
@@ -251,19 +253,92 @@ export class BrokerState extends DurableObject<BrokerEnv> {
             value,
           ),
         );
+      const readSite = async (p: "moodle" | "ontrack") => {
+        const saved = await load<string>(`site:${p}`);
+        if (saved) return platformBaseLink(saved);
+        // Assign the original deployment address only to a connection that already exists.
+        if (await this.ctx.storage.get(`session:${p}`)) {
+          let legacy = configs[p]?.site_url;
+          if (!legacy && this.env.BROKER_STATE) {
+            const migration = await legacyAccount();
+            const response = await this.env.BROKER_STATE.get(
+              this.env.BROKER_STATE.idFromName(migration),
+            ).fetch(
+              new Request("https://broker/v1/read-legacy-sites", {
+                method: "POST",
+                headers: {
+                  "x-suite-account": migration,
+                  "content-type": "application/json",
+                },
+                body: "{}",
+              }),
+            );
+            if (!response.ok)
+              throw new SuiteError(
+                "MIGRATION_UNAVAILABLE",
+                "The existing connection's base link could not be assigned. Try again shortly.",
+                503,
+              );
+            const sites = (await response.json()) as Record<string, string>;
+            legacy = sites[p];
+          }
+          if (legacy) {
+            const site = platformBaseLink(legacy);
+            await save(`site:${p}`, site);
+            return site;
+          }
+        }
+        return undefined;
+      };
+      if (
+        path === "/v1/store-legacy-sites" ||
+        path === "/v1/read-legacy-sites"
+      ) {
+        if (account !== (await legacyAccount()))
+          throw new SuiteError(
+            "ACCESS_DENIED",
+            "Invalid migration account.",
+            403,
+          );
+        const existing =
+          (await load<Record<string, string>>("legacy-sites")) ?? {};
+        if (path === "/v1/store-legacy-sites") {
+          const sites = z
+            .object({
+              moodle: z.string().transform(platformBaseLink).optional(),
+              ontrack: z.string().transform(platformBaseLink).optional(),
+            })
+            .strict()
+            .parse(data.sites);
+          // Keep the original addresses. New connections never use this compatibility record.
+          await save("legacy-sites", { ...sites, ...existing });
+          return json({ ok: true });
+        }
+        return json(existing);
+      }
+      if (path === "/v1/sites") {
+        const sites: Record<string, { site_url: string }> = {};
+        for (const p of ["moodle", "ontrack"] as const) {
+          const site = await readSite(p);
+          if (site) sites[p] = { site_url: site };
+        }
+        return json(sites);
+      }
       if (path === "/v1/status") {
         await load<SavedLogin>("sso");
         const status: Record<string, unknown> = {
           auth_modes: ["session", ...(this.env.BROWSER ? ["sso"] : [])],
           has_sso: Boolean(await this.ctx.storage.get("sso")),
         };
-        for (const p of ["moodle", "ontrack"]) {
+        for (const p of ["moodle", "ontrack"] as const) {
           const record = await load<any>(`session:${p}`);
+          const site = await readSite(p);
           status[p] = record
             ? {
                 status: "connected",
                 display_name: record.display_name,
                 profile_id: record.profile_id,
+                ...(site ? { site_url: site } : {}),
               }
             : { status: "not_connected" };
         }
@@ -316,6 +391,7 @@ export class BrokerState extends DurableObject<BrokerEnv> {
       }
       const p = platform.parse(data.platform);
       if (path === "/v1/disconnect") {
+        await this.ctx.storage.delete(`site:${p}`);
         await this.ctx.storage.delete(`session:${p}`);
         await this.ctx.storage.delete(`renewed:${p}`);
         await this.ctx.storage.delete(`refresh:${p}`);
@@ -328,14 +404,33 @@ export class BrokerState extends DurableObject<BrokerEnv> {
         await this.ctx.storage.delete(`retry_after:${p}`);
         return json({ ok: true });
       }
-      const configuredSite = configs[p]?.site_url;
-      if (!configuredSite || !platformOrigin(configuredSite))
+      const storedSite = await readSite(p);
+      const submittedSite =
+        data.base_link == null || data.base_link === ""
+          ? undefined
+          : platformBaseLink(data.base_link);
+      if (storedSite && submittedSite && storedSite !== submittedSite)
         throw new SuiteError(
-          "BROKER_CONFIG",
-          "Configure this platform's HTTPS origin.",
-          503,
+          "PLATFORM_SITE_CHANGED",
+          "Disconnect this platform before connecting a different base link.",
+          409,
         );
-      const site = new URL(configuredSite).origin;
+      const site = storedSite ?? submittedSite;
+      if (!site)
+        throw new SuiteError(
+          "BASE_LINK_REQUIRED",
+          "Enter the platform base link when connecting this account.",
+          409,
+        );
+      if (
+        data.expected_base_link &&
+        platformBaseLink(data.expected_base_link) !== site
+      )
+        throw new SuiteError(
+          "PLATFORM_SITE_CHANGED",
+          "This platform connection has changed. Open a new request.",
+          409,
+        );
       if (path === "/v1/session") {
         const v = await load<unknown>(`session:${p}`);
         if (!v)
@@ -351,7 +446,7 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           Date.parse(session.expires_at) < Date.now() + 5 * 60000
         )
           path = "/v1/renew";
-        else return json(v);
+        else return json({ ...(v as object), site_url: site });
       }
       if (path === "/v1/cookies" && p === "moodle") {
         const current = await load<any>("session:moodle");
@@ -411,7 +506,7 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           (!previous.expires_at ||
             Date.parse(previous.expires_at) > Date.now() + 30000)
         )
-          return json(previous);
+          return json({ ...previous, site_url: site });
       }
       let candidate: unknown,
         login: SavedLogin | undefined,
@@ -528,6 +623,11 @@ export class BrokerState extends DurableObject<BrokerEnv> {
                   loginOrigins: origins,
                   cookies: stored?.cookies,
                   input: credentials,
+                  credentialOrigins: stored?.provider
+                    ? [stored.provider]
+                    : ssoProvidersSchema
+                        .parse(JSON.parse(this.env.SSO_PROVIDERS ?? "[]"))
+                        .map((v) => v.origin),
                 });
         } catch (error) {
           await this.ctx.storage.put(`retry_after:${p}`, Date.now() + 60000);
@@ -537,20 +637,20 @@ export class BrokerState extends DurableObject<BrokerEnv> {
         if (p === "ontrack")
           refreshCookies = scopedCookies(result.cookies, [site]);
         login = {
+          ...(stored?.provider
+            ? { provider: stored.provider, subject: stored.subject }
+            : {}),
           // Keep platform renewal material in its own record, separate from shared IdP cookies.
           cookies: scopedCookies(
             result.cookies,
-            origins.filter(
-              (origin) =>
-                !Object.values(configs).some(
-                  (c) =>
-                    c.site_url &&
-                    new URL(c.site_url).origin === new URL(origin).origin,
-                ),
-            ),
+            stored?.provider
+              ? [stored.provider]
+              : ssoProvidersSchema
+                  .parse(JSON.parse(this.env.SSO_PROVIDERS ?? "[]"))
+                  .map((v) => v.origin),
           ).filter((cookie) => {
             if (/^MoodleSession/.test(cookie.name)) return false;
-            const ontrack = configs.ontrack?.site_url;
+            const ontrack = p === "ontrack" ? site : undefined;
             return !(
               ontrack &&
               ["refresh_token", "username"].includes(cookie.name) &&
@@ -598,6 +698,7 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           409,
         );
       await save(`session:${p}`, verified);
+      await save(`site:${p}`, site);
       output.rememberSession(verified);
       if (refreshCookies) await save("refresh:ontrack", refreshCookies);
       else if (path === "/v1/connect" && p === "ontrack")
@@ -610,7 +711,7 @@ export class BrokerState extends DurableObject<BrokerEnv> {
       // Credentials leave the broker only through its authenticated internal session/renew contract.
       return json(
         path === "/v1/renew"
-          ? verified
+          ? { ...verified, site_url: site }
           : output.redact({
               ok: true,
               platform: p,
@@ -683,6 +784,25 @@ export default {
       if (original.method !== "POST")
         throw new SuiteError("METHOD_NOT_ALLOWED", "Use POST.", 405);
       const request = await boundedRequest(original);
+      if (new URL(request.url).pathname === "/v1/seed-legacy-sites") {
+        const old = JSON.parse(env.PLATFORM_CONFIG ?? "{}");
+        const sites: Record<string, string> = {};
+        for (const p of ["moodle", "ontrack"] as const)
+          if (old[p]?.site_url) sites[p] = platformBaseLink(old[p].site_url);
+        const migration = await legacyAccount();
+        return env.BROKER_STATE.get(
+          env.BROKER_STATE.idFromName(migration),
+        ).fetch(
+          new Request("https://broker/v1/store-legacy-sites", {
+            method: "POST",
+            headers: {
+              "x-suite-account": migration,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ sites }),
+          }),
+        );
+      }
       if (new URL(request.url).pathname === "/v1/authenticate-sso") {
         const data = (await request.json()) as any;
         const provider = configuredProvider(env, data.provider);
@@ -739,23 +859,7 @@ export default {
         const p = platform.parse(data.platform);
         const input = inputSchema.parse(data.input);
         output.remember(input.password, input.mfa_code, input.totp_secret);
-        const configs = JSON.parse(env.PLATFORM_CONFIG);
-        const site = configs[p]?.site_url;
-        const base = new URL(z.string().url().max(2048).parse(data.base_link));
-        if (
-          !site ||
-          !platformOrigin(site) ||
-          base.origin !== new URL(site).origin ||
-          base.username ||
-          base.password ||
-          base.search ||
-          base.hash
-        )
-          throw new SuiteError(
-            "INVALID_BASE_LINK",
-            "Use the configured platform base link.",
-            400,
-          );
+        const site = platformBaseLink(data.base_link);
         if (!env.BROWSER)
           throw new SuiteError(
             "SSO_NOT_CONFIGURED",
@@ -771,6 +875,9 @@ export default {
           binding: env.BROWSER,
           site: new URL(site).origin,
           platform: p,
+          credentialOrigins: ssoProvidersSchema
+            .parse(JSON.parse(env.SSO_PROVIDERS ?? "[]"))
+            .map((v) => v.origin),
           loginOrigins: z
             .array(z.string().url())
             .max(30)
@@ -802,7 +909,12 @@ export default {
               "x-suite-account": id,
               "content-type": "application/json",
             },
-            body: JSON.stringify({ platform: p, input, result }),
+            body: JSON.stringify({
+              platform: p,
+              base_link: site,
+              input,
+              result,
+            }),
           }),
         );
         if (!saved.ok) return saved;

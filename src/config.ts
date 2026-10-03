@@ -9,7 +9,7 @@ export interface Env {
   ISSUER: string;
   CREDENTIALS_KEY: string;
   ADMIN_TOKEN?: string;
-  PLATFORM_CONFIG: string;
+  PLATFORM_CONFIG?: string;
   SSO_PROVIDERS?: string;
   SSO_BROKER?: Fetcher;
   BROKER_SERVICE_TOKEN?: string;
@@ -62,9 +62,10 @@ export function loadConfig(env: Env): Config {
         ontrack: platformConfigSchema.optional(),
       })
       .strict()
-      .parse(JSON.parse(env.PLATFORM_CONFIG));
+      .parse(JSON.parse(env.PLATFORM_CONFIG ?? "{}"));
     if (platforms.ed && platforms.ed.site_url !== "https://edstem.org")
       throw new Error("Use the supported Ed API origin");
+    platforms.ed ??= { site_url: "https://edstem.org" };
     return {
       issuer,
       units: [],

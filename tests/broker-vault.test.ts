@@ -38,7 +38,17 @@ function fixture(browser = true) {
       new Request(`https://broker${path}`, {
         method: "POST",
         headers: { "x-suite-account": who, "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(
+          path === "/v1/connect" || path === "/v1/bootstrap"
+            ? {
+                base_link:
+                  body.platform === "moodle"
+                    ? "https://moodle.example.edu"
+                    : "https://ontrack.example.edu",
+                ...body,
+              }
+            : body,
+        ),
       }),
     );
   return { storage, call, env: (broker as any).env };
@@ -75,6 +85,105 @@ beforeEach(() => {
   });
 });
 describe("private credential vault", () => {
+  it("preserves the old address after removing Worker configuration and never gives it to a new account", async () => {
+    const migration = fixture(false), f = fixture(false);
+    const id = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("legacy-platform-sites-v1"));
+    const migrationId = [...new Uint8Array(id)].map(v => v.toString(16).padStart(2, "0")).join("");
+    await migration.call("/v1/store-legacy-sites", {sites: {moodle: "https://moodle.example.edu"}}, migrationId);
+    const namespace = {
+      idFromName: (value: string) => value,
+      get: () => ({fetch: async (request: Request) => migration.call(new URL(request.url).pathname, await request.json(), migrationId)}),
+    };
+    await f.call("/v1/connect", {platform: "moodle", mode: "session", input: {cookie_name: "MoodleSession", cookie_value: "valid"}});
+    await f.storage.delete("site:moodle");
+    f.env.PLATFORM_CONFIG = "{}";
+    f.env.BROKER_STATE = namespace;
+    expect(await (await f.call("/v1/sites")).json()).toEqual({moodle: {site_url: "https://moodle.example.edu"}});
+    expect(await f.storage.get("site:moodle")).toBeDefined();
+    const newcomer = fixture(false);
+    newcomer.env.PLATFORM_CONFIG = "{}";
+    newcomer.env.BROKER_STATE = namespace;
+    expect((await newcomer.call("/v1/connect", {platform: "moodle", base_link: null, mode: "session", input: {cookie_name: "MoodleSession", cookie_value: "valid"}})).status).toBe(409);
+    expect(await (await newcomer.call("/v1/sites")).json()).toEqual({});
+  });
+  it("requires a base link for the first connection and stores it per user without deployment sites", async () => {
+    const f = fixture(false);
+    f.env.PLATFORM_CONFIG = "{}";
+    const input = { cookie_name: "MoodleSession", cookie_value: "valid" };
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "moodle",
+          base_link: null,
+          mode: "session",
+          input,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "moodle",
+          mode: "session",
+          input,
+        })
+      ).status,
+    ).toBe(200);
+    expect(await (await f.call("/v1/sites")).json()).toEqual({
+      moodle: { site_url: "https://moodle.example.edu" },
+    });
+    expect(JSON.stringify([...f.storage.data])).not.toContain(
+      "https://moodle.example.edu",
+    );
+    expect(
+      await (await f.call("/v1/session", { platform: "moodle" })).json(),
+    ).toMatchObject({
+      site_url: "https://moodle.example.edu",
+      cookie_value: "valid",
+    });
+    expect(
+      (
+        await f.call("/v1/renew", {
+          platform: "moodle",
+          expected_base_link: "https://other.example.edu",
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "moodle",
+          base_link: "https://other.example.edu",
+          mode: "session",
+          input,
+        })
+      ).status,
+    ).toBe(409);
+    await f.call("/v1/disconnect", { platform: "moodle" });
+    expect(await (await f.call("/v1/sites")).json()).toEqual({});
+  });
+  it("assigns the original base link to an existing session without replacing its credentials", async () => {
+    const f = fixture(false);
+    await f.call("/v1/connect", {
+      platform: "moodle",
+      mode: "session",
+      input: { cookie_name: "MoodleSession", cookie_value: "valid" },
+    });
+    const original = await f.storage.get("session:moodle");
+    await f.storage.delete("site:moodle");
+    expect(await (await f.call("/v1/sites")).json()).toEqual({
+      moodle: { site_url: "https://moodle.example.edu" },
+    });
+    expect(await f.storage.get("session:moodle")).toEqual(original);
+    f.env.PLATFORM_CONFIG = "{}";
+    expect(await (await f.call("/v1/sites")).json()).toEqual({
+      moodle: { site_url: "https://moodle.example.edu" },
+    });
+    const other = fixture(false);
+    other.env.PLATFORM_CONFIG = "{}";
+    expect(await (await other.call("/v1/sites")).json()).toEqual({});
+  });
+
   it("authenticates SSO before deriving the account and saving credentials", async () => {
     const stores = new Map<string, ReturnType<typeof fixture>>();
     const env = {
@@ -134,7 +243,7 @@ describe("private credential vault", () => {
     expect(((await (await authenticate()).json()) as any).id).toBe(profile.id);
     const calls = login.mock.calls.length;
     expect(
-      (await authenticate({ base_link: "https://evil.example" })).status,
+      (await authenticate({ base_link: "https://localhost" })).status,
     ).toBe(400);
     expect(login.mock.calls).toHaveLength(calls);
     login.mockRejectedValueOnce(new Error("password-secret"));

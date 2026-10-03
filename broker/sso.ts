@@ -28,6 +28,7 @@ export interface BrowserLoginOptions {
   loginOrigins: string[];
   cookies?: any[];
   input?: LoginInput;
+  credentialOrigins?: string[];
 }
 export const oktaIdentitySchema = z
   .object({
@@ -94,7 +95,11 @@ export async function browserLogin(
   let abandoned = false;
   try {
     // Use the same Browser Run library as the working deployed shared-auth service.
-    const pending = launch(options.binding);
+    const pending = launch(options.binding, {
+      guardrails: {
+        allowedDomains: [...allowed].map((origin) => new URL(origin).hostname),
+      },
+    });
     pending.then(
       async (value) => {
         if (abandoned) await value.close().catch(() => {});
@@ -104,7 +109,7 @@ export async function browserLogin(
     browser = await bounded(pending, 20000);
     return await bounded(
       (async () => {
-        context = await browser!.newContext();
+        context = await browser!.newContext({ serviceWorkers: "block" });
         const page = await context.newPage();
         page.setDefaultTimeout(10000);
         await context.route("**/*", async (route) => {
@@ -286,7 +291,7 @@ export async function browserLogin(
         };
         const existing = await capture();
         if (existing) return existing;
-        await autoLogin(page, options.input);
+        await autoLogin(page, options.input, options.credentialOrigins);
         await submitSamlHandoff(page);
         // Retain the deployed shared-auth session capture loop after its login handoff.
         for (let i = 0; i < 18; i++) {

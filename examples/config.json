@@ -1,17 +1,21 @@
 {
   "platforms": {
-    "ed": { "site_url": "https://edstem.org" },
-    "moodle": { "site_url": "https://moodle.example.edu" },
-    "ontrack": { "site_url": "https://ontrack.example.edu" }
+    "ed": {
+      "site_url": "https://edstem.org"
+    }
   },
   "course_association_example": {
     "key": "csc1001-main-2026-s2",
     "code": "CSC1001",
-    "name": "Example course — replace with a discovered course",
+    "name": "Example course \u2014 replace with a discovered course",
     "campus": "main",
     "year": 2026,
     "teaching_period": "S2",
     "timezone": "UTC",
     "ed_course_id": 101
+  },
+  "user_connection_example": {
+    "platform": "moodle",
+    "base_link": "https://courses.example.edu"
   }
 }

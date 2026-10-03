@@ -193,6 +193,22 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("shared-auth browser SSO", () => {
+  it("never fills SSO credentials into a user-selected platform origin", async () => {
+    const f = fixture({
+      url: site,
+      logged: false,
+      markup: '<input type="password"><input type="submit">',
+    });
+    await expect(
+      browserLogin({
+        ...moodle,
+        credentialOrigins: [login],
+        input: { username: "u", password: "provider-secret" },
+      }),
+    ).rejects.toMatchObject({ code: "SSO_CREDENTIAL_DESTINATION" });
+    expect(f.filled).not.toHaveBeenCalled();
+    expect(f.browser.close).toHaveBeenCalledOnce();
+  });
   it("verifies the provider's active subject and never returns its session ID", async () => {
     const f = fixture({ url: login });
     const result = await browserLogin(okta);

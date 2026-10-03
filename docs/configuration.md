@@ -7,21 +7,21 @@ Configure the suite in [`wrangler.jsonc`](../wrangler.jsonc) and the broker in [
 | Variable          | Worker | Value                                                                                                   |
 | ----------------- | ------ | ------------------------------------------------------------------------------------------------------- |
 | `ISSUER`          | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
-| `PLATFORM_CONFIG` | Both   | JSON string containing the enabled platform entries below.                                              |
+| `PLATFORM_CONFIG` | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                 |
 | `SSO_PROVIDERS`   | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
 | `LOGIN_ORIGINS`   | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed. |
 
-Use the **`platforms` object** from [`examples/config.json`](../examples/config.json), not the whole file:
+Users enter Moodle and OnTrack base links when connecting a platform on their authenticated account page. The broker validates and saves the exact public HTTPS origin in that user's encrypted connection storage. It uses the saved address for platform reads, sign-in and renewal. Worker variables do not need Moodle or OnTrack addresses. To use a different address, disconnect that platform and connect it again; course associations must be confirmed again.
+
+Ed uses `https://edstem.org` automatically. Optional Ed scope can be supplied through the suite's `PLATFORM_CONFIG`:
 
 ```json
-{
-  "ed": { "site_url": "https://edstem.org" },
-  "moodle": { "site_url": "https://moodle.example.edu" },
-  "ontrack": { "site_url": "https://ontrack.example.edu" }
-}
+{ "ed": { "site_url": "https://edstem.org", "institution_ids": [123] } }
 ```
 
-Serialize this object as a string for Wrangler's `vars.PLATFORM_CONFIG`. Remove disabled platforms. The broker needs only Moodle and OnTrack entries, matching the suite's origins. These origins must use HTTPS with no credentials, application path, query or fragment. Deployments under a path prefix are not supported. Optional `ed.institution_ids` can restrict Ed courses using verified numeric metadata.
+The number is illustrative; use verified numeric Ed metadata. Platform base links must be HTTPS origins without credentials, application paths, queries or fragments. IP literals and internal hostnames are rejected. Deployments under a path prefix are not supported. Network requests stay on the user's saved origin; MCP tools cannot supply or override addresses. SSO passwords and codes are entered only at the supported identity provider, never into a user-selected platform's login form.
+
+For existing deployments, the upgrade preserves the original platform addresses in a private compatibility record. A connection without a saved base link receives its original address when it is next accessed. Only already-existing sessions use this record; new connections still require a user-supplied base link. Keep the old configuration until the upgrade's compatibility initialization succeeds, then remove its Moodle and OnTrack entries.
 
 Configure `SSO_PROVIDERS` on **both Workers** as a JSON string. For example:
 

@@ -12,7 +12,7 @@ describe("generic deployment scope", () => {
         ontrack: { site_url: ontrack },
       }),
     }) as Env;
-  it("accepts unrelated administrator-configured HTTPS hosts, including an empty deployment", () => {
+  it("accepts legacy HTTPS platform configuration and an empty deployment", () => {
     expect(
       loadConfig(env("https://courses.school.example")).platforms.moodle
         ?.site_url,
@@ -22,7 +22,7 @@ describe("generic deployment scope", () => {
         ...env("https://courses.school.example"),
         PLATFORM_CONFIG: "{}",
       }).platforms,
-    ).toEqual({});
+    ).toEqual({ ed: { site_url: "https://edstem.org" } });
   });
   it("rejects insecure origins, credentials and non-origin URL components", () => {
     for (const site of [

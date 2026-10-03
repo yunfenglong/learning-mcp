@@ -34,7 +34,6 @@
   ],
   "vars": {
     "ISSUER": "https://suite.example.com",
-    "PLATFORM_CONFIG": "{}",
     "SSO_PROVIDERS": "[]",
   },
   "observability": {

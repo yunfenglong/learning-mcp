@@ -30,6 +30,7 @@ export class DirectBackend implements Backend {
     try {
       const value = await brokerCall(this.env, this.account, "/v1/renew", {
         platform,
+        expected_base_link: this.config.platforms[platform]?.site_url,
       });
       this.output.rememberSession(value);
       return value;
@@ -50,8 +51,8 @@ export class DirectBackend implements Backend {
     const site = this.config.platforms[this.platform]?.site_url;
     if (!site)
       throw new SuiteError(
-        "PLATFORM_NOT_CONFIGURED",
-        `This deployment has no ${this.platform} site.`,
+        "PLATFORM_NOT_CONNECTED",
+        `Connect ${this.platform} and enter its base link on your account page.`,
         409,
       );
     if (this.platform === "ed") {
@@ -101,6 +102,7 @@ export class DirectBackend implements Backend {
       const c = moodleSessionSchema.parse(
         await brokerCall(this.env, this.account, "/v1/session", {
           platform: "moodle",
+          expected_base_link: site,
         }),
       );
       const session = { current: c };
@@ -154,6 +156,7 @@ export class DirectBackend implements Backend {
     const c = ontrackSessionSchema.parse(
       await brokerCall(this.env, this.account, "/v1/session", {
         platform: "ontrack",
+        expected_base_link: site,
       }),
     );
     this.output.rememberSession(c);
@@ -213,6 +216,7 @@ export class DirectBackend implements Backend {
             "/v1/cookies",
             {
               platform: "moodle",
+              expected_base_link: site,
               expected_cookie_value:
                 expected?.value ?? session.current.cookie_value,
               cookies,

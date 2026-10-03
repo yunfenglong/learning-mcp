@@ -197,11 +197,26 @@ async function pressEnterFirst(page: Page, selectors2: string[]) {
   }
   return false;
 }
-export async function autoLogin(page: Page, creds: LoginInput | undefined) {
+export async function autoLogin(
+  page: Page,
+  creds: LoginInput | undefined,
+  credentialOrigins?: string[],
+) {
   const attempts = { username: 0, password: 0, otp: 0, factor: 0 };
   await page.waitForTimeout(1200);
   for (let step = 0; step < 16; step++) {
     let state = await safeLoginState(page, "step_" + step);
+    if (
+      creds &&
+      credentialOrigins &&
+      (state.hasUsername || state.hasPassword || state.hasOtp) &&
+      !credentialOrigins.includes(new URL(page.url()).origin)
+    )
+      throw new SuiteError(
+        "SSO_CREDENTIAL_DESTINATION",
+        "SSO credentials can only be entered at your supported identity provider. Check the platform base link.",
+        403,
+      );
     if (!creds && (state.hasUsername || state.hasPassword || state.hasOtp))
       throw new SuiteError(
         "SSO_LOGIN_REQUIRED",

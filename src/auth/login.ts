@@ -9,6 +9,7 @@ import { verificationFields } from "../http/sign-in-fields.ts";
 import { cookie, html } from "../http/common.ts";
 import { brokerCall } from "../platforms/broker.ts";
 import { platformFetch } from "../platforms/network.ts";
+import { platformBaseLink } from "../platforms/base-link.ts";
 import { USAGE_VERSION, usageNotice, usageLabel } from "../domain/usage.ts";
 
 export const SESSION_COOKIE = "__Host-learning-session";
@@ -47,7 +48,6 @@ export async function startLogin(request: Request, env: Env, config: Config) {
   const fields = `<input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}">`;
   const approval = `<label><input type="checkbox" name="usage_consent" value="accept" required> ${usageLabel}</label>`;
   const sso = (["moodle", "ontrack"] as const)
-    .filter((p) => config.platforms[p])
     .map(
       (p) =>
         `<option value="${p}">${p === "moodle" ? "Moodle" : "OnTrack"}</option>`,
@@ -103,7 +103,11 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
   const p = z
     .enum(["sso", "ed", "moodle", "ontrack"])
     .parse(form.get("platform"));
-  if (p === "sso" ? !config.ssoProviders?.length : !config.platforms[p])
+  if (
+    p === "sso"
+      ? !config.ssoProviders?.length
+      : p === "ed" && !config.platforms.ed
+  )
     throw new SuiteError(
       "PLATFORM_UNAVAILABLE",
       "This platform is not configured.",
@@ -194,19 +198,7 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
       }),
     );
   } else {
-    const base = z.string().url().max(2048).parse(form.get("base_link"));
-    if (
-      new URL(base).origin !== new URL(config.platforms[p]!.site_url).origin ||
-      new URL(base).username ||
-      new URL(base).password ||
-      new URL(base).search ||
-      new URL(base).hash
-    )
-      throw new SuiteError(
-        "INVALID_BASE_LINK",
-        "Use this platform's configured base link.",
-        400,
-      );
+    const base = platformBaseLink(form.get("base_link"));
     profile = z
       .object({
         id: z.string().regex(/^[a-f0-9]{64}$/),
