@@ -1,0 +1,41 @@
+{
+  "name": "learning-mcp-suite",
+  "version": "0.3.0",
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "description": "Cloud MCP suite with Okta SSO, Ed, Moodle and OnTrack connections",
+  "type": "module",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:runtime": "pnpm build && pnpm build:broker && vitest run --config vitest.runtime.config.ts",
+    "build": "node scripts/wrangler.mjs build",
+    "dev": "node scripts/wrangler.mjs dev",
+    "deploy": "node scripts/wrangler.mjs deploy",
+    "admin": "node scripts/admin.mjs",
+    "upstreams": "node scripts/upstreams.mjs",
+    "build:broker": "node scripts/wrangler.mjs build --config broker/wrangler.jsonc --outdir ../dist-broker",
+    "deploy:broker": "node scripts/wrangler.mjs deploy --config broker/wrangler.jsonc"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "1.4.0",
+    "@cloudflare/workers-oauth-provider": "1.2.1",
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "jose": "6.2.12",
+    "node-html-parser": "7.1.0",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261003.1",
+    "@types/node": "24.0.10",
+    "miniflare": "5.20261001.0-alpha",
+    "prettier": "3.9.9",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0",
+    "wrangler": "4.147.0"
+  }
+}

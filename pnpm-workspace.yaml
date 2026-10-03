@@ -1,0 +1,6 @@
+packages:
+  - .
+storeDir: ../.pnpm-store
+onlyBuiltDependencies:
+  - esbuild
+  - workerd

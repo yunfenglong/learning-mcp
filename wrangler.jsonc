@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "learning-mcp-suite",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-03",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AUTH_STATE",
+        "class_name": "AccountState",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AccountState"],
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "REPLACE_WITH_NEW_OAUTH_KV_ID",
+    },
+  ],
+  "services": [
+    {
+      "binding": "SSO_BROKER",
+      "service": "learning-sso-broker",
+    },
+  ],
+  "vars": {
+    "ISSUER": "https://suite.example.com",
+    "OIDC_ISSUER": "https://YOUR_IDENTITY_PROVIDER.example",
+    "OIDC_CLIENT_ID": "REPLACE_WITH_OIDC_CLIENT_ID",
+    "OIDC_ALLOWED_EMAIL_DOMAINS": "",
+    "PLATFORM_CONFIG": "{}",
+  },
+  "observability": {
+    "enabled": false,
+  },
+  "limits": {
+    "cpu_ms": 30000,
+  },
+}

@@ -1,0 +1,53 @@
+{
+  "name": "ontrack",
+  "version": "0.3.2",
+  "description": "Terminal-first CLI for OnTrack and Doubtfire",
+  "type": "module",
+  "bin": {
+    "ontrack": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CONTRIBUTING.md",
+    "docs/architecture.md",
+    "scripts/apply-sweet-cookie-patch.mjs",
+    "SKILL.md",
+    "LICENSE"
+  ],
+  "bundleDependencies": [
+    "@steipete/sweet-cookie"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "build": "node scripts/apply-sweet-cookie-patch.mjs && node scripts/clean-output.mjs && tsc -p tsconfig.build.json && node scripts/mark-cli-executable.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && tsc -p tsconfig.json && node .build/tests/harness.js",
+    "test:bun": "npm run build && tsc -p tsconfig.json && bun .build/tests/harness.js",
+    "test:golden": "npm run build && tsc -p tsconfig.json && node scripts/golden-run.mjs",
+    "test:golden:update": "npm run build && tsc -p tsconfig.json && node scripts/golden-update.mjs",
+    "verify:golden": "node scripts/golden-check.mjs",
+    "verify:oracle": "node scripts/golden-verify-oracle.mjs",
+    "verify:source": "node scripts/verify-source.mjs",
+    "verify:live": "npm run build && node dist/cli.js auth status --json",
+    "coverage:domain": "npm run build && tsc -p tsconfig.json && node scripts/check-domain-coverage.mjs",
+    "skill:generate": "npm run build && node dist/cli.js skills generate > SKILL.md",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "24.1.0",
+    "typescript": "7.0.2"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bunizao/ontrack-cli.git"
+  },
+  "dependencies": {
+    "@bunizao/cli-kit": "^0.5.0",
+    "@opendocsg/pdf2md": "0.2.7",
+    "@steipete/sweet-cookie": "0.4.0"
+  }
+}

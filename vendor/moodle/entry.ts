@@ -1,0 +1,1 @@
+export { MoodleClientCore } from "./src/moodle-client-core.js";

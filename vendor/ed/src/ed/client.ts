@@ -1,0 +1,720 @@
+import type {
+  Comment,
+  Course,
+  Lesson,
+  LessonModule,
+  LessonQuestion,
+  LessonQuestionResponse,
+  LessonSlide,
+  Thread,
+  ThreadMetrics,
+  User,
+  UserWithCourses
+} from "./models.js";
+
+export class EdApiError extends Error {
+  readonly kind: "api" | "auth_expired" | "base_url" | "network" | "upstream";
+  readonly statusCode: number;
+
+  constructor(
+    kind: "api" | "auth_expired" | "base_url" | "network" | "upstream",
+    statusCode: number,
+    message: string
+  ) {
+    super(message);
+    this.kind = kind;
+    this.name = "EdApiError";
+    this.statusCode = statusCode;
+  }
+}
+
+export class EdAuthExpiredError extends EdApiError {
+  constructor(statusCode: number, message: string) {
+    super("auth_expired", statusCode, message);
+    this.name = "EdAuthExpiredError";
+  }
+}
+
+export interface SlideAnswerResult {
+  correct: boolean | null;
+  explanation: unknown;
+  slideCompleted: boolean;
+  solution: unknown;
+}
+
+export interface SlideSubmitResult {
+  submitted: boolean;
+}
+
+export interface ThreadCreateInput {
+  anonymous?: boolean;
+  category?: string;
+  /** Ed document XML, as produced by markdownToEdDocument. */
+  content: string;
+  private?: boolean;
+  title: string;
+  type: string;
+}
+
+export interface CommentCreateInput {
+  anonymous?: boolean;
+  /** Ed document XML, as produced by markdownToEdDocument. */
+  content: string;
+  private?: boolean;
+  type: "answer" | "comment";
+}
+
+export interface EdClientOptions {
+  apiBaseUrl?: string;
+  fetch?: FetchLike;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  token: string;
+  timeoutMs?: number;
+  /** Called once per request. The URL never carries the token, which is a header. */
+  trace?: (entry: { method: string; url: string; status: number; ms: number }) => void;
+}
+
+export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+const USER_CACHE_TTL_MS = 60_000;
+
+export class EdClient {
+  private cachedUser?: { expiresAt: number; value: Promise<UserWithCourses> };
+  private readonly apiBaseUrl: string;
+  private readonly fetch: FetchLike;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly token: string;
+  private readonly timeoutMs: number;
+  private readonly trace: EdClientOptions["trace"];
+
+  constructor(options: EdClientOptions) {
+    this.apiBaseUrl = ensureTrailingSlash(
+      options.apiBaseUrl ?? readEnvironmentValue("EDSTEM_BASE_URL") ?? "https://edstem.org/api/"
+    );
+    this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.maxRetries = options.maxRetries ?? 3;
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1_000;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.token = options.token;
+    this.timeoutMs = options.timeoutMs ?? 15_000;
+    this.trace = options.trace;
+  }
+
+  async fetchCourseThread(courseId: number, number: number): Promise<Thread> {
+    const data = await this.get(`courses/${courseId}/threads/${number}`);
+    const users = buildUsersMap(asArray(data.users));
+    return parseThread(asRecord(data.thread ?? data), users);
+  }
+
+  async fetchLesson(lessonId: number, options: { view?: boolean } = {}): Promise<Lesson> {
+    const data = await this.get(
+      `lessons/${lessonId}`,
+      options.view ? { view: "1" } : undefined
+    );
+    return parseLesson(asRecord(data.lesson ?? data));
+  }
+
+  async fetchSlide(slideId: number, options: { view?: boolean } = {}): Promise<LessonSlide> {
+    const data = await this.get(
+      `lessons/slides/${slideId}`,
+      options.view ? { view: "1" } : undefined
+    );
+    return parseLessonSlide(asRecord(data.slide ?? data));
+  }
+
+  async fetchFile(url: string): Promise<Response> {
+    const target = new URL(url);
+    if (!isDownloadableLessonFileUrl(target)) {
+      throw new EdApiError(
+        "api",
+        0,
+        "Only HTTPS files hosted on edusercontent.com can be downloaded automatically."
+      );
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetch(target, {
+        headers: { Accept: "*/*" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(Math.max(this.timeoutMs, 120_000))
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new EdApiError("network", 0, `Failed to download the Ed file: ${detail}`);
+    }
+
+    if (response.status >= 300 && response.status < 400) {
+      throw new EdApiError("upstream", response.status, "Ed file downloads cannot redirect.");
+    }
+    if (!response.ok) {
+      throw new EdApiError(
+        "upstream",
+        response.status,
+        `Ed file download failed (HTTP ${response.status}).`
+      );
+    }
+    return response;
+  }
+
+  async createThread(courseId: number, input: ThreadCreateInput): Promise<Thread> {
+    const data = await this.post(`courses/${courseId}/threads`, {
+      jsonBody: {
+        thread: {
+          anonymous_comments: false,
+          category: input.category ?? "",
+          content: input.content,
+          is_anonymous: Boolean(input.anonymous),
+          is_megathread: false,
+          is_pinned: false,
+          is_private: Boolean(input.private),
+          subcategory: "",
+          subsubcategory: "",
+          title: input.title,
+          type: input.type
+        }
+      }
+    });
+    if (!data) {
+      throw new EdApiError("upstream", 0, "Ed API returned an empty response.");
+    }
+    return parseThread(asRecord(data.thread ?? data));
+  }
+
+  async createThreadReply(threadId: number, input: CommentCreateInput): Promise<Comment> {
+    return this.createComment(`threads/${threadId}/comments`, input);
+  }
+
+  async createCommentReply(commentId: number, input: CommentCreateInput): Promise<Comment> {
+    return this.createComment(`comments/${commentId}/comments`, input);
+  }
+
+  async completeSlide(slideId: number): Promise<void> {
+    await this.request("PUT", `lessons/slides/${slideId}/complete`, { allowEmpty: true });
+  }
+
+  async fetchLessons(courseId: number): Promise<{ lessons: Lesson[]; modules: LessonModule[] }> {
+    const data = await this.get(`courses/${courseId}/lessons`);
+    const modules = asArray(data.modules).map((entry) => parseLessonModule(asRecord(entry)));
+    const moduleNames = new Map<number, string>(modules.map((module) => [module.id, module.name]));
+    const lessons = asArray(data.lessons).map((entry) =>
+      parseLesson(asRecord(entry), moduleNames)
+    );
+    return { lessons, modules };
+  }
+
+  async fetchSlideQuestionResponses(slideId: number): Promise<LessonQuestionResponse[]> {
+    const data = await this.get(`lessons/slides/${slideId}/questions/responses`);
+    return asArray(data.responses).map((entry) =>
+      parseLessonQuestionResponse(asRecord(entry))
+    );
+  }
+
+  async fetchSlideQuestions(slideId: number): Promise<LessonQuestion[]> {
+    const data = await this.get(`lessons/slides/${slideId}/questions`);
+    return asArray(data.questions).map((entry) => parseLessonQuestion(asRecord(entry)));
+  }
+
+  async fetchThread(threadId: number): Promise<Thread> {
+    const data = await this.get(`threads/${threadId}`);
+    const users = buildUsersMap(asArray(data.users));
+    return parseThread(asRecord(data.thread ?? data), users);
+  }
+
+  async fetchThreads(
+    courseId: number,
+    options: { limit?: number; offset?: number; sort?: string } = {}
+  ): Promise<Thread[]> {
+    const data = await this.get(`courses/${courseId}/threads`, {
+      limit: String(Math.min(options.limit ?? 30, 100)),
+      offset: String(options.offset ?? 0),
+      sort: options.sort ?? "new"
+    });
+    const threads = Array.isArray(data.threads) ? data.threads : Array.isArray(data) ? data : [];
+    return threads.map((entry) => parseThread(asRecord(entry)));
+  }
+
+  async fetchUser(): Promise<UserWithCourses> {
+    if (this.cachedUser && this.cachedUser.expiresAt > Date.now()) {
+      return this.cachedUser.value;
+    }
+    const value = this.requestUser();
+    this.cachedUser = { expiresAt: Date.now() + USER_CACHE_TTL_MS, value };
+    // A failed lookup must not be cached, but an in-flight one is shared.
+    value.catch(() => {
+      if (this.cachedUser?.value === value) this.cachedUser = undefined;
+    });
+    return value;
+  }
+
+  async fetchUserActivity(
+    userId: number,
+    options: { courseId?: number; filterType?: string; limit?: number; offset?: number } = {}
+  ): Promise<unknown[]> {
+    const params: Record<string, string> = {
+      filter: options.filterType ?? "all",
+      limit: String(Math.min(options.limit ?? 30, 50)),
+      offset: String(options.offset ?? 0)
+    };
+    if (options.courseId) {
+      params.course_id = String(options.courseId);
+    }
+    const data = await this.get(`users/${userId}/profile/activity`, params);
+    return asArray(data.items);
+  }
+
+  async submitSlide(slideId: number): Promise<SlideSubmitResult> {
+    const data = await this.post(`lessons/slides/${slideId}/questions/submit_all`, {
+      allowEmpty: true,
+      jsonBody: {}
+    });
+
+    if (!data) {
+      return { submitted: true };
+    }
+
+    return {
+      submitted: Boolean(data.submitted)
+    };
+  }
+
+  async submitSlideAnswer(
+    questionId: number,
+    choices: number[],
+    options: { amend?: boolean } = {}
+  ): Promise<SlideAnswerResult> {
+    const data = await this.post(`lessons/slides/questions/${questionId}/responses`, {
+      jsonBody: choices,
+      params: options.amend ? { amend: "1" } : undefined
+    });
+    if (!data) {
+      throw new EdApiError("upstream", 0, "Ed API returned an empty response.");
+    }
+
+    return {
+      correct: typeof data.correct === "boolean" ? data.correct : null,
+      explanation: data.explanation ?? null,
+      slideCompleted: Boolean(data.slide_completed),
+      solution: data.solution ?? null
+    };
+  }
+
+  private async requestUser(): Promise<UserWithCourses> {
+    const data = await this.get("user");
+    const userData = asRecord(data.user);
+    const user = parseUser(userData);
+    const courses = asArray(data.courses).map((enrollment) => {
+      const record = asRecord(enrollment);
+      const course = asRecord(record.course);
+      const role = asRecord(record.role);
+      return parseCourse(course, asString(role.role));
+    });
+    return { courses, user };
+  }
+
+  private async createComment(path: string, input: CommentCreateInput): Promise<Comment> {
+    const data = await this.post(path, {
+      jsonBody: {
+        comment: {
+          content: input.content,
+          is_anonymous: Boolean(input.anonymous),
+          is_private: Boolean(input.private),
+          type: input.type
+        }
+      }
+    });
+    if (!data) {
+      throw new EdApiError("upstream", 0, "Ed API returned an empty response.");
+    }
+    return parseComment(asRecord(data.comment ?? data));
+  }
+
+  private async get(
+    path: string,
+    params?: Record<string, string>
+  ): Promise<Record<string, unknown>> {
+    const payload = await this.request("GET", path, { params });
+    return payload ?? {};
+  }
+
+  private async post(
+    path: string,
+    options: {
+      allowEmpty?: boolean;
+      jsonBody?: unknown;
+      params?: Record<string, string>;
+    } = {}
+  ): Promise<Record<string, unknown> | null> {
+    return this.request("POST", path, options);
+  }
+
+  private async request(
+    method: "GET" | "POST" | "PUT",
+    path: string,
+    options: {
+      allowEmpty?: boolean;
+      jsonBody?: unknown;
+      params?: Record<string, string>;
+    } = {}
+  ): Promise<Record<string, unknown> | null> {
+    const url = new URL(path.replace(/^\/+/, ""), this.apiBaseUrl);
+    for (const [key, value] of Object.entries(options.params ?? {})) {
+      url.searchParams.set(key, value);
+    }
+
+    let response = await this.send(method, url, options.jsonBody);
+    // Only reads are safe to repeat; a retried write could duplicate the mutation.
+    for (
+      let attempt = 0;
+      method === "GET" && attempt < this.maxRetries && RETRYABLE_STATUS.has(response.status);
+      attempt += 1
+    ) {
+      await this.sleep(retryDelayMs(response, attempt, this.retryBaseDelayMs));
+      response = await this.send(method, url, options.jsonBody);
+    }
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location") ?? "an unknown location";
+      throw new EdApiError(
+        "base_url",
+        response.status,
+        `Ed API base URL redirected to ${location}. Set EDSTEM_BASE_URL to a valid JSON API endpoint.`
+      );
+    }
+
+    const rawBody = await response.text();
+    const errorPayload = safeParseJson(rawBody) ?? {};
+    const code = asString(errorPayload.code);
+    const message = asString(errorPayload.message);
+
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
+      if (code === "bad_token" || response.status === 401) {
+        throw new EdAuthExpiredError(
+          response.status,
+          `Authentication failed (HTTP ${response.status}). Check your Ed API token.`
+        );
+      }
+      throw new EdApiError("api", response.status, formatApiError(response.status, message));
+    }
+
+    if (response.status === 404) {
+      throw new EdApiError("api", response.status, message || `Not found: ${path}`);
+    }
+
+    if (!response.ok) {
+      throw new EdApiError("upstream", response.status, formatApiError(response.status, message));
+    }
+
+    if (!rawBody.trim()) {
+      if (options.allowEmpty) {
+        return null;
+      }
+      throw new EdApiError(
+        "base_url",
+        response.status,
+        "Ed API returned a non-JSON response. Set EDSTEM_BASE_URL to a valid JSON API endpoint."
+      );
+    }
+
+    const payload = safeParseJson(rawBody);
+    if (!payload) {
+      throw new EdApiError(
+        "base_url",
+        response.status,
+        "Ed API returned a non-JSON response. Set EDSTEM_BASE_URL to a valid JSON API endpoint."
+      );
+    }
+
+    return payload;
+  }
+
+  private async send(
+    method: "GET" | "POST" | "PUT",
+    url: URL,
+    jsonBody: unknown
+  ): Promise<Response> {
+    // Traced per attempt, so --verbose shows each retry.
+    const startedAt = Date.now();
+    try {
+      const response = await this.fetch(url, {
+        body: jsonBody === undefined ? undefined : JSON.stringify(jsonBody),
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${this.token}`,
+          ...(jsonBody === undefined ? {} : { "Content-Type": "application/json" })
+        },
+        method,
+        redirect: "manual",
+        signal: AbortSignal.timeout(this.timeoutMs)
+      });
+      this.trace?.({ method, url: url.toString(), status: response.status, ms: Date.now() - startedAt });
+      return response;
+    } catch (error) {
+      this.trace?.({ method, url: url.toString(), status: 0, ms: Date.now() - startedAt });
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new EdApiError("network", 0, `Failed to reach the Ed API: ${detail}`);
+    }
+  }
+}
+
+function retryDelayMs(response: Response, attempt: number, baseDelayMs: number): number {
+  const backoffMs = baseDelayMs * 2 ** attempt;
+  const retryAfterSeconds = Number(response.headers.get("retry-after"));
+  const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+    ? retryAfterSeconds * 1000
+    : 0;
+  return Math.max(backoffMs, retryAfterMs);
+}
+
+function readEnvironmentValue(name: string): string | undefined {
+  return typeof process === "undefined" ? undefined : process.env[name];
+}
+
+function safeParseJson(rawBody: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(rawBody));
+  } catch {
+    return null;
+  }
+}
+
+function formatApiError(statusCode: number, message: string): string {
+  if (message) {
+    return `Ed API error (HTTP ${statusCode}): ${message}`;
+  }
+  return `Ed API error (HTTP ${statusCode})`;
+}
+
+function buildUsersMap(entries: unknown[]): Map<number, User> {
+  return new Map(
+    entries
+      .map((entry) => parseUser(asRecord(entry)))
+      .filter((user) => user.id > 0)
+      .map((user) => [user.id, user] satisfies [number, User])
+  );
+}
+
+function parseUser(data: Record<string, unknown>): User {
+  return {
+    avatar: asString(data.avatar),
+    courseRole: asString(data.course_role),
+    email: asString(data.email),
+    id: asInt(data.id),
+    name: asString(data.name),
+    role: asString(data.role)
+  };
+}
+
+function parseCourse(data: Record<string, unknown>, role = ""): Course {
+  return {
+    code: asString(data.code),
+    id: asInt(data.id),
+    name: asString(data.name),
+    role,
+    session: asString(data.session),
+    status: asString(data.status),
+    year: asString(data.year)
+  };
+}
+
+function parseLessonModule(data: Record<string, unknown>): LessonModule {
+  return {
+    courseId: asInt(data.course_id),
+    createdAt: asString(data.created_at),
+    id: asInt(data.id),
+    name: asString(data.name),
+    updatedAt: asString(data.updated_at),
+    userId: asInt(data.user_id)
+  };
+}
+
+function parseLessonSlide(data: Record<string, unknown>): LessonSlide {
+  const slideData = asRecord(data.data);
+  return {
+    content:
+      asString(data.content) ||
+      asString(data.passage) ||
+      asString(slideData.content) ||
+      asString(slideData.passage),
+    courseId: asInt(data.course_id),
+    fileUrl: asString(data.file_url),
+    id: asInt(data.id),
+    index: asInt(data.index),
+    isHidden: Boolean(data.is_hidden),
+    lessonId: asInt(data.lesson_id),
+    status: asString(data.status),
+    title: asString(data.title),
+    type: asString(data.type)
+  };
+}
+
+export function isDownloadableLessonFileUrl(value: string | URL): boolean {
+  try {
+    const url = value instanceof URL ? value : new URL(value);
+    return url.protocol === "https:" &&
+      (url.hostname === "edusercontent.com" || url.hostname.endsWith(".edusercontent.com"));
+  } catch {
+    return false;
+  }
+}
+
+function parseLessonQuestion(data: Record<string, unknown>): LessonQuestion {
+  const question = asRecord(data.data);
+  return {
+    answers: asArray(question.answers).map((value) => asString(value)),
+    content: asString(question.content),
+    explanation: asString(question.explanation),
+    id: asInt(data.id),
+    index: asInt(data.index),
+    isAssessed: Boolean(question.assessed),
+    isFormatted: Boolean(question.formatted),
+    lessonMarkableId: asInt(data.lesson_markable_id),
+    multipleSelection: Boolean(question.multiple_selection),
+    slideId: asInt(data.lesson_slide_id),
+    solution: asArray(question.solution).map((value) => asInt(value)),
+    type: asString(question.type)
+  };
+}
+
+function parseLessonQuestionResponse(data: Record<string, unknown>): LessonQuestionResponse {
+  const correct = data.correct;
+  return {
+    correct: typeof correct === "boolean" ? correct : null,
+    createdAt: asString(data.created_at),
+    data: data.data ?? null,
+    questionId: asInt(data.question_id),
+    userId: asInt(data.user_id)
+  };
+}
+
+function parseLesson(
+  data: Record<string, unknown>,
+  moduleNames: Map<number, string> = new Map()
+): Lesson {
+  const moduleId = asInt(data.module_id);
+  return {
+    availableAt: asString(data.effective_available_at) || asString(data.available_at),
+    courseId: asInt(data.course_id),
+    createdAt: asString(data.created_at),
+    dueAt: asString(data.effective_due_at) || asString(data.due_at),
+    id: asInt(data.id),
+    isHidden: Boolean(data.is_hidden),
+    isTimed: Boolean(data.is_timed),
+    isUnlisted: Boolean(data.is_unlisted),
+    kind: asString(data.kind),
+    lockedAt: asString(data.effective_locked_at) || asString(data.locked_at),
+    moduleId,
+    moduleName: asString(data.module_name) || moduleNames.get(moduleId) || "",
+    number: asInt(data.number),
+    openable: Boolean(data.openable),
+    openableWithoutAttempt: Boolean(data.openable_without_attempt),
+    outline: asString(data.outline),
+    slideCount: asInt(data.slide_count),
+    slides: asArray(data.slides).map((entry) => parseLessonSlide(asRecord(entry))),
+    solutionsAt:
+      asString(data.effective_solutions_at) || asString(data.solutions_at),
+    state: asString(data.state),
+    status: asString(data.status),
+    title: asString(data.title),
+    type: asString(data.type),
+    updatedAt: asString(data.updated_at)
+  };
+}
+
+function parseThread(
+  data: Record<string, unknown>,
+  usersMap: Map<number, User> = new Map()
+): Thread {
+  const userId = asInt(data.user_id);
+  return {
+    answers: asArray(data.answers).map((entry) => parseComment(asRecord(entry), usersMap)),
+    category: asString(data.category),
+    author: usersMap.get(userId) ?? null,
+    comments: asArray(data.comments).map((entry) => parseComment(asRecord(entry), usersMap)),
+    content: asString(data.content),
+    courseId: asInt(data.course_id),
+    createdAt: asString(data.created_at),
+    document: asString(data.document),
+    id: asInt(data.id),
+    isAnonymous: Boolean(data.is_anonymous),
+    isAnswered: Boolean(data.is_answered),
+    isEndorsed: Boolean(data.is_endorsed),
+    isLocked: Boolean(data.is_locked),
+    isPinned: Boolean(data.is_pinned),
+    isPrivate: Boolean(data.is_private),
+    // Ed omits read state on some payloads; only an explicit false means unseen.
+    isSeen: data.is_seen !== false,
+    number: asInt(data.number),
+    metrics: parseThreadMetrics(data),
+    subcategory: asString(data.subcategory),
+    subsubcategory: asString(data.subsubcategory),
+    title: asString(data.title),
+    type: asString(data.type),
+    updatedAt: asString(data.updated_at),
+    userId
+  };
+}
+
+function parseThreadMetrics(data: Record<string, unknown>): ThreadMetrics {
+  return {
+    flagCount: asInt(data.flag_count),
+    newReplyCount: asInt(data.new_reply_count),
+    replyCount: asInt(data.reply_count),
+    starCount: asInt(data.star_count),
+    unresolvedCount: asInt(data.unresolved_count),
+    uniqueViewCount: asInt(data.unique_view_count),
+    viewCount: asInt(data.view_count),
+    voteCount: asInt(data.vote_count)
+  };
+}
+
+function parseComment(
+  data: Record<string, unknown>,
+  usersMap: Map<number, User> = new Map()
+): Comment {
+  const userId = asInt(data.user_id);
+  return {
+    author: usersMap.get(userId) ?? null,
+    comments: asArray(data.comments).map((entry) => parseComment(asRecord(entry), usersMap)),
+    content: asString(data.content),
+    createdAt: asString(data.created_at),
+    document: asString(data.document),
+    id: asInt(data.id),
+    isAnonymous: Boolean(data.is_anonymous),
+    isEndorsed: Boolean(data.is_endorsed),
+    isResolved: Boolean(data.is_resolved),
+    type: asString(data.type),
+    userId,
+    voteCount: asInt(data.vote_count)
+  };
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asInt(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  return Number.parseInt(String(value ?? 0), 10) || 0;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value : `${value}/`;
+}

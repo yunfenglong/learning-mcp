@@ -1,0 +1,937 @@
+import { labelKey, labelTexts, type SiteLabels } from "./site-labels.js";
+import { HTMLElement, parse } from "node-html-parser";
+import type {
+  FeedbackCriterion,
+  QuizAttempt,
+  QuizAttemptReview,
+  QuizQuestion,
+  Activity,
+  Assignment,
+  CourseGrades,
+  FileEntry,
+  Folder,
+  ForumDiscussion,
+  ForumDiscussionRef,
+  ForumPost,
+  GradeItem,
+  Link,
+  Page,
+  PageContext,
+  Quiz,
+  Resource,
+  Section,
+} from "./models.js";
+import { cleanText, htmlToStructuredContent, resolveUrl } from "./html-utils.js";
+import { parseGradeItem } from "./parsers.js";
+
+export interface MoodlePageError {
+  message: string;
+  code?: string;
+}
+
+export function parseMoodleErrorHtml(html: string): MoodlePageError | null {
+  const root = parse(html);
+  const messageNode = first(root, [
+    ".errormessage",
+    ".alert-danger .alert-message",
+    "[data-region='error-message']",
+    ".alert-danger[role='alert']",
+    ".alert-danger",
+  ]);
+  if (!messageNode) {
+    return null;
+  }
+
+  const messageRoot = parse(messageNode.toString());
+  for (const unwanted of messageRoot.querySelectorAll(
+    "button, .close, .errorcode, .stacktrace, .debuginfo, .backtrace, a.alert-link, a[href*='/error/']",
+  )) {
+    unwanted.remove();
+  }
+  const message = cleanText(messageRoot.textContent);
+  if (!message) {
+    return null;
+  }
+
+  const errorCodeText = cleanNodeText(root.querySelector(".errorcode"));
+  const errorCode = errorCodeText.match(/^error\s+code\s*:\s*([a-z][a-z0-9_]*)\s*$/iu)?.[1]
+    ?? moodleDocsErrorCode(root);
+  return { message, ...(errorCode ? { code: errorCode } : {}) };
+}
+
+/**
+ * Moodle answers an activity the user can see but not open (restricted, hidden) by
+ * redirecting to the course page with a notice, and every activity parser would read
+ * that page as the activity. The page's context and body id both name what it is.
+ * A page carrying neither (a frameset, a served HTML file) is not judged.
+ */
+export function isOtherMoodlePage(html: string, type: string, cmid: number): boolean {
+  const instance = numberValue(parseMoodleConfig(html).contextInstanceId);
+  if (instance && instance !== cmid) return true;
+  // A course id can equal the cmid, so the body id still gets a say.
+  const pageId = parse(html).querySelector("body")?.getAttribute("id") ?? "";
+  return pageId.startsWith("page-") && pageId !== `page-mod-${type}-view`;
+}
+
+/** Why Moodle refused the activity: its availability conditions, or the hidden notice. */
+export function parseUnavailableNotice(html: string): string {
+  const conditions = parse(html).querySelector(".availabilityinfo-error");
+  return conditions ? blockText(conditions) : parseMoodleErrorHtml(html)?.message ?? "";
+}
+
+export function parsePageContext(html: string, baseUrl: string): PageContext {
+  const root = parse(html);
+  const config = parseMoodleConfig(html);
+  const sesskey = stringValue(config.sesskey).trim();
+  const timezone = moodleTimezone(config.usertimezone || config.timezone);
+  const userid = numberValue(config.userId) || numberValue(root.querySelector("[data-user-id]")?.getAttribute("data-user-id"));
+  if (!sesskey || !userid) {
+    throw new Error("Session appears invalid: could not load authenticated Moodle context");
+  }
+  return {
+    sesskey,
+    user_info: {
+      userid,
+      username: "",
+      fullname: cleanNodeText(root.querySelector(".userfullname")),
+      sitename: extractSitename(root),
+      siteurl: baseUrl,
+      ...(timezone ? { timezone } : {}),
+      lang: stringValue(config.language) || root.querySelector("html")?.getAttribute("lang") || "",
+    },
+  };
+}
+
+// Moodle translates the continent in its display timezone ("Europa/London").
+// Resolve a unique IANA city suffix before passing it to Intl.
+function moodleTimezone(value: unknown): string | undefined {
+  const name = stringValue(value);
+  if (!name) return undefined;
+  try { new Intl.DateTimeFormat("en", { timeZone: name }); return name; }
+  catch {
+    const slash = name.indexOf("/");
+    if (slash < 0) return undefined;
+    const suffix = name.slice(slash);
+    const matches = Intl.supportedValuesOf("timeZone").filter(zone => zone.slice(zone.indexOf("/")) === suffix);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+}
+
+export function parseCourseContentsHtml(html: string, baseUrl: string): Section[] {
+  const root = parse(html);
+  const sections: Section[] = [];
+  for (const sectionElement of root.querySelectorAll('li[data-for="section"]')) {
+    const sectionId = safeInt(sectionElement.getAttribute("data-id"));
+    const sectionNumber = safeInt(sectionElement.getAttribute("data-number") ?? sectionElement.getAttribute("data-sectionnum"));
+    const positionName = cleanNodeText(sectionElement.querySelector(".course-section-position-name"));
+    const mainName = cleanNodeText(
+      firstDefined([
+        first(sectionElement, ["h1.sectionname", "h2.sectionname", "h3.sectionname"]),
+        sectionElement.querySelector('[data-for="section_title"] a'),
+        sectionElement.querySelector('[data-for="section_title"]'),
+      ]),
+    );
+    const name =
+      positionName && mainName && positionName !== mainName
+        ? `${positionName} - ${mainName}`
+        : mainName || positionName || `Section ${sectionNumber}`;
+    const visible = !(sectionElement.getAttribute("class") ?? "").split(/\s+/).includes("hidden");
+    const activities: Activity[] = [];
+    const seenActivities = new Set<number>();
+    for (const activityElement of sectionElement.querySelectorAll('li[data-for="cmitem"]')) {
+      const id = safeInt(activityElement.getAttribute("data-id"));
+      if (id && seenActivities.has(id)) {
+        continue;
+      }
+      if (id) {
+        seenActivities.add(id);
+      }
+      const classes = (activityElement.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+      const modname = classes.find((item) => item.startsWith("modtype_"))?.slice("modtype_".length) ?? "";
+      const nameNode = firstDefined([
+        activityElement.querySelector(".activityname .instancename"),
+        activityElement.querySelector(".activityname"),
+        activityElement.querySelector("a.aalink"),
+      ]);
+      // Screen-reader text ("File", "Folder") sits inside the name on the page.
+      for (const hidden of nameNode?.querySelectorAll(".accesshide") ?? []) hidden.remove();
+      const name = cleanNodeText(nameNode);
+      if (!name) {
+        continue;
+      }
+      const href = activityElement.querySelector(".activityname a, a.aalink, a[href]")?.getAttribute("href") ?? "";
+      activities.push({
+        id,
+        name,
+        modname,
+        url: href ? resolveUrl(baseUrl, href) : "",
+        // An activity the account cannot open yet is listed without a link and with the
+        // restriction beside it. Labels and subsections have no link either but can be read.
+        // The contents service calls this uservisible.
+        visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item))
+          && (Boolean(href) || !activityElement.querySelector(".availabilityinfo")),
+        description: cleanNodeText(first(activityElement, ["[data-region='activity-description']", ".contentafterlink", ".description"])),
+      });
+    }
+    sections.push({
+      id: sectionId,
+      name,
+      section: sectionNumber,
+      visible,
+      summary: cleanNodeText(first(sectionElement, [".summarytext", "[data-for='sectioninfo']"])),
+      activities,
+    });
+  }
+  return sections;
+}
+
+export function parseCourseSectionNumbers(html: string, courseId: number): number[] {
+  const sections: number[] = [];
+  const root = parse(html.replace(/&section=/gu, "&amp;section="));
+  const hrefs = root.querySelectorAll('a[href*="/course/view.php"]')
+    .map((link) => link.getAttribute("href") ?? "");
+  for (const href of hrefs) {
+    const url = parseMaybeUrl(href.replace(/&amp;/gu, "&"), "https://moodle.invalid");
+    const id = url?.searchParams.get("id");
+    const sectionValue = url?.searchParams.get("section");
+    if (id === String(courseId) && sectionValue && /^\d+$/.test(sectionValue)) {
+      const section = Number(sectionValue);
+      if (!sections.includes(section)) {
+        sections.push(section);
+      }
+    }
+  }
+  return sections;
+}
+
+export function parseCourseGradesUrl(html: string, baseUrl: string): string {
+  const root = parse(html);
+  const link =
+    root.querySelector('li[data-key="grades"] a[href]') ??
+    root.querySelector('.secondary-navigation a[href*="mode=grade"]') ??
+    root.querySelector('.secondary-navigation a[href*="/grade/report/"]') ??
+    root.querySelector('a[href*="mode=grade"], a[href*="/grade/report/"]');
+  const href = link?.getAttribute("href") ?? "";
+  return href ? resolveUrl(baseUrl, href) : "";
+}
+
+export function parseCourseIdFromPageHtml(html: string): number | null {
+  const root = parse(html);
+  for (const link of root.querySelectorAll('a[href*="/course/view.php?id="]')) {
+    const courseId = numberQueryValue(link.getAttribute("href") ?? "", "id");
+    if (courseId !== null) {
+      return courseId;
+    }
+  }
+  return null;
+}
+
+export function hasCourseGradesHtml(html: string): boolean {
+  return parse(html).querySelector("table.user-grade") !== null;
+}
+
+export function parseCourseGradesHtml(html: string, courseId: number, baseUrl: string): CourseGrades {
+  const root = parse(html);
+  const report: CourseGrades = {
+    course_id: courseId,
+    course_name: cleanNodeText(root.querySelector("h1")),
+    learner_name: cleanNodeText(
+      firstDefined([
+        root.querySelector(".grade-report-user .page-header-headings h2"),
+        root.querySelector(".page-header-headings h2"),
+        root.querySelector(".grade-report-user h2 a"),
+        root.querySelector("h2 a"),
+        root.querySelector("h2"),
+      ]),
+    ),
+    total_grade: "",
+    total_range: "",
+    total_percentage: "",
+    items: [],
+  };
+  const table = root.querySelector("table.user-grade");
+  if (!table) {
+    return report;
+  }
+  for (const row of table.querySelectorAll("tr")) {
+    const title = cleanNodeText(row.querySelector(".rowtitle"));
+    if (!title || row.querySelector(".toggle-category")) {
+      continue;
+    }
+    if (title === "Course total") {
+      report.total_grade = cleanTableCell(row.querySelector("td.column-grade"));
+      report.total_range = cleanTableCell(row.querySelector("td.column-range"));
+      report.total_percentage = cleanTableCell(row.querySelector("td.column-percentage"));
+      continue;
+    }
+    const link = row.querySelector(".rowtitle a.gradeitemheader, .rowtitle a");
+    if (!link) {
+      continue;
+    }
+    const statusIcon = row.querySelector("td.column-grade i[aria-label], td.column-grade i[title]");
+    const item: GradeItem = parseGradeItem({
+      name: title,
+      item_type: cleanText(row.querySelector(".item img.itemicon, .courseitem img.itemicon, img.itemicon")?.getAttribute("alt") ?? ""),
+      grade: cleanTableCell(row.querySelector("td.column-grade")),
+      range: cleanTableCell(row.querySelector("td.column-range")),
+      percentage: cleanTableCell(row.querySelector("td.column-percentage")),
+      weight: cleanTableCell(row.querySelector("td.column-weight")),
+      contribution: cleanTableCell(row.querySelector("td.column-contributiontocoursetotal")),
+      feedback: cleanTableCell(row.querySelector("td.column-feedback")),
+      url: resolveUrl(baseUrl, link.getAttribute("href") ?? ""),
+      status: statusIcon?.getAttribute("aria-label") ?? statusIcon?.getAttribute("title") ?? "",
+    });
+    report.items.push(item);
+  }
+  return report;
+}
+
+export function parseGradeOverviewRows(html: string, baseUrl: string): Record<number, { course_name: string; grade: string; url: string }> {
+  const rows: Record<number, { course_name: string; grade: string; url: string }> = {};
+  const table = parse(html).querySelector("table#overview-grade");
+  if (!table) {
+    return rows;
+  }
+  for (const row of table.querySelectorAll("tbody tr, tr")) {
+    const link = row.querySelector("td a[href]");
+    if (!link) {
+      continue;
+    }
+    const href = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    const courseId = numberQueryValue(href, "id");
+    if (courseId === null) {
+      continue;
+    }
+    const cells = row.querySelectorAll("td");
+    rows[courseId] = {
+      course_name: cleanNodeText(link),
+      grade: cleanNodeText(cells[1]),
+      url: href,
+    };
+  }
+  return rows;
+}
+
+export function parseAssignmentHtml(html: string, assignmentId: number, baseUrl: string, labels?: SiteLabels): Assignment {
+  const root = parse(html);
+  const feedback = root.querySelector(".feedback");
+  return {
+    id: assignmentId,
+    name: pageTitle(html),
+    ...activityContext(html),
+    due_pretty: extractLabeledText(html, "Due:", labels),
+    submission_status: findTableValue(html, "Submission status", labels),
+    grading_status: findTableValue(html, "Grading status", labels),
+    time_remaining: findTableValue(html, "Time remaining", labels),
+    grade: findTableValue(html, "Grade", labels),
+    graded_on: feedback ? findTableValue(feedback.toString(), "Graded on", labels) : "",
+    graded_by: feedback ? findTableValue(feedback.toString(), "Graded by", labels) : "",
+    feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "",
+    criteria: feedback ? parseFeedbackCriteria(feedback) : [],
+    file_entries: [...parseIntroAttachments(root, baseUrl), ...(feedback ? parseFeedbackFiles(feedback, baseUrl) : [])],
+    url: `${baseUrl.replace(/\/$/, "")}/mod/assign/view.php?id=${assignmentId}`,
+  };
+}
+
+// Rubrics and marking guides render the same tr.criterion rows but keep the
+// marker's choice in different cells: a rubric ticks one level, a guide types a score.
+function parseFeedbackCriteria(feedback: HTMLElement): FeedbackCriterion[] {
+  const criteria: FeedbackCriterion[] = [];
+  for (const row of feedback.querySelectorAll("tr.criterion")) {
+    const level = row.querySelector("td.level.checked");
+    const name = cleanNodeText(row.querySelector(".criterionshortname") ?? row.querySelector("td.description"));
+    if (!name) continue;
+    criteria.push({
+      name,
+      level: cleanNodeText(level?.querySelector(".definition")),
+      score: cleanNodeText(row.querySelector("td.score") ?? level?.querySelector(".score")),
+      remark: cleanTableCell(row.querySelector("td.remark")),
+    });
+  }
+  return criteria;
+}
+
+// The teacher's files (spec, datasets) render in the same file tree markup as the
+// student's own submission, so the pluginfile file area is the only reliable marker.
+function parseIntroAttachments(root: HTMLElement, baseUrl: string): FileEntry[] {
+  const entries: FileEntry[] = [];
+  for (const link of root.querySelectorAll('a[href*="/mod_assign/introattachment/"]')) {
+    const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    const name = cleanNodeText(link) || decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "file");
+    if (!entries.some((entry) => entry.url === url)) entries.push(fileEntry(name, url, baseUrl));
+  }
+  return entries;
+}
+
+// Feedback files and annotated PDFs both arrive as plain pluginfile links in the feedback table.
+function parseFeedbackFiles(feedback: HTMLElement, baseUrl: string): FileEntry[] {
+  const entries: FileEntry[] = [];
+  for (const link of feedback.querySelectorAll('a[href*="pluginfile.php"]')) {
+    const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    // "View annotated PDF..." is a prompt, not a name; the path carries the real filename.
+    const label = cleanNodeText(link);
+    const name = /\.\w{1,5}$/u.test(label) ? label : decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "file");
+    if (!entries.some((entry) => entry.url === url)) entries.push(fileEntry(name, url, baseUrl));
+  }
+  return entries;
+}
+
+export function parseQuizHtml(html: string, quizId: number, baseUrl: string, labels?: SiteLabels): Quiz {
+  const root = parse(html);
+  return {
+    id: quizId,
+    name: pageTitle(html),
+    ...activityContext(html),
+    opens_pretty: extractLabeledText(html, "Opens:", labels),
+    closes_pretty: extractLabeledText(html, "Closes:", labels),
+    attempts_allowed: labeledParagraph(root, "Attempts allowed:", labels),
+    time_limit: labeledParagraph(root, "Time limit:", labels),
+    availability: cleanText(root.textContent.match(/This quiz is currently[^\n]+/i)?.[0] ?? ""),
+    grade: findTableValue(html, "Grade", labels),
+    attempts: parseQuizAttempts(root, baseUrl, labels),
+    url: `${baseUrl.replace(/\/$/, "")}/mod/quiz/view.php?id=${quizId}`,
+  };
+}
+
+// Quiz info lines are sibling paragraphs, so whole-page text runs them together.
+function labeledParagraph(root: HTMLElement, label: string, labels?: SiteLabels): string {
+  const prefixes = labelTexts(label, labels).map(text => text.replace(/\s*[:：]$/u, ""));
+  for (const p of root.querySelectorAll("p")) {
+    const line = cleanNodeText(p);
+    for (const prefix of prefixes) {
+      if (line.toLowerCase().startsWith(prefix.toLowerCase())) return cleanText(line.slice(prefix.length).replace(/^\s*[:：]/u, ""));
+    }
+  }
+  return "";
+}
+
+// Each attempt is a card holding a summary table and a Review link; the attempt id
+// only exists in that link, so cards without one (an attempt still in progress) are skipped.
+function parseQuizAttempts(root: HTMLElement, baseUrl: string, labels?: SiteLabels): QuizAttempt[] {
+  const attempts: QuizAttempt[] = [];
+  for (const table of root.querySelectorAll("table.quizreviewsummary")) {
+    const card = table.closest(".card") ?? table.parentNode;
+    const link = card?.querySelector('a[href*="/mod/quiz/review.php"]');
+    const reviewUrl = link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "";
+    const id = numberQueryValue(reviewUrl, "attempt");
+    if (!link || id === null) continue;
+    const summary = labelled(tableValues(table), labels);
+    const number = Number(cleanNodeText(card?.querySelector(".card-title")).match(/\d+/)?.[0] ?? attempts.length + 1);
+    attempts.push({ id, number, status: summary("Status"), started: summary("Started"), completed: summary("Completed"), duration: summary("Duration"), marks: summary("Marks"), grade: summary("Grade"), review_url: reviewUrl });
+  }
+  return attempts;
+}
+
+export function parseQuizReviewHtml(html: string, attemptId: number, baseUrl: string, labels?: SiteLabels): QuizAttemptReview {
+  const root = parse(html);
+  const summary = labelled(tableValues(root.querySelector("table.quizreviewsummary")), labels);
+  const form = root.querySelector("form.questionflagsaveform");
+  const url = `${baseUrl.replace(/\/$/, "")}/mod/quiz/review.php?attempt=${attemptId}`;
+  return {
+    id: attemptId,
+    quiz_id: numberQueryValue(form?.getAttribute("action") ?? "", "cmid") ?? 0,
+    course_id: parseCourseIdFromPageHtml(html) ?? 0,
+    status: summary("Status"),
+    started: summary("Started"),
+    completed: summary("Completed"),
+    duration: summary("Duration"),
+    marks: summary("Marks"),
+    grade: summary("Grade"),
+    questions: root.querySelectorAll("div.que").map(parseQuizQuestion),
+    url,
+  };
+}
+
+// The question type is the second class on div.que ("que multichoice deferredfeedback complete").
+function parseQuizQuestion(que: HTMLElement): QuizQuestion {
+  const answer = que.querySelector(".answer");
+  // Choice questions keep the learner's picks as checked inputs; free-text types print the text.
+  const picked = answer?.querySelectorAll("input:checked, input[checked]").map((input) => {
+    const label = input.getAttribute("aria-labelledby");
+    return cleanTableCell(label ? que.querySelector(`[id="${label}"]`) : input.parentNode);
+  }).filter(Boolean) ?? [];
+  // Short answers and numbers sit in a read-only input's value; the gap layout puts that input inside .qtext.
+  const typed = cleanText(que.querySelector('input[type="text"], input[type="number"]')?.getAttribute("value") ?? "");
+  const response = picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
+  return {
+    number: Number(cleanNodeText(que.querySelector(".qno")) || 0),
+    type: que.classList.value[1] ?? "",
+    state: cleanNodeText(que.querySelector(".info .state")),
+    mark: cleanNodeText(que.querySelector(".info .grade")).replace(/^Mark\s+/u, ""),
+    text: blockText(que.querySelector(".qtext")),
+    response: response.replace(/\s*Word count: \d+$/u, ""),
+    correct: blockText(que.querySelector(".rightanswer")).replace(/^The correct answers? (?:is|are):?\s*/iu, "").replace(/^'(.*)'\.?$/u, "$1"),
+    feedback: blockText(que.querySelector(".outcome .feedback")),
+  };
+}
+
+// Essays and feedback are paragraphs; joining them without a break glues sentences together.
+export function blockText(node: HTMLElement | null | undefined): string {
+  if (!node) return "";
+  return cleanTableCell(parse(node.toString().replace(/<br\s*\/?>|<\/(?:p|div|li|h\d|tr)>/giu, "$& ")));
+}
+
+/** Looks a summary row up by its English label or the site's own text for it. */
+function labelled(values: Record<string, string>, labels?: SiteLabels): (label: string) => string {
+  const byKey = new Map(Object.entries(values).map(([key, value]) => [labelKey(key), value]));
+  return label => labelTexts(label, labels).map(text => byKey.get(labelKey(text))).find(value => value !== undefined) ?? "";
+}
+
+function tableValues(table: HTMLElement | null | undefined): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const row of table?.querySelectorAll("tr") ?? []) {
+    const cells = row.querySelectorAll("th, td");
+    if (cells.length >= 2) values[cleanNodeText(cells[0])] = cleanTableCell(cells[1]);
+  }
+  return values;
+}
+
+export function parseResourceHtml(html: string, resourceId: number, baseUrl: string): Resource {
+  const root = parse(html);
+  const link = root.querySelector(".resourceworkaround a[href], .resourcecontent a[href], a.resourceworkaround[href]");
+  const embed = root.querySelector(".resourcecontent iframe[src], .resourcecontent object[data], .resourcecontent embed[src]");
+  const rawUrl = link?.getAttribute("href") || embed?.getAttribute("src") || embed?.getAttribute("data") || "";
+  const targetUrl = rawUrl ? resolveUrl(baseUrl, rawUrl) : "";
+  const targetName = cleanNodeText(link) || (targetUrl ? decodeURIComponent(new URL(targetUrl).pathname.split("/").at(-1) || "file") : "");
+  return {
+    id: resourceId,
+    name: pageTitle(html),
+    ...activityContext(html),
+    target_name: targetName,
+    target_url: targetUrl,
+    file_entries: targetName && targetUrl ? [fileEntry(targetName, targetUrl, baseUrl)] : [],
+    url: `${baseUrl.replace(/\/$/, "")}/mod/resource/view.php?id=${resourceId}`,
+  };
+}
+
+export function parseLinkHtml(html: string, linkId: number, baseUrl: string): Link {
+  const root = parse(html);
+  const link = root.querySelector(".urlworkaround a[href], .mod_url-content a[href], .externalurl a[href]");
+  return {
+    id: linkId,
+    name: pageTitle(html),
+    ...activityContext(html),
+    target_url: link?.getAttribute("href") ?? "",
+    url: `${baseUrl.replace(/\/$/, "")}/mod/url/view.php?id=${linkId}`,
+  };
+}
+
+export function parsePageHtml(html: string, pageId: number, baseUrl: string): Page {
+  const root = parse(html);
+  const content = first(root, [".box.generalbox", ".activity-description", "[data-region='page-content']", "main"]);
+  return {
+    id: pageId,
+    name: pageTitle(html),
+    ...activityContext(html),
+    content_text: content ? htmlToStructuredContent(content.innerHTML, baseUrl).text : "",
+    url: `${baseUrl.replace(/\/$/, "")}/mod/page/view.php?id=${pageId}`,
+  };
+}
+
+// The readable part of a page, or of a book's print view, fit to save as a file. It must
+// read the same on every request, so it drops what Moodle stamps per view: the book's
+// "Printed by <you> · Date <now>" box and the print link. Scripts go too; a page that
+// redirects in the browser would otherwise redirect the saved copy.
+export function parseSavedDocumentHtml(html: string, baseUrl: string): HTMLElement | undefined {
+  const root = parse(html);
+  const content = first(root, [".book", "[role='main']", "#region-main"]);
+  if (!content || !cleanNodeText(content)) return undefined;
+  for (const node of content.querySelectorAll(".book_info, .hidden-print, script, meta, link, noscript")) node.remove();
+  for (const node of content.querySelectorAll("*")) {
+    for (const name of Object.keys(node.attributes)) {
+      if (/^on/iu.test(name)) node.removeAttribute(name);
+    }
+    for (const name of ["href", "src"]) {
+      const value = node.getAttribute(name);
+      if (value && !value.startsWith("#") && !value.startsWith("data:")) node.setAttribute(name, resolveUrl(baseUrl, value));
+    }
+  }
+  return content;
+}
+
+export function parseFolderHtml(html: string, folderId: number, baseUrl: string): Folder {
+  const root = parse(html);
+  const fileEntries = root.querySelectorAll(".foldertree a[href], .fp-filename-icon a[href]")
+    .map((link) => {
+      const name = cleanNodeText(link);
+      const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+      return name && url ? fileEntry(name, url, baseUrl) : null;
+    })
+    .filter((entry): entry is FileEntry => entry !== null)
+    .filter((entry, index, entries) => entries.findIndex((candidate) => candidate.url === entry.url) === index);
+  return {
+    id: folderId,
+    name: pageTitle(html),
+    ...activityContext(html),
+    files: unique(fileEntries.map((entry) => entry.name)),
+    file_entries: fileEntries,
+    url: `${baseUrl.replace(/\/$/, "")}/mod/folder/view.php?id=${folderId}`,
+  };
+}
+
+export function parseForumDiscussionHtml(html: string, baseUrl: string, discussionId: number): ForumDiscussion {
+  const root = parse(html);
+  let postElements = root.querySelectorAll("div.forumpost[data-post-id]");
+  if (!postElements.length) {
+    postElements = root.querySelectorAll("article[data-post-id]");
+  }
+
+  const [groupId, groupName] = parseForumDiscussionGroupHtml(html);
+  const posts: ForumPost[] = [];
+
+  for (const element of postElements) {
+    const postId = safeInt(element.getAttribute("data-post-id"));
+    if (!postId) {
+      continue;
+    }
+
+    const header = first(element, ["header", ".header"]);
+    const subject = cleanNodeText(
+      firstDefined([
+        header ? first(header, ["h3"]) : null,
+        first(element, ["h3", "[data-region='post-title']"]),
+      ]),
+    );
+    const authorLink =
+      firstDefined([
+        header ? first(header, ['a[href*="/user/"]']) : null,
+        first(element, ['a[href*="/user/"]', 'a[href*="/user/profile.php"]']),
+      ]) ?? null;
+    const messageElement = first(element, [
+      ".post-content-container",
+      ".content",
+      "[data-region='post-content']",
+      "[data-region-content='forum-post-core']",
+    ]);
+    const messageHtml = messageElement?.innerHTML ?? "";
+    const structured = htmlToStructuredContent(messageHtml, baseUrl);
+
+    posts.push({
+      id: postId,
+      discussion_id: discussionId,
+      subject,
+      message_html: messageHtml,
+      message_text: structured.text,
+      image_urls: structured.image_urls,
+      links: structured.links,
+      tables: structured.tables,
+      author: {
+        id: 0,
+        fullname: cleanNodeText(authorLink),
+        profile_url: authorLink ? resolveUrl(baseUrl, authorLink.getAttribute("href") ?? "") : "",
+        profile_image_url: "",
+      },
+      parent_id: 0,
+      time_created: 0,
+      time_modified: 0,
+      created_pretty: cleanNodeText(header ? first(header, [".date", "time"]) : null),
+      unread: false,
+      is_deleted: false,
+      is_private_reply: false,
+      url: `${baseUrl.replace(/\/$/, "")}/mod/forum/discuss.php?d=${discussionId}#p${postId}`,
+      reply_url: `${baseUrl.replace(/\/$/, "")}/mod/forum/post.php?reply=${postId}#mformforum`,
+    });
+  }
+
+  return {
+    id: discussionId,
+    subject: posts[0]?.subject ?? "",
+    course_id: 0,
+    forum_id: 0,
+    group_id: groupId,
+    group_name: groupName,
+    url: `${baseUrl.replace(/\/$/, "")}/mod/forum/discuss.php?d=${discussionId}`,
+    posts,
+  };
+}
+
+export function parseForumViewCmidFromDiscussionHtml(html: string): number | null {
+  const root = parse(html);
+  const link = first(root, ['a[href*="/mod/forum/view.php?id="]', 'a[href*="mod/forum/view.php?id="]']);
+  const href = link?.getAttribute("href") ?? "";
+  if (!href) {
+    return null;
+  }
+  const url = parseMaybeUrl(href, "https://moodle.invalid");
+  if (!url || !url.pathname.endsWith("/mod/forum/view.php")) {
+    return null;
+  }
+  return numericQueryValue(url, "id");
+}
+
+export function parseForumDiscussionRefsHtml(html: string, baseUrl: string): ForumDiscussionRef[] {
+  const root = parse(html);
+  const refs: ForumDiscussionRef[] = [];
+  const seen = new Set<number>();
+  const links = [
+    ...root.querySelectorAll('a[href*="/mod/forum/discuss.php?d="]'),
+    ...root.querySelectorAll('a[href*="mod/forum/discuss.php?d="]'),
+    ...root.querySelectorAll('a[href*="discuss.php?d="]'),
+  ];
+
+  for (const link of links) {
+    const href = link.getAttribute("href") ?? "";
+    const url = parseMaybeUrl(href, baseUrl);
+    if (!url || !url.pathname.endsWith("/mod/forum/discuss.php")) {
+      continue;
+    }
+    const discussionId = numericQueryValue(url, "d");
+    if (!discussionId || seen.has(discussionId)) {
+      continue;
+    }
+    const subject = cleanNodeText(link);
+    if (!subject || ["permalink", "discuss"].includes(subject.toLowerCase())) {
+      continue;
+    }
+    seen.add(discussionId);
+    refs.push({
+      id: discussionId,
+      subject,
+      group_id: 0,
+      group_name: "",
+      url: resolveUrl(baseUrl, href),
+    });
+  }
+
+  return refs;
+}
+
+export function parseForumGroupsHtml(html: string): Array<[number, string]> {
+  const root = parse(html);
+  const select = first(root, ["form#selectgroup select[name='group']", "select[name='group']"]);
+  if (!select) {
+    return [];
+  }
+
+  const groups: Array<[number, string]> = [];
+  const seen = new Set<string>();
+  for (const option of select.querySelectorAll("option")) {
+    const groupId = safeInt(option.getAttribute("value"));
+    if (!groupId) {
+      continue;
+    }
+    const groupName = cleanNodeText(option);
+    const key = `${groupId}:${groupName}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    groups.push([groupId, groupName]);
+  }
+  return groups;
+}
+
+export function parseForumGroupIdsHtml(html: string): number[] {
+  return parseForumGroupsHtml(html).map(([groupId]) => groupId);
+}
+
+export function parseForumDiscussionGroupHtml(html: string): [number, string] {
+  const root = parse(html);
+  const groupId = safeInt(root.querySelector("form#mformforum input[name='groupid']")?.getAttribute("value"));
+  return [groupId, selectedGroupName(root, groupId)];
+}
+
+function selectedGroupName(root: HTMLElement, groupId: number): string {
+  if (groupId <= 0) {
+    return "";
+  }
+  for (const selector of ["select[name='groupinfo']", "select[name='group']"]) {
+    const option = root.querySelector(selector)?.querySelector(`option[value='${groupId}']`) ?? null;
+    if (option) {
+      return cleanNodeText(option);
+    }
+  }
+  return "";
+}
+
+function moodleDocsErrorCode(root: HTMLElement): string | undefined {
+  for (const link of root.querySelectorAll("a[href*='/error/']")) {
+    const href = link.getAttribute("href") ?? "";
+    const code = href.match(/\/error\/[^/]+\/([a-z][a-z0-9_]*)/iu)?.[1];
+    if (code) {
+      return code;
+    }
+  }
+  return undefined;
+}
+
+function cleanNodeText(node: HTMLElement | null | undefined): string {
+  return cleanText(node?.textContent ?? "");
+}
+
+function first(root: HTMLElement, selectors: string[]): HTMLElement | null {
+  for (const selector of selectors) {
+    const match = root.querySelector(selector);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+function firstDefined<T>(items: Array<T | null | undefined>): T | null {
+  return items.find((item): item is T => item !== null && item !== undefined) ?? null;
+}
+
+function safeInt(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return 0;
+}
+
+function parseMaybeUrl(href: string, baseUrl: string): URL | null {
+  try {
+    return new URL(href, baseUrl);
+  } catch {
+    return null;
+  }
+}
+
+function numericQueryValue(url: URL, key: string): number | null {
+  const value = url.searchParams.get(key);
+  if (!value || !/^\d+$/.test(value)) {
+    return null;
+  }
+  return Number(value);
+}
+
+/** The theme decides the markup every scraper reads, so a support report names it. */
+export function parseSiteTheme(html: string): string | undefined {
+  return stringValue(parseMoodleConfig(html).theme) || undefined;
+}
+
+function parseMoodleConfig(html: string): Record<string, unknown> {
+  const match = html.match(/M\.cfg\s*=\s*({[\s\S]*?});/);
+  if (!match) {
+    return {};
+  }
+  try {
+    return JSON.parse(match[1]) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function extractSitename(root: HTMLElement): string {
+  const title = cleanNodeText(root.querySelector("title"));
+  return title.includes("|") ? title.split("|").at(-1)?.trim() ?? title : title;
+}
+
+function pageTitle(html: string): string {
+  const root = parse(html);
+  const heading = cleanNodeText(root.querySelector("h1"));
+  // Boost puts the activity name in the page's h1; Classic and the themes built on it keep
+  // the course name there and open the main region with the activity's h2. The document
+  // title reads "COURSE: Activity | Site", so the heading that ends later in it is the
+  // activity's, even when a course's full name is also its short name.
+  const main = cleanNodeText(root.querySelector("#region-main h2"));
+  const title = cleanNodeText(root.querySelector("title"));
+  const separator = title.lastIndexOf(" | ");
+  const named = separator < 0 ? title : title.slice(0, separator);
+  if (main && endIn(named, main) > endIn(named, heading)) return main;
+  return heading || main;
+}
+
+function endIn(text: string, part: string): number {
+  const at = part ? text.lastIndexOf(part) : -1;
+  return at < 0 ? -1 : at + part.length;
+}
+
+function activityContext(html: string): { course_id: number; course_name: string; section_name: string } {
+  const root = parse(html);
+  const context = { course_id: parseCourseIdFromPageHtml(html) ?? 0, course_name: "", section_name: "" };
+  const breadcrumbs = root.querySelectorAll('nav[aria-label="Breadcrumb"] a[href], #page-navbar .breadcrumb a[href]');
+  const links = breadcrumbs.length ? breadcrumbs : root.querySelectorAll('a[href*="/course/view.php?id="]');
+  for (const link of links) {
+    const href = link.getAttribute("href") ?? "";
+    // Moodle 4.4 links a section to /course/section.php?id=SECTION, whose id is not the
+    // course's; only /course/view.php carries the course id.
+    const sectionPage = /\/course\/section\.php\b/u.test(href);
+    const courseId = /\/course\/view\.php\b/u.test(href) ? numberQueryValue(href, "id") : null;
+    if (courseId !== null) {
+      context.course_id = courseId;
+    }
+    if (sectionPage || numberQueryValue(href, "section") !== null) {
+      context.section_name = cleanNodeText(link);
+    } else if (courseId !== null) {
+      context.course_name ||= cleanNodeText(link);
+    }
+  }
+  return context;
+}
+
+function extractLabeledText(html: string, label: string, labels?: SiteLabels): string {
+  const root = parse(html);
+  const wanted = new Set(labelTexts(label, labels).map(labelKey));
+  for (const node of root.querySelectorAll("strong, b")) {
+    const text = cleanNodeText(node);
+    if (!wanted.has(labelKey(text))) {
+      continue;
+    }
+    const parent = node.parentNode as HTMLElement | null;
+    return cleanText(parent?.textContent.replace(text, "") ?? "");
+  }
+  return "";
+}
+
+function findTableValue(html: string, label: string, labels?: SiteLabels): string {
+  const root = parse(html);
+  const wanted = new Set(labelTexts(label, labels).map(labelKey));
+  for (const row of root.querySelectorAll("tr")) {
+    const cells = row.querySelectorAll("th, td");
+    if (wanted.has(labelKey(cleanNodeText(cells[0])))) {
+      return cleanTableCell(cells[1]);
+    }
+  }
+  return "";
+}
+
+function cleanTableCell(node: HTMLElement | null | undefined): string {
+  if (!node) {
+    return "";
+  }
+  const clone = parse(node.toString());
+  // A user without a picture gets initials in a span; they would run into the name.
+  for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, .hidden, .accesshide, .userinitials, script, style")) {
+    unwanted.remove();
+  }
+  return cleanText(clone.textContent.replace("( Empty )", "(Empty)"));
+}
+
+function numberQueryValue(href: string, key: string): number | null {
+  try {
+    return numericQueryValue(new URL(href, "https://moodle.invalid"), key);
+  } catch {
+    return null;
+  }
+}
+
+function numberValue(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return 0;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function fileEntry(name: string, url: string, baseUrl: string): FileEntry {
+  return {
+    name,
+    url,
+    requires_authentication: new URL(url).origin === new URL(baseUrl).origin,
+  };
+}
+
+function unique<T>(items: T[]): T[] {
+  return [...new Set(items)];
+}

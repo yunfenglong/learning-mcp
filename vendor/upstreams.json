@@ -1,0 +1,71 @@
+{
+  "ed": {
+    "repository": "https://github.com/bunizao/edstem-cli",
+    "branch": "main",
+    "sha": "50570fb8577577d9f73dd556f05dfbbf0e906ecd",
+    "version": "0.7.2",
+    "license": "MIT",
+    "synced_at": "2026-10-03T06:39:16.617Z",
+    "files": {
+      "package.json": "41e01231e4a2a43d085b47adaff45a11e89a2646fc30ebd9457ec85d21eac1d4",
+      "LICENSE": "98d72187fed081ee4aca58c71a7183bb723a7a25628ee536d8dc6d669e43821d",
+      "src/ed/client.ts": "69eda3e3056ab1e391434a66ce301def9e8db3cbb66bea6884a537c7a81672a8",
+      "src/ed/models.ts": "49b5253465468551a215e46fb450bedfaeed993f535b2ec7594dfba454d52d40",
+      "client.js": "4f055cf60a5bdd2e07572170014c21db1fb9850017d1fc171e2620d58fb6811e",
+      "entry.ts": "b6e34c94b0d6d121f5726bc1c73c1397306d9f1b0d30474f7cdd6d583d508dc0",
+      "client.d.ts": "b26ddf7544b747e002cf136e166cc132ae1395c0f2d8e99d162e0dd7f05ab8f6"
+    }
+  },
+  "moodle": {
+    "repository": "https://github.com/bunizao/moodle-cli",
+    "branch": "main",
+    "sha": "698283631b97e7409d4b9b784ab1072a434ded83",
+    "version": "0.10.0",
+    "license": "MIT",
+    "synced_at": "2026-10-03T06:39:25.251Z",
+    "files": {
+      "package.json": "70e513bba0c7a8dd478979c0afe5017cc50168cb917e2a63aa74f7de342d663b",
+      "LICENSE": "98d72187fed081ee4aca58c71a7183bb723a7a25628ee536d8dc6d669e43821d",
+      "src/moodle-client-core.ts": "826b5324b0308231d33b396d8f43d3a8c45d5137f4c2c07b925e3e6f18b40504",
+      "src/scraper.ts": "59d7fdb8752cfcec8c12ee15eada47f6929fdd42305b5123199ed9238bcc788a",
+      "src/parsers.ts": "038476292b4ada8901a5c85fe7adcd14faa2c65e7e5cec809e12ca356380b752",
+      "src/html-utils.ts": "6131a4072c5b440ef57c622be0d42d479a3fd4aaa0423200f359cc4d191798c4",
+      "src/models.ts": "89eb9946a84c08ad3965050de7d612450f65f4bbfbf74efb98ebeaa83cc42a6c",
+      "src/site-labels.ts": "20a1489eef7b3ebc2cb9746f8adaab716963844beb44ed62093ffcc75818e58a",
+      "src/moodle-forum-search-core.ts": "dceb578517f4d77bb92bca2aa435ede9eda43dc40913c591ca383227d17f5f5d",
+      "src/moodle-forum-core.ts": "60c756719f6af862084e80d78a18217f72884699628d4317bb19ff9ca22f4bdd",
+      "src/constants.ts": "ae5ffff4fa779d54a31dc8920058dfc52948019bb0cbbf3e5d97a3228c6798b8",
+      "src/moodle-quiz-core.ts": "9deaa0cabcea53f6e38891703d624f404cd65765819baf4773bfd74dee227691",
+      "src/moodle-assign-core.ts": "9f4d2b89b090a07850a38e6d7750a636f2e8f2c6c1be023362071bb291bd3b60",
+      "src/session-fetch.ts": "8b5b16bafd0aa1d689ff38ef221312513328e44d713d692b8c63428011a1fe73",
+      "src/resolve.ts": "b849cba30a1272204cece1cdd065c73d97af631229a4a2f6079eab9f7909c085",
+      "client.js": "cba03da12014282ea954acde7397a77816beab57b1ea741d7e6dc21997aea6e7",
+      "entry.ts": "b03f1e7964f309b8c3c3855175e641c0bae94494e83273d067d439dd587ff9d3",
+      "client.d.ts": "1ce95887ec9b044251d28787336223bc2e09efc12a768d7b654a865e9c99be4d"
+    }
+  },
+  "ontrack": {
+    "repository": "https://github.com/bunizao/ontrack-cli",
+    "branch": "main",
+    "sha": "a8411553bc0edbd599becb0c2f908af9f608d130",
+    "version": "0.3.2",
+    "license": "MIT",
+    "synced_at": "2026-10-03T06:39:31.648Z",
+    "files": {
+      "package.json": "6bd33af7c77cf104c291da85fd999c2c0b9686f5af7f605f98524b89dcd930bc",
+      "LICENSE": "98d72187fed081ee4aca58c71a7183bb723a7a25628ee536d8dc6d669e43821d",
+      "src/http.ts": "bb49876a92c7f2e938b4bef9ddb2b4949d75fc73b9801badb3b36ce1d6ec97e4",
+      "src/errors.ts": "cad763f12d62d761c868f5b16d6b691b47922b4225ab668c81b43cc36fd8de57",
+      "src/ontrack.ts": "de23398a243b0a3c2a8ab91f934086ae01ef4b65c020d64067afab9deb76ea28",
+      "src/status.ts": "07076ceb64542f7104c7b6f27660de1925fff4d00f75db1208ac949da0e9a500",
+      "src/uploads.ts": "a50058ff5f4ce732f608c8c0702dc03ccc6198b83e58cc792dc84b7a93c4f325",
+      "src/types.ts": "00300cf4974c9ac4bd37e909b6f0383bec48b7ba7906d2951a96e90072842e22",
+      "src/time.ts": "ca6dcf3722cc2d0ae786c960971ca81c43c4526f251f76ea709a19da137e5c55",
+      "src/grades.ts": "8f7ced22991f3a18e591e1d951ff28db0c95a945f794d3763eeea71f6afb95cf",
+      "src/readers.ts": "348f05b436c362c8823ff06d3f3dd34365b0744aac9b24e6c6e7495e679db385",
+      "client.js": "eb0ff734200d652a686dea368c62c1b9c20505c93b5a0ff5d91fedecd25d5a01",
+      "entry.ts": "466eaa74bd3b746770dea2ef09ed97ddea36b5407196ae431304f7944ce855e2",
+      "client.d.ts": "affb0d05d1273740cde432b611cbea22e0d7fbd3fb34b7a12a30f24dfeb89982"
+    }
+  }
+}

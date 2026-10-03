@@ -1,0 +1,113 @@
+const MAX_REDIRECTS = 5;
+const REQUEST_TIMEOUT_MS = 30_000;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+export async function fetchWithSession(
+  input: string,
+  init: RequestInit,
+  moodleOrigin: string,
+  cookie: { name: string; value: string },
+  fetchImpl: typeof fetch = (url, options) => fetch(url, options),
+): Promise<Response> {
+  let url = new URL(input);
+  const initialOrigin = url.origin;
+  const trustedOrigin = new URL(moodleOrigin).origin;
+  let method = (init.method ?? "GET").toUpperCase();
+  let body = init.body;
+  const headers = new Headers(init.headers);
+  // An idle limit, not a total one: a 200 MB lecture recording streams for minutes, and only
+  // a connection that stops sending is dead. It covers each hop's headers, then each body chunk.
+  const deadline = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
+
+  for (let hop = 0; ; hop += 1) {
+    signal.throwIfAborted();
+    arm();
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
+      throw new Error("The request destination is not allowed.");
+    }
+    headers.delete("cookie");
+    if (url.origin === trustedOrigin) headers.set("cookie", `${cookie.name}=${cookie.value}`);
+    if (url.origin !== initialOrigin) {
+      headers.delete("authorization");
+      headers.delete("proxy-authorization");
+    }
+    let response: Response;
+    try {
+      response = await fetchImpl(url.toString(), { ...init, method, body, headers: Object.fromEntries(headers), signal, redirect: "manual" });
+    } catch (error) {
+      clearTimeout(timer);
+      throw requestFailure(error, url, deadline.signal);
+    }
+    if (!REDIRECT_STATUSES.has(response.status) || !response.headers.get("location")) return watchBody(response, arm, () => clearTimeout(timer));
+    const location = response.headers.get("location")!;
+    await response.body?.cancel();
+    if (hop >= MAX_REDIRECTS) throw new Error("The request exceeded its redirect limit.");
+    const next = new URL(location, url);
+    if (url.protocol === "https:" && next.protocol !== "https:") {
+      throw new Error("The request refused an insecure redirect.");
+    }
+    if (next.origin !== url.origin && method !== "GET" && method !== "HEAD") {
+      throw new Error("The request refused a cross-origin form redirect.");
+    }
+    if ((response.status === 303 && method !== "HEAD") || ([301, 302].includes(response.status) && method === "POST")) {
+      method = "GET";
+      body = undefined;
+      for (const header of ["content-type", "content-length", "content-encoding", "content-language", "content-location"]) headers.delete(header);
+    }
+    url = next;
+  }
+}
+
+function watchBody(response: Response, arm: () => void, done: () => void): Response {
+  if (!response.body) {
+    done();
+    return response;
+  }
+  arm();
+  const body = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      arm();
+      controller.enqueue(chunk);
+    },
+    flush: done,
+  }));
+  const watched = new Response(body, response);
+  // A constructed Response has no URL, and callers name files and report sources from it.
+  Object.defineProperty(watched, "url", { value: response.url });
+  return watched;
+}
+
+/**
+ * Node reports every transport problem as "fetch failed", which tells the user
+ * nothing about which host went missing or whether they simply timed out. This
+ * module is bundled into the Worker, so it stays free of CLI dependencies and
+ * the callers map it onto their own error type.
+ */
+export class RequestFailed extends Error {
+  readonly host: string;
+  readonly timedOut: boolean;
+
+  constructor(host: string, timedOut: boolean, cause?: string) {
+    super(timedOut ? `${host} did not respond within ${REQUEST_TIMEOUT_MS / 1_000}s.` : `Could not reach ${host}: ${cause}`);
+    this.name = "RequestFailed";
+    this.host = host;
+    this.timedOut = timedOut;
+  }
+}
+
+function requestFailure(error: unknown, url: URL, deadline: AbortSignal): unknown {
+  if (deadline.aborted) {
+    return new RequestFailed(url.host, true);
+  }
+  if (!(error instanceof Error)) {
+    return error;
+  }
+  return new RequestFailed(url.host, false, error.cause instanceof Error ? error.cause.message : error.message);
+}
