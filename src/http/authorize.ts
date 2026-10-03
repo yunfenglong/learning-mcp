@@ -6,7 +6,7 @@ import { digest, randomToken } from "../auth/crypto.ts";
 import { browserSession, checkCsrf } from "../auth/login.ts";
 import { USAGE_VERSION, usageNotice, usageLabel } from "../domain/usage.ts";
 import { SuiteError } from "../errors.ts";
-import { escapeHtml as e, html } from "./common.ts";
+import { escapeHtml as e, html, oauthFormPolicy } from "./common.ts";
 export async function requestFingerprint(request: AuthRequest) {
   return digest(
     JSON.stringify(
@@ -41,6 +41,9 @@ export async function authorize(
     );
   const client = await env.OAUTH_PROVIDER.lookupClient(auth.clientId);
   if (!client) throw new SuiteError("INVALID_CLIENT", "Unknown client.");
+  const callbackHeaders = {
+    "content-security-policy": oauthFormPolicy(auth.redirectUri),
+  };
   const session = await browserSession(request, env);
   if (!session) {
     if (request.method !== "GET")
@@ -62,6 +65,8 @@ export async function authorize(
     });
     return html(
       `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Learning</title><style>body{font:16px system-ui;max-width:650px;margin:8vh auto;padding:24px;color:#172f2c;line-height:1.6}button{padding:12px 20px}dd{overflow-wrap:anywhere;margin:0 0 16px}a{color:#056256}</style><h1>Connect Learning to ${e(client.clientName ?? "MCP client")}</h1><p>Signed in as ${e(session.profile.name ?? session.profile.email ?? "Learning MCP account")}</p><dl><dt>Client</dt><dd>${e(auth.clientId)}</dd><dt>Return address</dt><dd>${e(auth.redirectUri)}</dd></dl><p>Read your linked courses, learning materials, deadlines, grades and attendance-code evidence.${auth.scope.includes(MANAGE_SCOPE) ? " Also manage your platform connections and course mappings." : ""}</p><p><a href="/landing" target="_blank" rel="noopener">Connect or review Ed, Moodle and OnTrack in this account</a></p>${usageNotice}<form method="post"><input type="hidden" name="csrf" value="${e(session.csrf)}"><input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}"><label><input type="checkbox" name="usage_consent" value="accept" required> ${usageLabel}</label><br><label><input type="checkbox" name="consent" value="allow" required> I approve these permissions.</label><p><button name="action" value="allow">Connect</button><button name="action" value="deny" formnovalidate>Cancel</button></p></form></html>`,
+      200,
+      callbackHeaders,
     );
   }
   if (request.method !== "POST")
@@ -117,7 +122,7 @@ export async function authorize(
     redirect.searchParams.set("iss", config.issuer);
     return new Response(null, {
       status: 302,
-      headers: { location: redirect.toString() },
+      headers: { ...callbackHeaders, location: redirect.toString() },
     });
   }
   await stateCall(env, session.profile.id, "/usage/accept", {
@@ -141,7 +146,7 @@ export async function authorize(
     });
     return new Response(null, {
       status: 302,
-      headers: { location: redirectTo },
+      headers: { ...callbackHeaders, location: redirectTo },
     });
   } catch {
     await stateCall(env, session.profile.id, "/revoke", { grant_id: grant.id });

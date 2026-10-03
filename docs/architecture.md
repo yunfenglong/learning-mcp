@@ -21,6 +21,10 @@ flowchart LR
 
 Provider sign-in derives a suite account from the provider type, origin and verified stable user ID. The Okta adapter checks `/api/v1/sessions/me` in the provider's own browser origin and requires an active, unexpired session. It stores scoped SSO cookies and optionally encrypted credentials for the user's later platform connections. See Okta's [current-session guidance](https://developer.okta.com/docs/guides/oie-upgrade-sessions-api/main/). Ed sign-in retains its verified Ed identity anchor. Existing Moodle / OnTrack-based accounts retain their platform anchors and original login entry; provider sign-in creates a separate account and does not merge identities. Login uses a single-use, browser-bound nonce, exact Origin checks, a notice acknowledgement before credentials are processed, and a per-source attempt limit. A suite OAuth refresh token does not renew an OnTrack token or Moodle session. Existing tokens from another MCP service require their original issuer and grant storage; they do not authorize this suite.
 
+Opening `/login` with a valid suite browser session returns directly to the requested connection or authorization page. It does not start another cloud browser or provider sign-in. If that browser session has expired, a new identity verification is required; saved SSO cookies remain available for the authenticated account's platform connections and renewal. Sign out before signing in as another account.
+
+OAuth consent pages allow form redirects only to the current client's registered callback origin. Other pages retain `form-action 'self'`. This lets a native form return to the client after authorization without weakening Origin, CSRF, PKCE or single-use nonce checks.
+
 ## Connecting a course
 
 1. The client authenticates through suite OAuth. The user reviews the notice and grants read or connection-management access.

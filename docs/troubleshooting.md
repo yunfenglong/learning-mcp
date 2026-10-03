@@ -6,6 +6,10 @@ Client OAuth authorizes suite tools; platforms must also be connected. Open `/la
 
 Discovery expires after ten minutes. If binding reports stale discovery, discover again and use its current IDs. Where course codes repeat, use the full key returned by `course_units`.
 
+## Authorization stays on the consent page
+
+Start a fresh authorization from the MCP client after updating the service. A successful form submission consumes its nonce, so submitting the old page again fails. Operators should check that the consent page and its redirect response allow the registered callback origin in `Content-Security-Policy: form-action`; a global `form-action 'self'` can block the browser's return to the client. Use the [native browser regression fixtures](../tests/browser/README.md) to verify both redirects and Origin handling.
+
 ## Sign-in or renewal needs attention
 
 | Error                               | Next step                                                                                                                                                                                              |

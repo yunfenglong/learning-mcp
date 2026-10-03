@@ -118,6 +118,30 @@ const post = (
     }),
   });
 describe("OAuth client consent", () => {
+  it("permits only the verified client's callback origin on the consent page and redirect", async () => {
+    const f = await fixture();
+    f.auth.redirectUri = "https://client.example/callback?account=1";
+    const page = await authorize(get(), f.env, f.config);
+    const policy = page.headers.get("content-security-policy")!;
+    expect(policy).toContain("form-action 'self' https://client.example;");
+    expect(policy).not.toContain("chatgpt.com");
+    expect(policy).not.toContain("account=1");
+    const nonce = (await page.text()).match(
+      /name="nonce" value="([a-f0-9]+)"/,
+    )![1]!;
+    const approved = await authorize(post(nonce), f.env, f.config);
+    expect(approved.headers.get("content-security-policy")).toBe(policy);
+    const second = await authorize(get(), f.env, f.config);
+    const deniedNonce = (await second.text()).match(
+      /name="nonce" value="([a-f0-9]+)"/,
+    )![1]!;
+    const denied = await authorize(
+      post(deniedNonce, { action: "deny" }),
+      f.env,
+      f.config,
+    );
+    expect(denied.headers.get("content-security-policy")).toBe(policy);
+  });
   it("uses each OAuth client's supplied name and accepts its own callback", async () => {
     for (const name of ["Claude", "Grok", undefined]) {
       const f = await fixture();
@@ -214,6 +238,47 @@ describe("OAuth client consent", () => {
   });
 });
 describe("browser and administrator boundaries", () => {
+  it("reuses an authenticated browser session when opening sign-in and preserves the OAuth return", async () => {
+    const f = await fixture();
+    const broker = vi.fn();
+    f.env.SSO_BROKER = { fetch: broker } as any;
+    const target = "/authorize?client_id=client-a&state=state-a";
+    const response = await startLogin(
+      new Request(
+        `https://suite.example/login?return_to=${encodeURIComponent(target)}`,
+        {
+          headers: { cookie: `__Host-learning-session=${sessionToken}` },
+        },
+      ),
+      f.env,
+      f.config,
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(target);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(broker).not.toHaveBeenCalled();
+  });
+  it("does not reuse an expired browser session or allow an external sign-in return", async () => {
+    const f = await fixture();
+    await f.global.ephemeralPut(
+      `session:${await digest(sessionToken)}`,
+      { profile: { id }, csrf },
+      Date.now() - 1,
+    );
+    const request = new Request("https://suite.example/login", {
+      headers: { cookie: `__Host-learning-session=${sessionToken}` },
+    });
+    expect((await startLogin(request, f.env, f.config)).status).toBe(200);
+    await expect(
+      startLogin(
+        new Request(
+          "https://suite.example/login?return_to=https%3A%2F%2Fother.example%2Fauthorize",
+        ),
+        f.env,
+        f.config,
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_RETURN" });
+  });
   it("keeps a login form valid when another sign-in page opens in the same browser", async () => {
     const f = await fixture();
     f.config.platforms.moodle = { site_url: "https://moodle.example.edu" };

@@ -30,16 +30,21 @@ export function safeReturn(value: string, issuer: string) {
 export async function startLogin(request: Request, env: Env, config: Config) {
   if (request.method !== "GET")
     throw new SuiteError("METHOD_NOT_ALLOWED", "Use GET or POST.", 405);
+  const return_to = safeReturn(
+    new URL(request.url).searchParams.get("return_to") ?? "/landing",
+    config.issuer,
+  );
+  if (await browserSession(request, env))
+    return new Response(null, {
+      status: 303,
+      headers: { location: return_to },
+    });
   const nonce = randomToken();
   const existingBrowser = cookie(request, "__Host-learning-login");
   // Each form has its own nonce; opening a second form must not invalidate the first.
   const browser = /^[a-f0-9]{64}$/.test(existingBrowser)
     ? existingBrowser
     : randomToken();
-  const return_to = safeReturn(
-    new URL(request.url).searchParams.get("return_to") ?? "/landing",
-    config.issuer,
-  );
   await globalCall(env, "/ephemeral/put", {
     key: `login:${await digest(nonce)}`,
     value: { browser: await digest(browser), return_to },

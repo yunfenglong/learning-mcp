@@ -10,7 +10,11 @@ import { startLogin, finishLogin } from "./auth/login.ts";
 import { authorize } from "./http/authorize.ts";
 import { landing, accountAction, page } from "./http/landing.ts";
 import { admin } from "./http/admin.ts";
-import { boundedRequest, json, securityHeaders } from "./http/common.ts";
+import {
+  boundedRequest,
+  json,
+  responseSecurityHeaders,
+} from "./http/common.ts";
 import { SuiteError, publicError } from "./errors.ts";
 import { EdAdapter } from "./adapters/ed.ts";
 import { MoodleAdapter } from "./adapters/moodle.ts";
@@ -157,8 +161,7 @@ export default {
         },
       });
       const response = await provider.fetch(request, env, ctx),
-        headers = new Headers(response.headers);
-      for (const [k, v] of Object.entries(securityHeaders)) headers.set(k, v);
+        headers = responseSecurityHeaders(new Headers(response.headers));
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,

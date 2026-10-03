@@ -9,6 +9,28 @@ export const securityHeaders = {
   // Preserve same-origin form Origin; withhold referrers from other origins.
   "referrer-policy": "same-origin",
 };
+/** The callback has already been validated against this OAuth client's registration. */
+export function oauthFormPolicy(callback: string) {
+  const url = new URL(callback);
+  if (
+    !["https:", "http:"].includes(url.protocol) ||
+    url.username ||
+    url.password
+  )
+    throw new SuiteError("INVALID_CALLBACK", "Use a valid OAuth callback.");
+  return securityHeaders["content-security-policy"].replace(
+    "form-action 'self'",
+    `form-action 'self' ${url.origin}`,
+  );
+}
+export function responseSecurityHeaders(headers: Headers) {
+  for (const [key, value] of Object.entries(securityHeaders)) {
+    // Authorization pages scope their form redirects to the validated client's callback.
+    if (key === "content-security-policy" && headers.has(key)) continue;
+    headers.set(key, value);
+  }
+  return headers;
+}
 export const escapeHtml = (value: unknown) =>
   String(value ?? "").replace(
     /[&<>"']/g,

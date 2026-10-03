@@ -280,6 +280,9 @@ async function login(subject: string, invalid = false) {
     .match(/__Host-learning-session=[a-f0-9]+/)![0];
   const page = await request("/landing", { headers: { cookie } });
   expect(page.status).toBe(200);
+  expect(page.headers.get("content-security-policy")).toContain(
+    "form-action 'self';",
+  );
   const csrf = (await page.text()).match(
     /name="csrf" value="([a-f0-9]+)"/,
   )![1]!;
@@ -319,6 +322,9 @@ async function connect(
     headers: { cookie: browser.cookie },
   });
   expect(page.status).toBe(200);
+  expect(page.headers.get("content-security-policy")).toContain(
+    "form-action 'self' https://chatgpt.com;",
+  );
   const nonce = (await page.text()).match(
     /name="nonce" value="([a-f0-9]+)"/,
   )![1]!;
@@ -339,6 +345,9 @@ async function connect(
     }).toString(),
   });
   expect(approved.status).toBe(302);
+  expect(approved.headers.get("content-security-policy")).toContain(
+    "form-action 'self' https://chatgpt.com;",
+  );
   const authCode = new URL(approved.headers.get("location")!).searchParams.get(
     "code",
   )!;
