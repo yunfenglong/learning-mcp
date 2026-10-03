@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("@cloudflare/playwright", () => ({ launch: vi.fn() }));
 const login = vi.hoisted(() => vi.fn());
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class {

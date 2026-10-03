@@ -214,6 +214,49 @@ describe("OAuth client consent", () => {
   });
 });
 describe("browser and administrator boundaries", () => {
+  it("keeps a login form valid when another sign-in page opens in the same browser", async () => {
+    const f = await fixture();
+    f.config.platforms.moodle = { site_url: "https://moodle.example.edu" };
+    f.env.SSO_BROKER = {
+      fetch: vi.fn(async () => Response.json({ id })),
+    } as any;
+    f.env.BROKER_SERVICE_TOKEN = "b".repeat(64);
+    const first = await startLogin(
+      new Request("https://suite.example/login"),
+      f.env,
+      f.config,
+    );
+    const nonce = (await first.text()).match(
+      /name="nonce" value="([a-f0-9]+)"/,
+    )![1]!;
+    const firstCookie = first.headers.get("set-cookie")!.split(";")[0]!;
+    const second = await startLogin(
+      new Request("https://suite.example/login", {
+        headers: { cookie: firstCookie },
+      }),
+      f.env,
+      f.config,
+    );
+    const currentCookie = second.headers.get("set-cookie")!.split(";")[0]!;
+    const signed = await finishLogin(
+      new Request("https://suite.example/login", {
+        method: "POST",
+        headers: { origin: f.config.issuer, cookie: currentCookie },
+        body: new URLSearchParams({
+          nonce,
+          platform: "moodle",
+          base_link: "https://moodle.example.edu",
+          username: "u",
+          password: "p",
+          usage_consent: "accept",
+          usage_version: USAGE_VERSION,
+        }),
+      }),
+      f.env,
+      f.config,
+    );
+    expect(signed.status).toBe(303);
+  });
   it("signs in through a supported provider without choosing a learning platform", async () => {
     const f = await fixture();
     f.config.ssoProviders = [
