@@ -26,6 +26,7 @@ interface Connection {
 let a: Connection, b: Connection;
 let moodleAccountChanged = false,
   moodleExpired = false,
+  moodleOutputCanary = false,
   edEnrolled = true;
 async function request(
   path: string,
@@ -177,7 +178,9 @@ async function platformFixture(req: Request): Promise<Response> {
                       id: 1,
                       name: "Week 1",
                       section: 0,
-                      summary: "",
+                      summary: moodleOutputCanary
+                        ? `Cookie moodle-${who}; key session-${who}; signed link ${moodle}/course/view.php?id=202&sesskey=session-${who}&access%5ftoken=upstream-credential-canary`
+                        : "",
                       visible: 1,
                       modules: [],
                     },
@@ -596,6 +599,29 @@ describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () =
         .moodle.status,
     ).toBe("not_connected");
     const stub = await runtime.getWorker("broker");
+    for (const headers of [
+      { authorization: `Bearer ${a.token}` },
+      { authorization: `Bearer ${brokerSecret}`, origin },
+    ]) {
+      const denied = await stub.fetch("https://broker/v1/session", {
+        method: "POST",
+        headers: {
+          ...headers,
+          "x-suite-account": a.profile,
+          "content-type": "application/json",
+        },
+        body: '{"platform":"moodle"}',
+      });
+      if ("origin" in headers) {
+        // Miniflare's proxy rejects Origin before invoking the Worker.
+        expect(denied.status).toBe(403);
+        expect(await denied.clone().text()).toBe("Invalid Origin header");
+      } else {
+        expect(denied.status).toBe(401);
+        expect(denied.headers.get("cache-control")).toBe("no-store");
+      }
+      expect(await denied.text()).not.toContain("moodle-a");
+    }
     expect(
       (
         await stub.fetch("https://broker/v1/status", {
@@ -638,6 +664,34 @@ describe("real workerd: ChatGPT OAuth, user binding and in-Worker clients", () =
       ).toBe("ACCOUNT_CHANGED");
     } finally {
       moodleAccountChanged = false;
+    }
+  });
+  it("removes real session canaries from text and structured MCP responses", async () => {
+    moodleOutputCanary = true;
+    try {
+      const result = (await call(a, "moodle_unit", { unit: unit.code })).result;
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent.unit.id).toBe(202);
+      expect(JSON.stringify(result)).not.toContain("moodle-a");
+      expect(JSON.stringify(result)).not.toContain("session-a");
+      expect(JSON.stringify(result)).not.toContain(
+        "upstream-credential-canary",
+      );
+      expect(JSON.stringify(result)).toContain("[REDACTED]");
+    } finally {
+      moodleOutputCanary = false;
+    }
+    for (const name of [
+      "password",
+      "totp_secret",
+      "refresh_token",
+      "client_secret",
+    ]) {
+      const response = await request(
+        `/healthz?${name}=query-credential-canary`,
+      );
+      expect(response.status).toBe(400);
+      expect(await response.text()).not.toContain("query-credential-canary");
     }
   });
   it("requests broker renewal after a Moodle login redirect without exposing session material", async () => {

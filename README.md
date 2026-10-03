@@ -22,6 +22,10 @@ Runs on Cloudflare Workers with a private Okta / SSO broker. Users do not need t
 
 Learning-platform operations are read-only. Connection and course-association tools manage the user's own suite account.
 
+## Project status
+
+Both Workers build and have unit and workerd integration tests. Authentication tests use controlled fixtures; live SSO compatibility depends on the configured platforms and identity provider. Treat a real two-user deployment check as part of setup.
+
 ## Self-hosting
 
 ### Requirements
@@ -39,7 +43,7 @@ Learning-platform operations are read-only. Connection and course-association to
    pnpm install --frozen-lockfile
    ```
 
-2. Configure the public Worker in [`wrangler.jsonc`](wrangler.jsonc) and the private broker in [`broker/wrangler.jsonc`](broker/wrangler.jsonc). Set the public HTTPS origin, OIDC application, OAuth KV namespace, broker Service Binding and platform origins. [`examples/config.json`](examples/config.json) provides a platform configuration example.
+2. Configure the public Worker in [`wrangler.jsonc`](wrangler.jsonc) and the private broker in [`broker/wrangler.jsonc`](broker/wrangler.jsonc). Set the public HTTPS origin, OIDC application, OAuth KV namespace, broker Service Binding and platform origins. Use the `platforms` object in [`examples/config.json`](examples/config.json) as `PLATFORM_CONFIG`; the whole example file is not a Worker configuration. See the [configuration reference](docs/configuration.md).
 3. Create the required resources and set the encryption keys, broker service token and any OIDC client secret. Follow the [deployment guide](docs/deployment.md) for the exact bindings and secret commands. Keep secrets out of source control.
 4. Validate and deploy the broker first, then the public Worker:
 
@@ -99,9 +103,9 @@ OAuth scopes are `learning:read`, `learning:bindings` and `offline_access`. Plat
 
 Suite sign-in establishes your identity. Moodle and OnTrack also need their own platform sessions; signing in to the suite does not automatically grant access to them.
 
-The broker reuses saved sessions where possible. With explicit opt-in, it can store an encrypted password and optional TOTP secret and generate fresh verification codes during sign-in. Push approvals, passkeys, device verification or changed provider policies may require user interaction. One-time MFA codes are not retained.
+The broker renews platform sessions over HTTP before using the cloud browser: Moodle session touch and cookie rotation, and OnTrack refresh-cookie exchange with access-token expiry checks. With explicit opt-in, it can store an encrypted password and optional TOTP secret and generate fresh verification codes during sign-in. Push approvals, passkeys, device verification or changed provider policies may require user interaction. One-time MFA codes are not retained.
 
-Credentials and platform sessions are encrypted in per-user Durable Object storage; OAuth records use KV. An operator holding the encryption keys can access stored credentials. **Forget saved sign-in** removes the saved password, TOTP secret and shared SSO cookies while retaining existing platform sessions. Disconnecting both broker platforms also removes the shared sign-in.
+Credentials and platform sessions are encrypted in per-user Durable Object storage; OAuth records use KV. An operator holding the encryption keys can access stored credentials. **Forget saved sign-in** removes the saved password, TOTP secret and shared SSO cookies while retaining platform sessions, including OnTrack refresh cookies. Disconnect a platform to remove its session and renewal material. Disconnecting both broker platforms also removes the shared sign-in.
 
 Cloudflare processes credentials and course data, and requested content is sent to the authorized MCP client. Users see a versioned notice before connecting platforms or granting client access. Users and operators must have the necessary permissions for automated access, credential delegation and content transfer. Accepting the notice does not establish platform approval or waive operator obligations.
 
@@ -124,9 +128,11 @@ Local development requires the relevant bindings and configuration. Use ignored 
 
 For optional grant administration, configure `LEARNING_MCP_URL` and `LEARNING_ADMIN_TOKEN`, then use `pnpm admin grants ACCOUNT_ID` or `pnpm admin revoke ACCOUNT_ID GRANT_ID`. The administrator API lists and revokes grants; it does not expose credentials.
 
+See [architecture and session renewal](docs/architecture.md), [troubleshooting](docs/troubleshooting.md), [contributing](CONTRIBUTING.md) and [security reporting](SECURITY.md).
+
 ## Acknowledgements
 
-Platform clients are bundled from bunizao's [edstem-cli](https://github.com/bunizao/edstem-cli), [moodle-cli](https://github.com/bunizao/moodle-cli) and [ontrack-cli](https://github.com/bunizao/ontrack-cli). They run inside the public Worker. The private broker is the only separate service.
+Platform clients are bundled from bunizao's [edstem-cli](https://github.com/bunizao/edstem-cli), [moodle-cli](https://github.com/bunizao/moodle-cli) and [ontrack-cli](https://github.com/bunizao/ontrack-cli). The public Worker uses them for learning-platform reads; the private broker also uses clients to verify platform sessions. The broker is the only separate service.
 
 Pinned versions, commit hashes and file hashes are recorded in [`vendor/upstreams.json`](vendor/upstreams.json). Each bundled client retains its upstream MIT license notice under `vendor/`.
 

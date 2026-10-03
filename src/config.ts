@@ -60,7 +60,7 @@ export function loadConfig(env: Env): Config {
   } catch {
     throw new SuiteError(
       "INVALID_CONFIG",
-      "Configure the Learning MCP origin and institutional platform origins.",
+      "Configure the suite HTTPS origin and platform origins.",
       503,
     );
   }

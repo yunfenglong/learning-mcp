@@ -79,12 +79,14 @@ export function platformFetch(
         target.username ||
         target.password ||
         target.pathname.startsWith("/login/")
-      )
+      ) {
+        await response.body?.cancel();
         throw new SuiteError(
           "PLATFORM_SESSION_EXPIRED",
           "Reconnect this platform on the account page.",
           409,
         );
+      }
     }
     if (!response.body) return response;
     let size = 0;

@@ -18,6 +18,7 @@ import { OnTrackAdapter } from "./adapters/ontrack.ts";
 import { AccountService } from "./accounts/service.ts";
 import { handleMcp } from "./mcp/server.ts";
 import type { Unit } from "./domain/units.ts";
+import { credentialKey } from "./security/output.ts";
 export { AccountState } from "./auth/broker.ts";
 interface Props {
   account_id: string;
@@ -84,7 +85,7 @@ export default {
           "Use the configured Learning MCP origin.",
           403,
         );
-      if (url.searchParams.has("access_token") || url.searchParams.has("token"))
+      if ([...url.searchParams.keys()].some(credentialKey))
         throw new SuiteError(
           "QUERY_CREDENTIAL",
           "Credentials must not appear in request URLs.",
@@ -118,6 +119,8 @@ export default {
         tokenEndpoint: "/oauth/token",
         clientRegistrationEndpoint: "/oauth/register",
         clientIdMetadataDocumentEnabled: true,
+        // The provider's default callback logs error descriptions.
+        onError: () => {},
         accessTokenTTL: 900,
         refreshTokenTTL: 30 * 86400,
         scopesSupported: [READ_SCOPE, MANAGE_SCOPE, "offline_access"],

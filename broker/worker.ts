@@ -9,7 +9,8 @@ import {
   type EncryptedRecord,
 } from "../src/auth/crypto.ts";
 import { SuiteError, publicError } from "../src/errors.ts";
-import { boundedRequest } from "../src/http/common.ts";
+import { boundedRequest, json } from "../src/http/common.ts";
+import { OutputBoundary } from "../src/security/output.ts";
 import { platformFetch } from "../src/platforms/network.ts";
 import {
   moodleSessionSchema,
@@ -17,6 +18,20 @@ import {
 } from "../src/platforms/broker.ts";
 import { browserLogin, type LoginInput } from "./sso.ts";
 import { parseTotp } from "./totp.ts";
+import {
+  cookieFetch,
+  cookiesSchema,
+  scopedCookies,
+  sessionCookies,
+  cookieMatches,
+  type SessionCookie,
+} from "../src/platforms/session-cookies.ts";
+import {
+  moodleContext,
+  refreshOnTrack,
+  sessionFailure,
+  touchMoodle,
+} from "./renewal.ts";
 export interface BrokerEnv {
   BROKER_STATE: DurableObjectNamespace;
   BROKER_SERVICE_TOKEN: string;
@@ -57,41 +72,112 @@ export async function validateSession(
       .object({
         cookie_name: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
         cookie_value: secret,
+        cookies: cookiesSchema.optional(),
       })
       .strict()
       .parse(input);
     let snapshot: any;
+    const jar = cookieFetch(
+      site,
+      sessionCookies(site, candidate),
+      platformFetch(site, fetchImpl, true),
+    );
+    let dashboard: Response;
+    try {
+      dashboard = await jar.fetch(`${site}/my/`);
+    } catch (error) {
+      if (error instanceof SuiteError) throw error;
+      throw new SuiteError(
+        "UPSTREAM_UNAVAILABLE",
+        "Moodle could not verify this session. Retry later.",
+        502,
+      );
+    }
+    if (!dashboard.ok) {
+      await dashboard.body?.cancel();
+      throw new SuiteError(
+        dashboard.status === 401 || dashboard.status === 403
+          ? "SESSION_INVALID"
+          : "UPSTREAM_UNAVAILABLE",
+        "Moodle could not verify this session.",
+        dashboard.status === 401 || dashboard.status === 403 ? 409 : 502,
+      );
+    }
+    const context = moodleContext(await dashboard.text(), site);
     const c = new MoodleClientCore(site, {
       cookie: { name: candidate.cookie_name, value: candidate.cookie_value },
-      fetchImpl: platformFetch(site, fetchImpl, true),
+      pageContext: context,
+      fetchImpl: jar.fetch,
       writeSessionCache: async (v: any) => {
         snapshot = v;
       },
     });
-    const user = await c.getSiteInfo();
+    let user: any;
+    try {
+      user = await c.getSiteInfo();
+    } catch (error: any) {
+      throw new SuiteError(
+        ["servicerequireslogin", "invalidsesskey"].includes(
+          error?.moodleErrorCode,
+        )
+          ? "PLATFORM_SESSION_EXPIRED"
+          : "UPSTREAM_UNAVAILABLE",
+        "Moodle could not verify this session. Reconnect or retry later.",
+        ["servicerequireslogin", "invalidsesskey"].includes(
+          error?.moodleErrorCode,
+        )
+          ? 409
+          : 502,
+      );
+    }
     if (
       !Number.isSafeInteger(user.userid) ||
       user.userid <= 0 ||
       new URL(user.siteurl).origin !== new URL(site).origin ||
-      !snapshot?.sesskey
+      !(snapshot?.sesskey ?? context.sesskey)
     )
       throw new SuiteError(
         "SESSION_INVALID",
-        "Moodle did not return a verified Learning account.",
+        "Moodle did not return an authenticated account.",
+        409,
+      );
+    const primary = jar
+      .cookies()
+      .find(
+        (cookie) =>
+          cookie.name === candidate.cookie_name &&
+          cookieMatches(cookie, `${site}/lib/ajax/service.php`),
+      );
+    if (!primary)
+      throw new SuiteError(
+        "SESSION_INVALID",
+        "Moodle removed its session cookie. Reconnect the platform.",
         409,
       );
     return moodleSessionSchema.parse({
       ...candidate,
-      sesskey: snapshot.sesskey,
+      cookie_value: primary.value,
+      cookies: jar.cookies(),
+      sesskey: snapshot?.sesskey ?? context.sesskey,
       userid: user.userid,
       profile_id: String(user.userid),
       display_name: String(user.fullname ?? "").slice(0, 200),
     });
   }
   const candidate = z
-    .object({ username: secret, token: secret })
+    .object({
+      username: secret,
+      token: secret,
+      expires_at: z.string().datetime().optional(),
+    })
     .strict()
     .parse(input);
+  if (candidate.expires_at && Date.parse(candidate.expires_at) <= Date.now())
+    throw new SuiteError(
+      "SESSION_INVALID",
+      "The OnTrack access token has expired. Reconnect the platform.",
+      409,
+    );
   const client = new OnTrackClient(
     new HttpClient({
       baseUrl: site,
@@ -123,11 +209,17 @@ export class BrokerState extends DurableObject<BrokerEnv> {
     return operation;
   }
   private async route(request: Request): Promise<Response> {
+    const output = new OutputBoundary();
+    output.remember(
+      this.env.BROKER_CREDENTIALS_KEY,
+      this.env.BROKER_SERVICE_TOKEN,
+    );
     try {
       const account = accountSchema.parse(
           request.headers.get("x-suite-account"),
         ),
-        path = new URL(request.url).pathname;
+        initialPath = new URL(request.url).pathname;
+      let path = initialPath;
       const data = (await request.json()) as any;
       const configs = JSON.parse(this.env.PLATFORM_CONFIG) as Record<
         string,
@@ -135,13 +227,15 @@ export class BrokerState extends DurableObject<BrokerEnv> {
       >;
       const load = async <T>(key: string) => {
         const record = await this.ctx.storage.get<EncryptedRecord>(key);
-        return record
-          ? decrypt<T>(
+        const value = record
+          ? await decrypt<T>(
               this.env.BROKER_CREDENTIALS_KEY,
               `${account}:${key}`,
               record,
             )
           : undefined;
+        output.rememberSession(value);
+        return value;
       };
       const save = async (key: string, value: unknown) =>
         this.ctx.storage.put(
@@ -153,6 +247,7 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           ),
         );
       if (path === "/v1/status") {
+        await load<SavedLogin>("sso");
         const status: Record<string, unknown> = {
           auth_modes: ["session", ...(this.env.BROWSER ? ["sso"] : [])],
           has_sso: Boolean(await this.ctx.storage.get("sso")),
@@ -167,33 +262,37 @@ export class BrokerState extends DurableObject<BrokerEnv> {
               }
             : { status: "not_connected" };
         }
-        return Response.json(status);
+        return json(output.redact(status));
       }
       if (path === "/v1/forget-login") {
         await this.ctx.storage.delete("sso");
         await this.ctx.storage.delete("retry_after");
-        return Response.json({ ok: true });
+        await this.ctx.storage.delete("retry_after:moodle");
+        await this.ctx.storage.delete("retry_after:ontrack");
+        return json({ ok: true });
       }
-      const p = platform.parse(data.platform),
-        site = configs[p]?.site_url;
-      if (!site || !platformOrigin(site))
-        throw new SuiteError(
-          "BROKER_CONFIG",
-          "Configure this platform's configured HTTPS origin.",
-          503,
-        );
+      const p = platform.parse(data.platform);
       if (path === "/v1/disconnect") {
         await this.ctx.storage.delete(`session:${p}`);
         await this.ctx.storage.delete(`renewed:${p}`);
+        await this.ctx.storage.delete(`refresh:${p}`);
         if (
           !(await this.ctx.storage.get(
             `session:${p === "moodle" ? "ontrack" : "moodle"}`,
           ))
         )
           await this.ctx.storage.delete("sso");
-        await this.ctx.storage.delete("retry_after");
-        return Response.json({ ok: true });
+        await this.ctx.storage.delete(`retry_after:${p}`);
+        return json({ ok: true });
       }
+      const configuredSite = configs[p]?.site_url;
+      if (!configuredSite || !platformOrigin(configuredSite))
+        throw new SuiteError(
+          "BROKER_CONFIG",
+          "Configure this platform's HTTPS origin.",
+          503,
+        );
+      const site = new URL(configuredSite).origin;
       if (path === "/v1/session") {
         const v = await load<unknown>(`session:${p}`);
         if (!v)
@@ -202,14 +301,54 @@ export class BrokerState extends DurableObject<BrokerEnv> {
             `Connect ${p} on the account page.`,
             409,
           );
-        return Response.json(v);
+        const session = v as { expires_at?: string };
+        if (
+          p === "ontrack" &&
+          session.expires_at &&
+          Date.parse(session.expires_at) < Date.now() + 5 * 60000
+        )
+          path = "/v1/renew";
+        else return json(v);
+      }
+      if (path === "/v1/cookies" && p === "moodle") {
+        const current = await load<any>("session:moodle");
+        if (!current)
+          throw new SuiteError(
+            "PLATFORM_NOT_CONNECTED",
+            "Connect Moodle on the account page.",
+            409,
+          );
+        // A delayed request must not overwrite another request's newer cookie rotation.
+        if (secret.parse(data.expected_cookie_value) !== current.cookie_value)
+          return json({ ok: false });
+        const cookies = scopedCookies(cookiesSchema.parse(data.cookies), [
+          site,
+        ]);
+        const primary = cookies.find(
+          (c) =>
+            c.name === current.cookie_name &&
+            cookieMatches(c, `${site}/lib/ajax/service.php`),
+        );
+        if (primary)
+          await save("session:moodle", {
+            ...current,
+            cookie_value: primary.value,
+            cookies,
+          });
+        return json({ ok: Boolean(primary) });
       }
       if (path !== "/v1/connect" && path !== "/v1/renew")
         throw new SuiteError("NOT_FOUND", "Unknown broker route.", 404);
       const previous = await load<any>(`session:${p}`);
       if (path === "/v1/renew") {
+        if (!previous)
+          throw new SuiteError(
+            "PLATFORM_NOT_CONNECTED",
+            "Connect the platform on the account page.",
+            409,
+          );
         if (
-          ((await this.ctx.storage.get<number>("retry_after")) ?? 0) >
+          ((await this.ctx.storage.get<number>(`retry_after:${p}`)) ?? 0) >
           Date.now()
         )
           throw new SuiteError(
@@ -219,13 +358,68 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           );
         const renewed =
           (await this.ctx.storage.get<number>(`renewed:${p}`)) ?? 0;
-        if (previous && Date.now() - renewed < 10000)
-          return Response.json(previous);
+        if (
+          previous &&
+          Date.now() - renewed < 10000 &&
+          (!previous.expires_at ||
+            Date.parse(previous.expires_at) > Date.now() + 30000)
+        )
+          return json(previous);
       }
-      let candidate: unknown, login: SavedLogin | undefined;
+      let candidate: unknown,
+        login: SavedLogin | undefined,
+        verified: any,
+        refreshCookies: SessionCookie[] | undefined;
+      if (path === "/v1/renew") {
+        try {
+          if (p === "ontrack") {
+            const result = await refreshOnTrack(
+              site,
+              previous,
+              (await load<SessionCookie[]>("refresh:ontrack")) ?? [],
+            );
+            if (result) {
+              candidate = result.session;
+              refreshCookies = result.cookies;
+            }
+          } else {
+            const jar = cookieFetch(
+              site,
+              sessionCookies(site, previous),
+              platformFetch(site),
+            );
+            await touchMoodle(site, previous, jar.fetch);
+            if (
+              !jar
+                .cookies()
+                .some(
+                  (c) =>
+                    c.name === previous.cookie_name &&
+                    cookieMatches(c, `${site}/lib/ajax/service.php`),
+                )
+            )
+              throw new SuiteError(
+                "PLATFORM_SESSION_EXPIRED",
+                "Moodle removed its session cookie. Reconnect the platform.",
+                409,
+              );
+            verified = await validateSession(site, p, {
+              cookie_name: previous.cookie_name,
+              cookie_value: previous.cookie_value,
+              cookies: jar.cookies(),
+            });
+            candidate = verified;
+          }
+        } catch (error) {
+          if (!sessionFailure(error) || p === "ontrack") {
+            await this.ctx.storage.put(`retry_after:${p}`, Date.now() + 60000);
+            throw error;
+          }
+        }
+      }
       if (path === "/v1/connect" && data.mode === "session") {
         candidate = data.input;
-      } else {
+      } else if (!candidate) {
         if (!this.env.BROWSER)
           throw new SuiteError(
             "SSO_NOT_CONFIGURED",
@@ -248,6 +442,11 @@ export class BrokerState extends DurableObject<BrokerEnv> {
               ...(totp ? { totp } : {}),
             }
           : stored?.input;
+        output.remember(
+          credentials?.password,
+          credentials?.mfa_code,
+          credentials?.totp?.secret,
+        );
         if (
           fresh &&
           stored &&
@@ -280,12 +479,33 @@ export class BrokerState extends DurableObject<BrokerEnv> {
             input: credentials,
           });
         } catch (error) {
-          await this.ctx.storage.put("retry_after", Date.now() + 60000);
+          await this.ctx.storage.put(`retry_after:${p}`, Date.now() + 60000);
           throw error;
         }
         candidate = result.session;
+        if (p === "ontrack")
+          refreshCookies = scopedCookies(result.cookies, [site]);
         login = {
-          cookies: result.cookies,
+          // Keep platform renewal material in its own record, separate from shared IdP cookies.
+          cookies: scopedCookies(
+            result.cookies,
+            origins.filter(
+              (origin) =>
+                !Object.values(configs).some(
+                  (c) =>
+                    c.site_url &&
+                    new URL(c.site_url).origin === new URL(origin).origin,
+                ),
+            ),
+          ).filter((cookie) => {
+            if (/^MoodleSession/.test(cookie.name)) return false;
+            const ontrack = configs.ontrack?.site_url;
+            return !(
+              ontrack &&
+              ["refresh_token", "username"].includes(cookie.name) &&
+              cookieMatches({ ...cookie, path: "/" }, ontrack)
+            );
+          }),
           username: fresh?.username ?? stored!.username,
           ...(fresh?.remember
             ? {
@@ -300,9 +520,8 @@ export class BrokerState extends DurableObject<BrokerEnv> {
               : {}),
         };
       }
-      let verified: any;
       try {
-        verified = await validateSession(site, p, candidate);
+        verified ??= await validateSession(site, p, candidate);
       } catch (error) {
         if (error instanceof SuiteError) throw error;
         throw new SuiteError(
@@ -318,26 +537,31 @@ export class BrokerState extends DurableObject<BrokerEnv> {
           409,
         );
       await save(`session:${p}`, verified);
-      await this.ctx.storage.delete("retry_after");
+      output.rememberSession(verified);
+      if (refreshCookies) await save("refresh:ontrack", refreshCookies);
+      else if (path === "/v1/connect" && p === "ontrack")
+        await this.ctx.storage.delete("refresh:ontrack");
+      await this.ctx.storage.delete(`retry_after:${p}`);
       if (path === "/v1/renew")
         await this.ctx.storage.put(`renewed:${p}`, Date.now());
       else await this.ctx.storage.delete(`renewed:${p}`);
       if (login) await save("sso", login);
       // Credentials leave the broker only through its authenticated internal session/renew contract.
-      return Response.json(
+      return json(
         path === "/v1/renew"
           ? verified
-          : {
+          : output.redact({
               ok: true,
               platform: p,
               profile_id: verified.profile_id,
               display_name: verified.display_name,
-            },
+            }),
       );
     } catch (error) {
-      return Response.json(publicError(error), {
-        status: error instanceof SuiteError ? error.status : 400,
-      });
+      return json(
+        output.redact(publicError(error)),
+        error instanceof SuiteError ? error.status : 400,
+      );
     }
   }
 }
@@ -384,9 +608,10 @@ export default {
         request,
       );
     } catch (error) {
-      return Response.json(publicError(error), {
-        status: error instanceof SuiteError ? error.status : 400,
-      });
+      return json(
+        publicError(error),
+        error instanceof SuiteError ? error.status : 400,
+      );
     }
   },
 } satisfies ExportedHandler<BrokerEnv>;

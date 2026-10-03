@@ -8,17 +8,46 @@ import { brokerCall } from "../platforms/broker.ts";
 import { DirectBackend } from "../platforms/direct.ts";
 import { discover } from "./courses.ts";
 import upstreams from "../../vendor/upstreams.json";
+import { OutputBoundary } from "../security/output.ts";
 export class AccountService {
+  readonly output = new OutputBoundary();
   readonly backends: Record<Platform, DirectBackend>;
   constructor(
     readonly env: Env,
     readonly profile: Profile,
     readonly config: Config,
   ) {
+    this.output.remember(
+      env.CREDENTIALS_KEY,
+      env.BROKER_SERVICE_TOKEN,
+      env.ADMIN_TOKEN,
+      env.OIDC_CLIENT_SECRET,
+    );
     this.backends = {
-      ed: new DirectBackend(env, profile.id, "ed", config),
-      moodle: new DirectBackend(env, profile.id, "moodle", config),
-      ontrack: new DirectBackend(env, profile.id, "ontrack", config),
+      ed: new DirectBackend(
+        env,
+        profile.id,
+        "ed",
+        config,
+        globalThis.fetch,
+        this.output,
+      ),
+      moodle: new DirectBackend(
+        env,
+        profile.id,
+        "moodle",
+        config,
+        globalThis.fetch,
+        this.output,
+      ),
+      ontrack: new DirectBackend(
+        env,
+        profile.id,
+        "ontrack",
+        config,
+        globalThis.fetch,
+        this.output,
+      ),
     };
   }
   async status() {
@@ -34,6 +63,7 @@ export class AccountService {
         status: "connected",
         display_name: c.display_name,
       };
+      this.output.rememberSession(c);
     } catch {
       /* Missing connection. */
     }
@@ -58,7 +88,7 @@ export class AccountService {
         ontrack: { status: "unavailable" },
       };
     }
-    return { ed, platforms };
+    return this.output.redact({ ed, platforms });
   }
   async start(platform: Platform) {
     const ticket = randomToken();

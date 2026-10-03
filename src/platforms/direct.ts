@@ -11,18 +11,40 @@ import {
   brokerCall,
   moodleSessionSchema,
   ontrackSessionSchema,
+  type MoodleSession,
 } from "./broker.ts";
+import {
+  cookieFetch,
+  cookieMatches,
+  sessionCookies,
+} from "./session-cookies.ts";
 import { object, rows, type Backend } from "../adapters/backend.ts";
+import { OutputBoundary } from "../security/output.ts";
 export class DirectBackend implements Backend {
   private client?: Promise<any>;
   private edInstitution = new Map<number, boolean>();
   private moodleSessionExpired?: SuiteError;
+  private ontrackSessionExpired = false;
+  private authenticationFailure?: SuiteError;
+  private async renew(platform: "moodle" | "ontrack") {
+    try {
+      const value = await brokerCall(this.env, this.account, "/v1/renew", {
+        platform,
+      });
+      this.output.rememberSession(value);
+      return value;
+    } catch (error) {
+      if (error instanceof SuiteError) this.authenticationFailure = error;
+      throw error;
+    }
+  }
   constructor(
     private readonly env: Env,
     readonly account: string,
     readonly platform: Platform,
     private readonly config: Config,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
+    private readonly output = new OutputBoundary(),
   ) {}
   private async connect() {
     const site = this.config.platforms[this.platform]?.site_url;
@@ -38,6 +60,7 @@ export class DirectBackend implements Backend {
         this.account,
         "/connection/get",
       );
+      this.output.rememberSession(c);
       const client = new EdClient({
         token: c.token,
         apiBaseUrl: "https://edstem.org/api/",
@@ -80,16 +103,28 @@ export class DirectBackend implements Backend {
           platform: "moodle",
         }),
       );
+      const session = { current: c };
+      this.output.rememberSession(c);
+      const fetchImpl = this.moodleFetch(site, session);
+      const context = (value: MoodleSession) => ({
+        sesskey: value.sesskey,
+        user_info: {
+          userid: value.userid,
+          siteurl: site,
+          fullname: value.display_name || `Moodle user ${value.userid}`,
+          username: "",
+          firstname: "",
+          lastname: "",
+          email: "",
+        },
+      });
       const client = new MoodleClientCore(site, {
         cookie: { name: c.cookie_name, value: c.cookie_value },
-        sesskey: c.sesskey,
-        userid: c.userid,
-        fetchImpl: this.moodleFetch(site),
+        pageContext: context(c),
+        fetchImpl,
         onLoginRequired: async () => {
           const refreshed = moodleSessionSchema.parse(
-            await brokerCall(this.env, this.account, "/v1/renew", {
-              platform: "moodle",
-            }),
+            await this.renew("moodle"),
           );
           if (refreshed.profile_id !== c.profile_id)
             throw new SuiteError(
@@ -97,21 +132,13 @@ export class DirectBackend implements Backend {
               "Reconnect the platform to confirm this account.",
               409,
             );
+          session.current = refreshed;
           return {
             cookie: {
               name: refreshed.cookie_name,
               value: refreshed.cookie_value,
             },
-            pageContext: {
-              sesskey: refreshed.sesskey,
-              user_info: await new MoodleClientCore(site, {
-                cookie: {
-                  name: refreshed.cookie_name,
-                  value: refreshed.cookie_value,
-                },
-                fetchImpl: this.moodleFetch(site),
-              }).getSiteInfo(),
-            },
+            pageContext: context(refreshed),
           };
         },
       });
@@ -129,17 +156,21 @@ export class DirectBackend implements Backend {
         platform: "ontrack",
       }),
     );
+    this.output.rememberSession(c);
     return new OnTrackClient(
       new HttpClient({
         baseUrl: site,
         credentials: { username: c.username, accessToken: c.token },
-        fetch: platformFetch(site, this.fetchImpl),
-        refresh: async () => {
-          const v = ontrackSessionSchema.parse(
-            await brokerCall(this.env, this.account, "/v1/renew", {
-              platform: "ontrack",
-            }),
+        fetch: async (input: any, init: any) => {
+          const response = await platformFetch(site, this.fetchImpl)(
+            input,
+            init,
           );
+          if (response.status === 401) this.ontrackSessionExpired = true;
+          return response;
+        },
+        refresh: async () => {
+          const v = ontrackSessionSchema.parse(await this.renew("ontrack"));
           if (v.profile_id !== c.profile_id)
             throw new SuiteError(
               "ACCOUNT_CHANGED",
@@ -154,11 +185,67 @@ export class DirectBackend implements Backend {
   async api(): Promise<any> {
     return (this.client ??= this.connect());
   }
-  private moodleFetch(site: string): typeof fetch {
+  private moodleFetch(
+    site: string,
+    session: { current: MoodleSession },
+  ): typeof fetch {
     const network = platformFetch(site, this.fetchImpl, true);
+    let active = session.current;
+    const makeJar = () =>
+      cookieFetch(
+        site,
+        sessionCookies(site, session.current),
+        network,
+        async (cookies, sent) => {
+          const primary = cookies.find(
+            (c) =>
+              c.name === session.current.cookie_name &&
+              cookieMatches(c, `${site}/lib/ajax/service.php`),
+          );
+          const expected = sent.find(
+            (c) =>
+              c.name === session.current.cookie_name &&
+              cookieMatches(c, `${site}/lib/ajax/service.php`),
+          );
+          const result = await brokerCall<{ ok: boolean }>(
+            this.env,
+            this.account,
+            "/v1/cookies",
+            {
+              platform: "moodle",
+              expected_cookie_value:
+                expected?.value ?? session.current.cookie_value,
+              cookies,
+            },
+          );
+          if (!result.ok) {
+            session.current = moodleSessionSchema.parse(
+              await brokerCall(this.env, this.account, "/v1/session", {
+                platform: "moodle",
+              }),
+            );
+            this.output.rememberSession(session.current);
+            return false;
+          }
+          if (primary) {
+            session.current = {
+              ...session.current,
+              cookie_value: primary.value,
+              cookies,
+            };
+            active = session.current;
+            this.output.rememberSession(session.current);
+          }
+        },
+      );
+    let jar = makeJar();
     return async (input, init) => {
       try {
-        return await network(input, init);
+        if (active !== session.current) {
+          active = session.current;
+          jar = makeJar();
+        }
+        return await jar.fetch(input, init);
       } catch (error) {
         // Moodle's upstream transport wraps fetch errors. Preserve the session signal separately.
         if (
@@ -174,10 +261,26 @@ export class DirectBackend implements Backend {
     try {
       return await this.execute(name, a);
     } catch (error) {
+      // Vendor transports may wrap callback failures; retain the broker's actionable error.
+      if (this.authenticationFailure) {
+        const failure = this.authenticationFailure;
+        this.authenticationFailure = undefined;
+        this.moodleSessionExpired = undefined;
+        this.ontrackSessionExpired = false;
+        throw failure;
+      }
       if (this.platform === "moodle" && this.moodleSessionExpired) {
         this.moodleSessionExpired = undefined;
         await brokerCall(this.env, this.account, "/v1/renew", {
           platform: "moodle",
+        });
+        this.client = undefined;
+        return this.execute(name, a);
+      }
+      if (this.platform === "ontrack" && this.ontrackSessionExpired) {
+        this.ontrackSessionExpired = false;
+        await brokerCall(this.env, this.account, "/v1/renew", {
+          platform: "ontrack",
         });
         this.client = undefined;
         return this.execute(name, a);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Env } from "../config.ts";
 import { SuiteError } from "../errors.ts";
+import { cookiesSchema } from "./session-cookies.ts";
 const secret = z
   .string()
   .min(1)
@@ -10,6 +11,7 @@ export const moodleSessionSchema = z
   .object({
     cookie_name: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
     cookie_value: secret,
+    cookies: cookiesSchema.optional(),
     sesskey: secret,
     userid: z.number().int().positive(),
     profile_id: z.string().min(1),
@@ -20,6 +22,7 @@ export const ontrackSessionSchema = z
   .object({
     username: secret,
     token: secret,
+    expires_at: z.string().datetime().optional(),
     profile_id: z.string().min(1),
     display_name: z.string().optional(),
   })
@@ -51,7 +54,7 @@ export async function brokerCall<T>(
         "content-type": "application/json",
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(120000),
     }),
   );
   const v = (await response.json()) as T & { code?: string; message?: string };

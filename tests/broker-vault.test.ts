@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const login = vi.hoisted(() => vi.fn());
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class {
@@ -9,36 +9,23 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 vi.mock("../broker/sso.ts", () => ({ browserLogin: login }));
-vi.mock("../vendor/moodle/client.js", () => ({
-  MoodleClientCore: class {
-    constructor(
-      private site: string,
-      private options: any,
-    ) {}
-    async getSiteInfo() {
-      await this.options.writeSessionCache({ sesskey: "sesskey" });
-      return {
-        userid: this.options.cookie.value === "changed" ? 2 : 1,
-        siteurl: this.site,
-        fullname: "User",
-      };
-    }
-  },
-}));
-import { BrokerState } from "../broker/worker.ts";
+import entrypoint, { BrokerState } from "../broker/worker.ts";
 import { decrypt } from "../src/auth/crypto.ts";
 import { MemoryStore, key } from "./support.ts";
 const account = "a".repeat(64),
   seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-function fixture() {
+function fixture(browser = true) {
   const storage = new MemoryStore();
   const broker = new BrokerState(
     { storage } as any,
     {
       BROKER_CREDENTIALS_KEY: key,
-      BROWSER: {},
+      BROWSER: browser ? {} : undefined,
       LOGIN_ORIGINS: '["https://tenant.okta.example"]',
-      PLATFORM_CONFIG: '{"moodle":{"site_url":"https://moodle.example.edu"}}',
+      PLATFORM_CONFIG: JSON.stringify({
+        moodle: { site_url: "https://moodle.example.edu" },
+        ontrack: { site_url: "https://ontrack.example.edu" },
+      }),
     } as any,
   );
   const call = (path: string, body: any = {}, who = account) =>
@@ -49,9 +36,33 @@ function fixture() {
         body: JSON.stringify(body),
       }),
     );
-  return { storage, call };
+  return { storage, call, env: (broker as any).env };
 }
+const network = vi.fn(async (input: any, init: any) => {
+  const url = new URL(String(input));
+  if (url.hostname === "ontrack.example.edu") return Response.json([]);
+  const cookie = new Headers(init?.headers).get("cookie") ?? "";
+  const userid = cookie.includes("changed") ? 2 : 1;
+  if (url.pathname === "/my/")
+    return new Response(
+      `<script>M.cfg={"sesskey":"sesskey","userid":${userid}}</script><span class="usertext">User</span>`,
+    );
+  const body = JSON.parse(init?.body ?? "[]");
+  if (body[0]?.methodname === "core_session_touch")
+    return new Response(null, {
+      status: 302,
+      headers: { location: "https://moodle.example.edu/login/index.php" },
+    });
+  return Response.json([
+    {
+      error: false,
+      data: { userid, siteurl: "https://moodle.example.edu", fullname: "User" },
+    },
+  ]);
+});
+afterEach(() => vi.unstubAllGlobals());
 beforeEach(() => {
+  vi.stubGlobal("fetch", network);
   vi.clearAllMocks();
   login.mockResolvedValue({
     session: { cookie_name: "MoodleSession", cookie_value: "valid" },
@@ -59,12 +70,309 @@ beforeEach(() => {
   });
 });
 describe("private credential vault", () => {
+  it("rejects browser-origin requests before accessing account storage", async () => {
+    const get = vi.fn();
+    const secret = "b".repeat(64);
+    const response = await entrypoint.fetch(
+      new Request("https://broker/v1/session", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${secret}`,
+          origin: "https://suite.example",
+          "x-suite-account": account,
+        },
+        body: '{"platform":"moodle"}',
+      }),
+      { BROKER_SERVICE_TOKEN: secret, BROKER_STATE: { get } } as any,
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).not.toContain(secret);
+    expect(get).not.toHaveBeenCalled();
+  });
   const credentials = {
     username: "user",
     password: "password-secret",
     totp_secret: seed,
     mfa_code: "123456",
   };
+  it("redacts credentials echoed in profile metadata while keeping internal sessions private and noncacheable", async () => {
+    const f = fixture(),
+      fallback = network.getMockImplementation()!;
+    network.mockImplementation(async (input, init) => {
+      if (String(input).includes("core_webservice_get_site_info"))
+        return Response.json([
+          {
+            error: false,
+            data: {
+              userid: 1,
+              siteurl: "https://moodle.example.edu",
+              fullname: `${credentials.password} ${seed} valid`,
+            },
+          },
+        ]);
+      return fallback(input, init);
+    });
+    try {
+      const connected = await f.call("/v1/connect", {
+        platform: "moodle",
+        mode: "sso",
+        input: { ...credentials, remember: true },
+      });
+      expect(connected.status).toBe(200);
+      const metadata = await connected.text();
+      expect(metadata).not.toContain(credentials.password);
+      expect(metadata).not.toContain(seed);
+      expect(metadata).not.toContain("valid");
+      const status = await f.call("/v1/status");
+      const publicMetadata = await status.text();
+      expect(publicMetadata).not.toContain(credentials.password);
+      expect(publicMetadata).not.toContain(seed);
+      const session = await f.call("/v1/session", { platform: "moodle" });
+      expect(session.headers.get("cache-control")).toBe("no-store");
+      expect(await session.json()).toMatchObject({ cookie_value: "valid" });
+    } finally {
+      network.mockImplementation(fallback);
+    }
+  });
+  it("validates a lowercase Moodle userid without relying on the site-info service", async () => {
+    const f = fixture(false),
+      fallback = network.getMockImplementation()!;
+    network.mockImplementation(async (input, init) =>
+      String(input).includes("/my/")
+        ? new Response('<script>M.cfg={"sesskey":"key","userid":12};</script>')
+        : Response.json([
+            {
+              error: true,
+              exception: {
+                errorcode: "servicenotavailable",
+                message: "Disabled service",
+              },
+            },
+          ]),
+    );
+    try {
+      expect(
+        await (
+          await f.call("/v1/connect", {
+            platform: "moodle",
+            mode: "session",
+            input: { cookie_name: "MoodleSession", cookie_value: "valid" },
+          })
+        ).json(),
+      ).toMatchObject({ ok: true, profile_id: "12" });
+    } finally {
+      network.mockImplementation(fallback);
+    }
+  });
+  it("separates IdP cookies from refresh material and deletes sessions even after configuration is disabled", async () => {
+    const f = fixture();
+    login.mockResolvedValueOnce({
+      session: {
+        username: "user",
+        token: "access",
+        expires_at: new Date(Date.now() + 3600000).toISOString(),
+      },
+      cookies: [
+        {
+          name: "refresh_token",
+          value: "refresh",
+          domain: "ontrack.example.edu",
+          path: "/api/auth",
+        },
+        {
+          name: "username",
+          value: "user",
+          domain: "ontrack.example.edu",
+          path: "/",
+        },
+        { name: "sid", value: "sso", domain: "tenant.okta.example", path: "/" },
+      ],
+    });
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "ontrack",
+          mode: "sso",
+          input: credentials,
+        })
+      ).status,
+    ).toBe(200);
+    const shared = await decrypt<any>(
+      key,
+      `${account}:sso`,
+      await f.storage.get<any>("sso"),
+    );
+    expect(shared.cookies.map((c: any) => c.name)).toEqual(["sid"]);
+    await f.call("/v1/forget-login");
+    expect(await f.storage.get("sso")).toBeUndefined();
+    expect(await f.storage.get("refresh:ontrack")).toBeDefined();
+    f.env.PLATFORM_CONFIG = "{}";
+    expect(
+      (await f.call("/v1/disconnect", { platform: "ontrack" })).status,
+    ).toBe(200);
+    expect(await f.storage.get("session:ontrack")).toBeUndefined();
+    expect(await f.storage.get("refresh:ontrack")).toBeUndefined();
+  });
+  it("renews Moodle over HTTP, retains full cookie rotation and rejects stale cookie updates", async () => {
+    const f = fixture(false);
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "moodle",
+          mode: "session",
+          input: { cookie_name: "MoodleSession", cookie_value: "valid" },
+        })
+      ).status,
+    ).toBe(200);
+    const fallback = network.getMockImplementation()!;
+    network.mockImplementation(async (input, init) => {
+      if (String(input).includes("core_session_touch"))
+        return Response.json(
+          [
+            { error: false, data: null },
+            { error: false, data: 1800 },
+          ],
+          {
+            headers: {
+              "set-cookie":
+                "MoodleSession=rotated; Path=/; Secure; HttpOnly, affinity=sticky; Path=/; Secure",
+            },
+          },
+        );
+      expect(new Headers(init?.headers).get("cookie")).toContain(
+        "MoodleSession=rotated",
+      );
+      expect(new Headers(init?.headers).get("cookie")).toContain(
+        "affinity=sticky",
+      );
+      return fallback(input, init);
+    });
+    try {
+      const session = (await (
+        await f.call("/v1/renew", { platform: "moodle" })
+      ).json()) as any;
+      expect(session).toMatchObject({
+        cookie_value: "rotated",
+        profile_id: "1",
+      });
+      expect(login).not.toHaveBeenCalled();
+      expect(
+        await (
+          await f.call("/v1/cookies", {
+            platform: "moodle",
+            expected_cookie_value: "valid",
+            cookies: session.cookies,
+          })
+        ).json(),
+      ).toEqual({ ok: false });
+      expect(
+        await (await f.call("/v1/session", { platform: "moodle" })).json(),
+      ).toMatchObject({ cookie_value: "rotated" });
+    } finally {
+      network.mockImplementation(fallback);
+    }
+  });
+  it("proactively refreshes OnTrack once for concurrent reads and keeps refresh material private", async () => {
+    const f = fixture(false);
+    // Browser SSO supplies refresh cookies; use the encrypted vault fixture to model a previous connection.
+    const { encrypt } = await import("../src/auth/crypto.ts");
+    await f.storage.put(
+      "session:ontrack",
+      await encrypt(key, `${account}:session:ontrack`, {
+        username: "user",
+        token: "access-a",
+        profile_id: "user",
+        expires_at: new Date(Date.now() + 1000).toISOString(),
+      }),
+    );
+    await f.storage.put(
+      "refresh:ontrack",
+      await encrypt(key, `${account}:refresh:ontrack`, [
+        {
+          name: "refresh_token",
+          value: "refresh-a",
+          domain: "ontrack.example.edu",
+          path: "/",
+        },
+        {
+          name: "username",
+          value: "user",
+          domain: "ontrack.example.edu",
+          path: "/",
+        },
+      ]),
+    );
+    const fallback = network.getMockImplementation()!;
+    let exchanges = 0;
+    network.mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/api/auth/access-token")) {
+        exchanges++;
+        return Response.json(
+          {
+            auth_token: "access-b",
+            auth_token_expiry: new Date(Date.now() + 3600000).toISOString(),
+            user: { username: "user" },
+          },
+          {
+            headers: {
+              "set-cookie": "refresh_token=refresh-b; Path=/; Secure; HttpOnly",
+            },
+          },
+        );
+      }
+      return fallback(input, init);
+    });
+    try {
+      const results = await Promise.all([
+        f.call("/v1/session", { platform: "ontrack" }),
+        f.call("/v1/session", { platform: "ontrack" }),
+      ]);
+      for (const response of results) {
+        const data = await response.json();
+        expect(data).toMatchObject({ token: "access-b" });
+        expect(JSON.stringify(data)).not.toContain("refresh-");
+      }
+      expect(exchanges).toBe(1);
+      expect(login).not.toHaveBeenCalled();
+      const stored = await decrypt<any[]>(
+        key,
+        `${account}:refresh:ontrack`,
+        await f.storage.get<any>("refresh:ontrack"),
+      );
+      expect(stored.find((c) => c.name === "refresh_token").value).toBe(
+        "refresh-b",
+      );
+      const status = JSON.stringify(await (await f.call("/v1/status")).json());
+      expect(status).not.toContain("access-b");
+      expect(status).not.toContain("refresh-b");
+      await f.call("/v1/disconnect", { platform: "ontrack" });
+      expect(await f.storage.get("refresh:ontrack")).toBeUndefined();
+    } finally {
+      network.mockImplementation(fallback);
+    }
+  });
+  it("backs off HTTP outages without launching the browser", async () => {
+    const f = fixture();
+    await f.call("/v1/connect", {
+      platform: "moodle",
+      mode: "sso",
+      input: credentials,
+    });
+    const fallback = network.getMockImplementation()!;
+    network.mockImplementation(async () => new Response(null, { status: 503 }));
+    try {
+      expect(
+        await (await f.call("/v1/renew", { platform: "moodle" })).json(),
+      ).toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+      expect((await f.call("/v1/renew", { platform: "moodle" })).status).toBe(
+        429,
+      );
+      expect(login).toHaveBeenCalledOnce();
+    } finally {
+      network.mockImplementation(fallback);
+    }
+  });
   it("retains encrypted password/TOTP only with opt-in, omits one-time codes and supplies them on renewal", async () => {
     const f = fixture();
     expect(

@@ -4,6 +4,7 @@ import { stateCall } from "../auth/client.ts";
 import { SuiteError } from "../errors.ts";
 import { json } from "./common.ts";
 import { z } from "zod";
+import { OutputBoundary } from "../security/output.ts";
 export async function admin(request: Request, env: Env) {
   const token =
     request.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/)?.[1] ?? "";
@@ -34,12 +35,21 @@ export async function admin(request: Request, env: Env) {
   const path = new URL(request.url).pathname;
   if (!["/admin/grants", "/admin/revoke"].includes(path))
     throw new SuiteError("NOT_FOUND", "Unknown administration route.", 404);
+  const output = new OutputBoundary();
+  output.remember(
+    env.ADMIN_TOKEN,
+    env.CREDENTIALS_KEY,
+    env.BROKER_SERVICE_TOKEN,
+    env.OIDC_CLIENT_SECRET,
+  );
   return json(
-    await stateCall(
-      env,
-      v.account_id,
-      path === "/admin/grants" ? "/grants" : "/revoke",
-      { grant_id: v.grant_id },
+    output.redact(
+      await stateCall(
+        env,
+        v.account_id,
+        path === "/admin/grants" ? "/grants" : "/revoke",
+        { grant_id: v.grant_id },
+      ),
     ),
   );
 }

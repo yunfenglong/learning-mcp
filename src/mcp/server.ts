@@ -12,6 +12,7 @@ import { unitSchema } from "../domain/units.ts";
 import { SuiteError } from "../errors.ts";
 import { publicError } from "../errors.ts";
 import { findAttendanceCode } from "../workflows/attendance.ts";
+import { OutputBoundary } from "../security/output.ts";
 
 export interface Adapters {
   ed: EdAdapter;
@@ -24,7 +25,7 @@ const unit = z
   .min(1)
   .max(100)
   .describe(
-    "Configured course key, or an unambiguous unit code. Use course_units for keys.",
+    "Linked course key, or an unambiguous course code. Use course_units for keys.",
   );
 const id = z.number().int().positive();
 const readOnly = {
@@ -40,6 +41,7 @@ export function createServer(
   account?: AccountService,
   scopes: readonly string[] = [READ_SCOPE],
 ) {
+  const output = account?.output ?? new OutputBoundary();
   const server = new McpServer(
     { name: "learning-mcp-suite", version: "0.3.0" },
     {
@@ -80,7 +82,9 @@ export function createServer(
               "Authorize learning:bindings to manage your connections.",
               403,
             );
-          const value = await run(args as z.infer<z.ZodObject<S>>);
+          const value = output.redact(
+            await run(args as z.infer<z.ZodObject<S>>),
+          );
           const structuredContent =
             value && typeof value === "object" && !Array.isArray(value)
               ? (value as Record<string, unknown>)
@@ -95,7 +99,9 @@ export function createServer(
             structuredContent,
           };
         } catch (error) {
-          const details = publicError(error);
+          const details = output.redact(publicError(error)) as ReturnType<
+            typeof publicError
+          >;
           return {
             isError: true,
             content: [{ type: "text" as const, text: JSON.stringify(details) }],
@@ -138,7 +144,7 @@ export function createServer(
     );
     tool(
       "discover_courses",
-      "Discover this user's enrolled courses and suggest associations. A same code can belong to several semesters; confirm campus, year and period. Optional deployment institution filters are enforced.",
+      "Discover this user's enrolled courses and suggest associations. The same code can belong to several semesters; confirm campus, year and period. Optional deployment institution filters are enforced.",
       {},
       async () => account.discover(),
     );
@@ -173,7 +179,7 @@ export function createServer(
   const selected = (reference: string) => resolveUnit(config.units, reference);
   tool(
     "course_units",
-    "Configured Linked courses with campus, teaching period, timezone and platform IDs.",
+    "List linked courses with campus, teaching period, timezone and platform IDs.",
     {},
     async () => ({ units: config.units }),
   );

@@ -30,6 +30,8 @@ function fixture(url = site, stage: unknown = null) {
     ]),
     click: vi.fn(),
     type: vi.fn(),
+    $$: vi.fn(async () => [] as any[]),
+    keyboard: { press: vi.fn() },
     $: vi.fn(async () => ({ click: vi.fn(), type: vi.fn() })),
     waitForFunction: vi.fn(async () => {}),
   };
@@ -49,6 +51,93 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("isolated broker browser SSO", () => {
+  it("ignores expired cookies and captures a Moodle session suffix at the AJAX path", async () => {
+    const f = fixture();
+    f.page.cookies.mockResolvedValue([
+      {
+        name: "MoodleSession_custom",
+        value: "valid",
+        domain: "moodle.example.edu",
+        path: "/lib",
+      },
+    ] as any);
+    const result = await browserLogin({
+      binding: {} as Fetcher,
+      platform: "moodle",
+      site,
+      loginOrigins: [],
+      cookies: [
+        {
+          name: "expired",
+          value: "old",
+          domain: "moodle.example.edu",
+          expires: 1,
+        },
+      ],
+    });
+    expect(f.page.setCookie).not.toHaveBeenCalled();
+    expect(f.page.cookies.mock.calls[0]).toContain(
+      `${site}/lib/ajax/service.php`,
+    );
+    expect(result.session).toMatchObject({
+      cookie_name: "MoodleSession_custom",
+    });
+  });
+  it("submits a SAML handoff before requiring credentials", async () => {
+    const f = fixture(login, {
+      kind: "saml",
+      selector: 'input[name="SAMLResponse"]',
+    });
+    let submitted = false;
+    f.page.evaluate.mockImplementation(async (fn) => {
+      if (fn.toString().includes("HTMLFormElement")) {
+        submitted = true;
+        f.page.url = () => site;
+        return null;
+      }
+      if (fn.toString().includes("M?.cfg")) return true;
+      if (fn.toString().includes("one-time-code"))
+        return { kind: "saml", selector: 'input[name="SAMLResponse"]' };
+      return null;
+    });
+    await browserLogin({
+      binding: {} as Fetcher,
+      platform: "moodle",
+      site,
+      loginOrigins: [login],
+    });
+    expect(submitted).toBe(true);
+    expect(f.page.type).not.toHaveBeenCalled();
+  });
+  it("fills digit-code fields and uses Enter when the submit control is absent", async () => {
+    const f = fixture(login, {
+      kind: "digits",
+      selector: 'input[maxlength="1"]',
+    });
+    const boxes = Array.from({ length: 6 }, () => ({
+      click: vi.fn(),
+      type: vi.fn(),
+    }));
+    f.page.$$.mockResolvedValue(boxes);
+    f.page.$.mockResolvedValue(null as any);
+    f.page.keyboard.press.mockImplementation(async () => {
+      f.page.url = () => site;
+      f.page.evaluate.mockImplementation(async (fn) =>
+        fn.toString().includes("M?.cfg") ? true : null,
+      );
+    });
+    await browserLogin({
+      binding: {} as Fetcher,
+      platform: "moodle",
+      site,
+      loginOrigins: [login],
+      input: { username: "u", password: "p", mfa_code: "123456" },
+    });
+    boxes.forEach((box, i) =>
+      expect(box.type).toHaveBeenCalledWith(String(i + 1)),
+    );
+    expect(f.page.keyboard.press).toHaveBeenCalledWith("Enter");
+  });
   it("creates a fresh context, restores only allowlisted cookies and closes it", async () => {
     const f = fixture();
     const result = await browserLogin({
@@ -66,6 +155,7 @@ describe("isolated broker browser SSO", () => {
       name: "sid",
       value: "this-user",
       domain: "tenant.okta.example",
+      path: "/",
     });
     expect(result.session).toMatchObject({
       cookie_name: "MoodleSession",
@@ -142,7 +232,15 @@ describe("isolated broker browser SSO", () => {
     }
   });
   it("exchanges OnTrack SSO without deleting existing tokens", async () => {
-    fixture("https://ontrack.example.edu");
+    const f = fixture("https://ontrack.example.edu");
+    f.page.cookies.mockResolvedValue([
+      {
+        name: "refresh_token",
+        value: "refresh",
+        domain: "ontrack.example.edu",
+        path: "/api/auth",
+      },
+    ] as any);
     const fetch = vi.fn(async (input: any, init: any) => {
       if (String(input).endsWith("/api/auth/method"))
         return Response.json({
@@ -167,7 +265,11 @@ describe("isolated broker browser SSO", () => {
           loginOrigins: [],
         })
       ).session,
-    ).toEqual({ username: "a", token: "ontrack-a" });
+    ).toMatchObject({
+      username: "a",
+      token: "ontrack-a",
+      expires_at: expect.any(String),
+    });
   });
   it("rejects an SSO redirect outside the configured login origins", async () => {
     const f = fixture();
