@@ -25,6 +25,7 @@ export interface InteractiveInput {
   username: string;
   password: string;
   remember?: boolean;
+  remember_totp?: boolean;
   totp_secret?: string;
   mfa_code?: string;
 }
@@ -85,6 +86,7 @@ export class InteractiveSignIn {
         username: input.username,
         password: input.password,
         remember: input.remember,
+        remember_totp: input.remember_totp,
       },
       result: {
         session: identity.data,
@@ -135,6 +137,7 @@ export class InteractiveSignIn {
       username: input.username,
       password: input.password,
       remember: input.remember,
+      remember_totp: input.remember_totp,
     };
     this.expires = Date.now() + MFA_TTL_MS;
     this.errors = 0;
@@ -276,7 +279,7 @@ export class InteractiveSignIn {
         await page.waitForTimeout(1000);
         const complete = await this.capture();
         if (complete) {
-          if (totp && this.input?.remember)
+          if (totp && this.input?.remember && this.input.remember_totp)
             complete.input.totp_secret = data.totp_secret;
           await this.close();
           return complete;

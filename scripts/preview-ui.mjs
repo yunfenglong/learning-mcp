@@ -18,7 +18,7 @@ const renderer = join(temporary, "renderer.mjs");
 await build({
   stdin: {
     contents:
-      'export { renderAuthorizationPage } from "./src/http/authorize.ts"; export { startLogin, renderMfaPage } from "./src/auth/login.ts"; export { landing } from "./src/http/landing.ts"; export { page, errorContent } from "./src/http/ui.ts"; export { digest } from "./src/auth/crypto.ts"; export { USAGE_VERSION } from "./src/domain/usage.ts";',
+      'export { renderAuthorizationPage } from "./src/http/authorize.ts"; export { startLogin, renderMfaPage } from "./src/auth/login.ts"; export { landing } from "./src/http/landing.ts"; export { legalPage } from "./src/http/legal.ts"; export { page, errorContent } from "./src/http/ui.ts"; export { digest } from "./src/auth/crypto.ts"; export { USAGE_VERSION } from "./src/domain/usage.ts";',
     resolveDir: root,
     loader: "ts",
   },
@@ -32,6 +32,7 @@ await build({
   logLevel: "silent",
 });
 const {
+  legalPage,
   renderAuthorizationPage,
   startLogin,
   renderMfaPage,
@@ -87,7 +88,10 @@ const env = {
                 : null,
             );
           case "/usage":
-            return Response.json({ version: USAGE_VERSION });
+            return Response.json({
+              version: USAGE_VERSION,
+              terms_version: USAGE_VERSION,
+            });
           case "/units":
             return Response.json({ units: [] });
           case "/discovery/get":
@@ -113,6 +117,10 @@ const challenge = {
 const routes = [
   ["/", "Landing"],
   ["/login", "Sign in"],
+  ["/privacy", "Privacy"],
+  ["/terms", "Terms"],
+  ["/data-controls", "Data controls"],
+  ["/preview/notice-update", "Notice update"],
   ["/preview/mfa", "MFA"],
   ["/preview/mfa-error", "MFA error"],
   ["/preview/error", "Stopped"],
@@ -161,7 +169,31 @@ const server = createServer(async (request, response) => {
   }
   try {
     let source;
-    if (path === "/login")
+    if (["/privacy", "/terms", "/data-controls"].includes(path))
+      source = await legalPage(new Request(`${issuer}${path}`), config).text();
+    else if (path === "/preview/notice-update") {
+      const pendingEnv = {
+        ...env,
+        AUTH_STATE: {
+          ...env.AUTH_STATE,
+          get: () => ({
+            fetch: async (request) =>
+              new URL(request.url).pathname === "/usage"
+                ? Response.json(null)
+                : env.AUTH_STATE.get().fetch(request),
+          }),
+        },
+      };
+      source = await (
+        await landing(
+          new Request(`${issuer}/landing`, {
+            headers: { cookie: `__Host-learning-session=${sessionToken}` },
+          }),
+          pendingEnv,
+          config,
+        )
+      ).text();
+    } else if (path === "/login")
       source = await (
         await startLogin(new Request(`${issuer}/login`), env, config)
       ).text();

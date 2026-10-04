@@ -20,6 +20,7 @@ import {
 } from "../src/platforms/broker.ts";
 import { browserLogin, oktaIdentitySchema, type LoginInput } from "./sso.ts";
 import { ssoProvidersSchema } from "../src/config.ts";
+import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { parseTotp } from "./totp.ts";
 import { InteractiveSignIn } from "./interactive-sso.ts";
 import { MFA_TTL_MS, mfaError, validateOtp } from "../src/auth/mfa.ts";
@@ -63,14 +64,25 @@ const inputSchema = z
       .optional(),
     totp_secret: z.string().min(1).max(2048).optional(),
     remember: z.boolean().optional(),
+    remember_totp: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (v) => !v.remember_totp || v.remember === true,
+    "TOTP retention requires password retention.",
+  );
 interface SavedLogin {
   cookies: any[];
   username: string;
   provider?: string;
   subject?: string;
   input?: LoginInput;
+  retention?: {
+    password: boolean;
+    totp: boolean;
+    notice_version: string;
+    accepted_at: number;
+  };
 }
 export async function validateSession(
   site: string,
@@ -395,7 +407,13 @@ export class BrokerState extends DurableObject<BrokerEnv> {
                 input: {
                   username: fresh.username,
                   password: fresh.password,
-                  ...(totp ? { totp } : {}),
+                  ...(fresh.remember_totp && totp ? { totp } : {}),
+                },
+                retention: {
+                  password: true,
+                  totp: Boolean(fresh.remember_totp && totp),
+                  notice_version: USAGE_VERSION,
+                  accepted_at: Date.now(),
                 },
               }
             : {}),
@@ -690,11 +708,20 @@ export class BrokerState extends DurableObject<BrokerEnv> {
                 input: {
                   username: fresh.username,
                   password: fresh.password,
-                  ...(totp ? { totp } : {}),
+                  ...(fresh.remember_totp && totp ? { totp } : {}),
+                },
+                retention: {
+                  password: true,
+                  totp: Boolean(fresh.remember_totp && totp),
+                  notice_version: USAGE_VERSION,
+                  accepted_at: Date.now(),
                 },
               }
             : !fresh && stored?.input
-              ? { input: stored.input }
+              ? {
+                  input: stored.input,
+                  ...(stored.retention ? { retention: stored.retention } : {}),
+                }
               : {}),
         };
       }

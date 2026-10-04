@@ -952,6 +952,19 @@ pre {
     flex-wrap: wrap;
   }
 }
+.legal-page { max-width: 850px; margin: 2rem auto 4rem; }
+.legal-page h1 { font-size: clamp(2rem, 5vw, 3.5rem); }
+.legal-page h2 { margin-top: 2rem; font-size: 1.35rem; }
+.legal-page p, .legal-page dd { font-size: 15px; line-height: 1.75; overflow-wrap: anywhere; }
+.legal-page .callout { display: block; }
+.legal-page .callout h2 { margin-top: 0; }
+.legal-table { overflow-x: auto; }
+.legal-table table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.legal-table th, .legal-table td { padding: 1rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.legal-table th:first-child { width: 30%; }
+.legal-controls dt { font-weight: 600; margin-top: 1rem; }
+.legal-controls dd { margin: .35rem 0 1rem; }
+.site-footer nav { display: flex; gap: .75rem 1.5rem; flex-wrap: wrap; }
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -963,7 +976,7 @@ pre {
 `;
 
 export function page(content: string, title = "Your connections", mode = "") {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Connect your learning platforms and choose what your MCP client can read."><title>${e(title)} · Learning MCP</title><style>${css}</style></head><body class="${e(mode)}"><a class="skip" href="#main">Skip to content</a><header class="site-header"><a class="brand" href="/landing" aria-label="Learning MCP home"><span class="brand-mark" aria-hidden="true">L</span>Learning MCP</a><span class="header-note">Read-only learning tools</span></header><main id="main">${content}</main><footer class="site-footer"><p>Independent service. Connect accounts you have permission to use.<br>Learning data is read-only. Attendance is never submitted.</p><a href="/landing#data-notice">Data &amp; permissions</a></footer></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Connect your learning platforms and choose what your MCP client can read."><title>${e(title)} · Learning MCP</title><style>${css}</style></head><body class="${e(mode)}"><a class="skip" href="#main">Skip to content</a><header class="site-header"><a class="brand" href="/landing" aria-label="Learning MCP home"><span class="brand-mark" aria-hidden="true">L</span>Learning MCP</a><span class="header-note">Read-only learning tools</span></header><main id="main">${content}</main><footer class="site-footer"><p>Independent service. Connect accounts you have permission to use.<br>Learning data is read-only. Attendance is never submitted.</p><nav aria-label="Legal and privacy"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/data-controls">Data controls</a></nav></footer></body></html>`;
 }
 
 export function signInJourney(step: 1 | 2) {

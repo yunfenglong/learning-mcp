@@ -8,13 +8,20 @@ import { SuiteError } from "../errors.ts";
 import {
   providerVerificationFields as verificationFields,
   mfaForms,
+  retentionFields,
+  retentionChoices,
 } from "../http/sign-in-fields.ts";
 import { page, signInJourney } from "../http/ui.ts";
 import { cookie, html, escapeHtml as e } from "../http/common.ts";
 import { brokerCall } from "../platforms/broker.ts";
 import { platformFetch } from "../platforms/network.ts";
 import { mfaChallengeSchema, MFA_TTL_MS, type MfaChallenge } from "./mfa.ts";
-import { USAGE_VERSION, usageNotice, usageLabel } from "../domain/usage.ts";
+import {
+  USAGE_VERSION,
+  usageNotice,
+  usageLabel,
+  termsApproval,
+} from "../domain/usage.ts";
 
 export const SESSION_COOKIE = "__Host-learning-session";
 export interface BrowserSession {
@@ -58,12 +65,12 @@ export async function startLogin(request: Request, env: Env, config: Config) {
     expires_at: Date.now() + 600_000,
   });
   const fields = `<input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}">`;
-  const approval = `<label class="check"><input type="checkbox" name="usage_consent" value="accept" required><span>${usageLabel} <a href="#data-notice">Read the notice</a>.</span></label>`;
+  const approval = `<label class="check"><input type="checkbox" name="usage_consent" value="accept" required><span>${usageLabel} <a href="#data-notice">Read the notice</a>.</span></label>${termsApproval}`;
   const providerForm = config.ssoProviders?.length
-    ? `<h2>Sign in with SSO</h2><p>Use the account you normally use for your learning platforms.</p><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="sso"><label>SSO provider address<input name="provider" type="url" required placeholder="https://your-sso.example" maxlength="2048"></label><p class="help">Your supported Okta sign-in address, without a page path.</p><label>Username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label>${verificationFields}<label class="check"><input name="remember" type="checkbox" value="yes"><span>Remember my sign-in<small>Save my encrypted password and optional TOTP secret to sign in again when platform sessions expire.</small></span></label>${approval}<button>Continue to verification <span aria-hidden="true">→</span></button></form>`
+    ? `<h2>Sign in with SSO</h2><p>Use the account you normally use for your learning platforms.</p><p class="help">Sign-in runs in a cloud browser on Cloudflare. This service processes your credentials and saves encrypted sessions. The deployment operator holds decryption keys. <a href="/privacy" target="_blank" rel="noopener">Read the privacy notice before entering credentials</a>.</p><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="sso"><label>SSO provider address<input name="provider" type="url" required placeholder="https://your-sso.example" maxlength="2048"></label><p class="help">Your supported Okta sign-in address, without a page path.</p><label>Username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label>${verificationFields}${retentionFields}${approval}<button>Continue to verification <span aria-hidden="true">→</span></button></form>`
     : "";
   const edForm = config.platforms.ed
-    ? `<details class="alternative"${providerForm ? "" : " open"}><summary>Use an Ed API token instead</summary><p class="help">Sign in with your Ed account. You can add other platforms afterwards.</p><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="ed"><label>Ed API token<input name="token" type="password" required autocomplete="off" maxlength="16000"></label>${approval}<button>Sign in with Ed <span aria-hidden="true">→</span></button></form></details>`
+    ? `<details class="alternative"${providerForm ? "" : " open"}><summary>Use an Ed API token instead</summary><p class="help">Sign in with your Ed account. This service verifies and stores your encrypted Ed token for future reads. You can add other platforms afterwards. <a href="/privacy" target="_blank" rel="noopener">Read the privacy notice before entering your token</a>.</p><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="ed"><label>Ed API token<input name="token" type="password" required autocomplete="off" maxlength="16000"></label>${approval}<button>Sign in with Ed <span aria-hidden="true">→</span></button></form></details>`
     : "";
   return html(
     page(
@@ -146,6 +153,7 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
     );
   if (
     form.get("usage_consent") !== "accept" ||
+    form.get("terms_consent") !== "accept" ||
     form.get("usage_version") !== USAGE_VERSION
   )
     throw new SuiteError(
@@ -199,7 +207,7 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
         input: {
           username: String(form.get("username") ?? ""),
           password: String(form.get("password") ?? ""),
-          remember: form.get("remember") === "yes",
+          ...retentionChoices(form),
           ...(form.get("totp_secret")
             ? { totp_secret: String(form.get("totp_secret")) }
             : {}),

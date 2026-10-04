@@ -73,7 +73,12 @@ function fixture() {
 const start = {
   interactive: true,
   provider: "https://tenant.okta.example",
-  input: { username: "u", password: "password-canary", remember: true },
+  input: {
+    username: "u",
+    password: "password-canary",
+    remember: true,
+    remember_totp: true,
+  },
 };
 const challenge = {
   status: "mfa_required",

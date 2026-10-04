@@ -6,6 +6,7 @@ Configure the suite in [`wrangler.jsonc`](../wrangler.jsonc) and the broker in [
 
 | Variable          | Worker | Value                                                                                                   |
 | ----------------- | ------ | ------------------------------------------------------------------------------------------------------- |
+| `LEGAL_CONFIG`    | Suite  | Optional JSON object with instance operator and privacy contact disclosures; see below.                 |
 | `ISSUER`          | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
 | `PLATFORM_CONFIG` | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                 |
 | `SSO_PROVIDERS`   | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
@@ -55,3 +56,22 @@ Set deployed secrets interactively with Wrangler as described in the [deployment
 Changing an encryption key without re-encrypting existing records makes them unreadable. Keep keys stable across redeployments. Changing issuer, platform identity anchors, namespaces or grant storage can require clients and users to reconnect.
 
 Provider sign-in uses the verified provider type, origin and stable user ID as the account anchor; no independent OIDC application is needed. Keep that provider and account stable. Ed sign-in keeps its verified Ed identity anchor. Existing platform-based accounts keep their platform identity anchors and original login flow; provider sign-in creates a separate account rather than automatically merging identities.
+
+## Personal deployments and legal pages
+
+The public routes `/privacy`, `/terms` and `/data-controls` describe this instance, not all instances of the public repository. The person who controls a deployment is its operator; the repository author or maintainer is not automatically the operator of someone else's instance.
+
+Set `LEGAL_CONFIG` on the suite Worker to a JSON string. All fields are optional; missing details are disclosed as unpublished rather than filled with fictional information:
+
+```json
+{
+  "operator_name": "Your instance operator",
+  "contact_email": "privacy@example.com",
+  "processing_regions": "Describe your actual Cloudflare configuration and processing regions.",
+  "retention_details": "Describe your actual infrastructure log/backup retention and account deletion process."
+}
+```
+
+These are illustrative public disclosures, not secrets. Use a privacy contact appropriate for your own instance. Values are validated and escaped as text, never executed as HTML. `retention_details` and `processing_regions` describe actual operations; they do not configure deletion jobs or Cloudflare residency controls. Do not promise a region or deletion deadline that your deployment cannot meet. Application-held platform access and opted-in credentials have no automatic age-based deletion; account controls remove the specified records, while full account deletion is not a self-service feature.
+
+The bundled privacy notice and terms use the version in `src/domain/usage.ts`. Bump that version for material changes, including material changes to deployment disclosures. Deploy matching suite and broker versions. Authenticated confirmation records the notice version, terms version and timestamp. Users can always remove access without accepting new terms. Password retention and additional TOTP retention use separate default-off choices; TOTP retention requires password retention. Saved broker records include the retention choices, notice version and time without recording one-time codes. Existing saved credentials are not silently deleted on update; users can remove them explicitly.

@@ -275,6 +275,7 @@ async function login(subject: string, invalid = false) {
           ? "ed-user-b"
           : "ed-user-a",
       usage_consent: "accept",
+      terms_consent: "accept",
       usage_version: USAGE_VERSION,
     }).toString(),
   });
@@ -348,6 +349,7 @@ async function connect(
       csrf: browser.csrf,
       consent: "allow",
       usage_consent: "accept",
+      terms_consent: "accept",
       usage_version: USAGE_VERSION,
       action: "allow",
     }).toString(),
@@ -433,6 +435,18 @@ async function action(
   });
 }
 describe("real workerd: client OAuth, user binding and in-Worker clients", () => {
+  it("serves legal pages without sign-in and rejects writes to them", async () => {
+    for (const path of ["/privacy", "/terms", "/data-controls"]) {
+      const response = await request(path);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      const text = await response.text();
+      expect(text).toContain("Version " + USAGE_VERSION);
+      expect(text).toContain("source repository");
+      expect((await request(path, { method: "POST" })).status).toBe(405);
+    }
+  });
   it("requires OAuth and rejects unverified platform sign-in", async () => {
     expect(
       (
@@ -469,6 +483,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
           provider: "https://unsupported.example",
           usage_version: USAGE_VERSION,
           usage_consent: "accept",
+          terms_consent: "accept",
         }).toString(),
       });
       expect(response.status).toBe(403);
@@ -496,7 +511,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       const body = await page.text();
       expect(body).not.toContain(new URL(moodle).hostname);
       expect(body).not.toContain(new URL(ontrack).hostname);
-      expect(body).not.toContain("Cloudflare");
+      expect(body).toContain("Cloudflare");
       expect(body).not.toContain("ChatGPT");
       expect(body).not.toContain("tenant.okta.example");
       expect(body).toContain("infrastructure providers used by its operator");

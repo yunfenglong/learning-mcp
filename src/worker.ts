@@ -7,6 +7,7 @@ import { loadConfig, type Env } from "./config.ts";
 import { stateCall } from "./auth/client.ts";
 import { READ_SCOPE, MANAGE_SCOPE, type Profile } from "./auth/state.ts";
 import { startLogin, finishLogin } from "./auth/login.ts";
+import { legalPage } from "./http/legal.ts";
 import { authorize } from "./http/authorize.ts";
 import { errorContent } from "./http/ui.ts";
 import { landing, accountAction, page } from "./http/landing.ts";
@@ -113,6 +114,8 @@ export default {
                 version: "0.3.0",
               });
             }
+            if (["/privacy", "/terms", "/data-controls"].includes(p))
+              return legalPage(r, config);
             if (p === "/" || p === "/landing") return landing(r, e, config);
             if (p === "/login")
               return r.method === "POST"

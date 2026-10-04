@@ -530,6 +530,7 @@ describe("interactive provider MFA", () => {
     const failed = await transaction.start({} as Fetcher, login, [], {
       ...input,
       remember: true,
+      remember_totp: true,
       totp_secret: "JBSWY3DPEHPK3PXP",
     });
     expect(failed).toMatchObject({
@@ -696,6 +697,7 @@ describe("interactive provider MFA", () => {
     await transaction.start({} as Fetcher, login, [], {
       ...input,
       remember: true,
+      remember_totp: true,
     });
     const seed = "JBSWY3DPEHPK3PXP";
     const result = await transaction.next({
@@ -703,7 +705,7 @@ describe("interactive provider MFA", () => {
       totp_secret: seed,
     });
     expect(result).toMatchObject({
-      input: { totp_secret: seed, remember: true },
+      input: { totp_secret: seed, remember: true, remember_totp: true },
       result: { session: { userId: "00uVerified" } },
     });
     expect(result).not.toHaveProperty("input.mfa_code");
@@ -714,7 +716,10 @@ describe("interactive provider MFA", () => {
       markup: "<h2>Authenticator app</h2>" + otp,
     });
     const transient = new InteractiveSignIn();
-    await transient.start({} as Fetcher, login, [], input);
+    await transient.start({} as Fetcher, login, [], {
+      ...input,
+      remember: true,
+    });
     expect(
       await transient.next({ method: "totp_secret", totp_secret: seed }),
     ).not.toHaveProperty("input.totp_secret");

@@ -1,4 +1,8 @@
-import { verificationFields } from "./sign-in-fields.ts";
+import {
+  verificationFields,
+  retentionFields,
+  retentionChoices,
+} from "./sign-in-fields.ts";
 import { z } from "zod";
 import { EdClient } from "../../vendor/ed/client.js";
 import type { Config, Env } from "../config.ts";
@@ -22,6 +26,7 @@ import {
   USAGE_VERSION,
   usageNotice,
   usageLabel,
+  termsApproval,
   type UsageAcceptance,
 } from "../domain/usage.ts";
 import { SuiteError } from "../errors.ts";
@@ -31,6 +36,17 @@ export { page } from "./ui.ts";
 import { page } from "./ui.ts";
 function hidden(csrf: string, ticket?: string) {
   return `<input type="hidden" name="csrf" value="${e(csrf)}">${ticket ? `<input type="hidden" name="ticket" value="${e(ticket)}">` : ""}`;
+}
+function removalControls(csrf: string, grants: Grant[]) {
+  return `<section class="notice"><h2>Prefer to remove access?</h2><p>You can remove access without accepting the updated notice or terms. <a href="/data-controls">See what each action removes</a>.</p>${grants
+    .filter((g) => !g.revoked && g.expires_at > Date.now())
+    .map(
+      (g) =>
+        `<form method="post" action="/account/revoke">${hidden(csrf)}<input type="hidden" name="grant_id" value="${e(g.id)}"><button class="secondary">Revoke ${e(g.client_name)}</button></form>`,
+    )
+    .join(
+      "",
+    )}<form method="post" action="/account/forget-login">${hidden(csrf)}<label><input type="checkbox" name="confirm" value="yes" required> Remove shared saved sign-in; keep platform sessions</label><button class="secondary">Remove saved sign-in</button></form><form method="post" action="/account/disconnect">${hidden(csrf)}<label>Platform to disconnect<select name="platform"><option value="ed">Ed</option><option value="moodle">Moodle</option><option value="ontrack">OnTrack</option></select></label><label><input type="checkbox" name="confirm" value="yes" required> Delete this platform's stored access</label><button class="secondary">Disconnect platform</button></form><form method="post" action="/account/logout">${hidden(csrf)}<button class="secondary">Sign out</button></form></section>`;
 }
 interface Ticket {
   account: string;
@@ -77,12 +93,21 @@ export async function landing(request: Request, env: Env, config: Config) {
     session.profile.id,
     "/usage",
   );
-  if (accepted?.version !== USAGE_VERSION)
+  if (
+    accepted?.version !== USAGE_VERSION ||
+    accepted.terms_version !== USAGE_VERSION
+  ) {
+    const { grants } = await stateCall<{ grants: Grant[] }>(
+      env,
+      session.profile.id,
+      "/grants",
+    );
     return html(
       page(
-        `${usageNotice}<form method="post" action="/account/usage">${hidden(session.csrf)}<input type="hidden" name="version" value="${USAGE_VERSION}"><input type="hidden" name="ticket" value="${e(url.searchParams.get("ticket") ?? "")}"><label><input type="checkbox" name="confirm" value="yes" required> ${usageLabel}</label><button>Accept and continue</button></form>`,
+        `${usageNotice}<form method="post" action="/account/usage">${hidden(session.csrf)}<input type="hidden" name="version" value="${USAGE_VERSION}"><input type="hidden" name="ticket" value="${e(url.searchParams.get("ticket") ?? "")}"><label><input type="checkbox" name="confirm" value="yes" required> ${usageLabel}</label>${termsApproval}<button>Accept and continue</button></form>${removalControls(session.csrf, grants)}`,
       ),
     );
+  }
   const ticket = url.searchParams.get("ticket") ?? "",
     context = await checkTicket(env, ticket, session.profile.id),
     service = new AccountService(env, session.profile, config);
@@ -130,7 +155,7 @@ export async function landing(request: Request, env: Env, config: Config) {
       sso && status.platforms.has_sso
         ? `<form method="post" action="/account/platform">${fields}${baseField}<input type="hidden" name="platform" value="${p}"><input type="hidden" name="mode" value="reuse"><label><input name="confirm" type="checkbox" value="yes" required> Use my saved SSO account to connect ${p === "moodle" ? "Moodle" : "OnTrack"}</label><button>Connect with saved SSO</button></form>`
         : "";
-    return `<p class="muted">${p === "moodle" ? "Materials, deadlines and grades." : "Task definitions and project progress."}</p>${reuse}${sso ? `<details ${context?.platform === p ? "open" : ""}><summary>Use different SSO sign-in details</summary><form method="post" action="/account/platform">${fields}${baseField}<input type="hidden" name="platform" value="${p}"><input type="hidden" name="mode" value="sso"><label>SSO username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label>${verificationFields}<label><input name="remember" type="checkbox" value="yes"> Remember my sign-in: save my encrypted password and optional TOTP secret for automatic renewal</label><label><input name="confirm" type="checkbox" value="yes" required> Connect this account</label><button>Connect ${p === "moodle" ? "Moodle" : "OnTrack"}</button></form></details>` : ""}<details><summary>Use an existing platform session</summary><p class="muted">Sign in to ${p === "moodle" ? "Moodle" : "OnTrack"} in your browser, then provide its session here. Session information stays outside the chat.</p><form method="post" action="/account/platform">${fields}${baseField}<input type="hidden" name="platform" value="${p}"><input type="hidden" name="mode" value="session">${p === "moodle" ? `<label>Moodle session cookie<input name="cookie_value" type="password" autocomplete="off" required maxlength="16000"></label><label>Session cookie name<input name="cookie_name" value="MoodleSession" required maxlength="100" pattern="[A-Za-z0-9_-]+"></label>` : `<label>OnTrack username<input name="username" autocomplete="off" required maxlength="200"></label><label>OnTrack access token<input name="token" type="password" autocomplete="off" required maxlength="16000"></label>`}<label><input name="confirm" type="checkbox" value="yes" required> I approve access to this platform account</label><button>Verify and connect</button></form></details>`;
+    return `<p class="muted">${p === "moodle" ? "Materials, deadlines and grades." : "Task definitions and project progress."}</p>${reuse}${sso ? `<details ${context?.platform === p ? "open" : ""}><summary>Use different SSO sign-in details</summary><form method="post" action="/account/platform">${fields}${baseField}<input type="hidden" name="platform" value="${p}"><input type="hidden" name="mode" value="sso"><label>SSO username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label>${verificationFields}${retentionFields}<label><input name="confirm" type="checkbox" value="yes" required> Connect this account</label><button>Connect ${p === "moodle" ? "Moodle" : "OnTrack"}</button></form></details>` : ""}<details><summary>Use an existing platform session</summary><p class="muted">Sign in to ${p === "moodle" ? "Moodle" : "OnTrack"} in your browser, then provide its session here. Session information stays outside the chat. It is verified and stored encrypted to allow future reads and session renewal. The deployment operator holds decryption keys. <a href="/privacy" target="_blank" rel="noopener">Review credential handling</a>.</p><form method="post" action="/account/platform">${fields}${baseField}<input type="hidden" name="platform" value="${p}"><input type="hidden" name="mode" value="session">${p === "moodle" ? `<label>Moodle session cookie<input name="cookie_value" type="password" autocomplete="off" required maxlength="16000"></label><label>Session cookie name<input name="cookie_name" value="MoodleSession" required maxlength="100" pattern="[A-Za-z0-9_-]+"></label>` : `<label>OnTrack username<input name="username" autocomplete="off" required maxlength="200"></label><label>OnTrack access token<input name="token" type="password" autocomplete="off" required maxlength="16000"></label>`}<label><input name="confirm" type="checkbox" value="yes" required> I approve access to this platform account</label><button>Verify and connect</button></form></details>`;
   };
   const edForm = `<p class="muted">Discussions and lessons.${edConnected ? ` Connected as ${e(status.ed.display_name ?? "your Ed account")}.` : ""}</p><details ${context?.platform === "ed" ? "open" : ""}><summary>${edConnected ? "Reconnect" : "Connect"} Ed</summary><form method="post" action="/account/ed">${fields}<label>Ed API token<input name="token" type="password" autocomplete="off" required maxlength="16000"></label><label><input name="confirm" type="checkbox" value="yes" required> I approve access to this Ed account</label><button>Verify and connect</button></form></details>`;
   const options = (p: Platform) =>
@@ -155,7 +180,7 @@ export async function landing(request: Request, env: Env, config: Config) {
           )
           .join("") ||
         '<div class="empty"><h3>No clients connected</h3><p>Open your MCP client and connect it to Learning MCP. You’ll review its requested permissions before granting access.</p></div>'
-      }</div></div></section><section class="section" id="sign-in"><div class="section-heading"><div><h2>Saved sign-in</h2><p>Control the credentials used to renew your platform sessions.</p></div><div><details><summary>Remove saved sign-in</summary><p class="muted">Delete the shared password, TOTP secret and SSO browser cookies. Existing platform sessions and their renewal cookies stay connected.</p><form method="post" action="/account/forget-login">${hidden(session.csrf)}<label><input type="checkbox" name="confirm" value="yes" required> I want to remove my saved sign-in</label><button class="secondary">Remove saved sign-in</button></form></details></div></div></section><div class="settings-end">${usageNotice}<form method="post" action="/account/logout">${hidden(session.csrf)}<button class="secondary">Sign out</button><p class="muted small">Signing out leaves your platform connections in place.</p></form></div>`,
+      }</div></div></section><section class="section" id="sign-in"><div class="section-heading"><div><h2>Saved sign-in</h2><p>Control the credentials used to renew your platform sessions. <a href="/data-controls">Compare removal options</a>.</p></div><div><details><summary>Remove saved sign-in</summary><p class="muted">Delete the shared password, TOTP secret and SSO browser cookies. Existing platform sessions and their renewal cookies stay connected.</p><form method="post" action="/account/forget-login">${hidden(session.csrf)}<label><input type="checkbox" name="confirm" value="yes" required> I want to remove my saved sign-in</label><button class="secondary">Remove saved sign-in</button></form></details></div></div></section><div class="settings-end">${usageNotice}<form method="post" action="/account/logout">${hidden(session.csrf)}<button class="secondary">Sign out</button><p class="muted small">Signing out leaves your platform connections in place.</p></form></div>`,
       "Your connections",
     ),
   );
@@ -174,7 +199,7 @@ export async function accountAction(
     service = new AccountService(env, session.profile, config),
     ticket = String(form.get("ticket") ?? "");
   if (action === "/account/usage") {
-    if (form.get("confirm") !== "yes")
+    if (form.get("confirm") !== "yes" || form.get("terms_consent") !== "accept")
       throw new SuiteError("USAGE_REQUIRED", "Accept the usage notice.", 403);
     await stateCall(env, session.profile.id, "/usage/accept", {
       version: form.get("version"),
@@ -263,7 +288,7 @@ export async function accountAction(
               username: String(form.get("username") ?? ""),
               password: String(form.get("password") ?? ""),
               mfa_code: String(form.get("mfa_code") ?? ""),
-              remember: form.get("remember") === "yes",
+              ...retentionChoices(form),
               ...(form.get("totp_secret")
                 ? { totp_secret: String(form.get("totp_secret")) }
                 : {}),
