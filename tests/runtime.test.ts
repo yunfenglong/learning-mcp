@@ -819,12 +819,22 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
   it("previews cross-platform display codes and atomically confirms mappings in the real account state", async () => {
     const before = (await call(a, "course_units")).result.structuredContent
       .units;
-    const replacement = { ...unit, key: "canonical-course" };
+    const replacement = {
+      ...unit,
+      key: "canonical-course",
+      code: "CS102/CS101/CS103",
+      year: 2025,
+      teaching_period: "custom-term",
+      campus: "chosen-location",
+    };
     const preview = (
       await call(a, "preview_course_bindings", { courses: [replacement] })
     ).result;
     expect(preview.isError).not.toBe(true);
     expect(preview.structuredContent.needs_confirmation).toBe(true);
+    expect(preview.structuredContent.courses[0].warnings).toContainEqual(
+      expect.objectContaining({ code: "DIFFERENT_COURSE_CONTEXT" }),
+    );
     expect(preview.structuredContent.courses[0].warnings).toContainEqual(
       expect.objectContaining({
         platform: "moodle",
@@ -854,8 +864,64 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       (await call(a, "ed_lessons", { unit: replacement.key })).result.isError,
     ).not.toBe(true);
   });
+  it("reads a Moodle-only mapping without an Ed or OnTrack connection", async () => {
+    expect(
+      (await call(b, "disconnect_platform", { platform: "ed" })).result.isError,
+    ).not.toBe(true);
+    expect(
+      (
+        await action(b, "platform", {
+          platform: "moodle",
+          base_link: moodle,
+          mode: "session",
+          cookie_name: "MoodleSession",
+          cookie_value: "moodle-b",
+          confirm: "yes",
+        })
+      ).status,
+    ).toBe(303);
+    const status = (await call(b, "connection_status")).result
+      .structuredContent;
+    expect(status.ed.status).toBe("not_connected");
+    expect(status.platforms.ontrack.status).toBe("not_connected");
+    const discovered = (await call(b, "discover_courses")).result
+      .structuredContent;
+    expect(discovered.courses).toEqual([
+      expect.objectContaining({ platform: "moodle", id: 203 }),
+    ]);
+    const course = {
+      ...unit,
+      key: "moodle-only",
+      code: "MY-COURSE",
+      ed_course_id: undefined,
+      moodle_course_id: 203,
+      ontrack_unit_id: undefined,
+      ontrack_project_id: undefined,
+    };
+    const preview = (
+      await call(b, "preview_course_bindings", { courses: [course] })
+    ).result;
+    expect(preview.isError).not.toBe(true);
+    expect(
+      (
+        await call(b, "confirm_course_bindings", {
+          preview_id: preview.structuredContent.preview_id,
+        })
+      ).result.structuredContent.saved,
+    ).toBe(1);
+    const read = (await call(b, "moodle_unit", { unit: course.key })).result;
+    expect(read.isError, JSON.stringify(read)).not.toBe(true);
+    expect(read.structuredContent.unit.id).toBe(203);
+    expect(
+      (await call(b, "disconnect_platform", { platform: "moodle" })).result
+        .isError,
+    ).not.toBe(true);
+    expect(
+      (await action(b, "ed", { token: "ed-user-b", confirm: "yes" })).status,
+    ).toBe(303);
+  });
   it("accepts slash-separated codes through both MCP and the browser binding form", async () => {
-    edCourseCode = "CS101/CS201";
+    edCourseCode = "CS102/CS101/CS103";
     try {
       await call(b, "discover_courses");
       const page = await request("/landing", { headers: { cookie: b.cookie } });
@@ -866,7 +932,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       const course = {
         ...unit,
         key: "combined-course",
-        code: "cs101/cs201",
+        code: "cs102/cs101/cs103",
         ed_course_id: 102,
         moodle_course_id: undefined,
         ontrack_unit_id: undefined,
@@ -876,11 +942,12 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       expect(bound.isError).not.toBe(true);
       expect(bound.structuredContent.unit.code).toBe(edCourseCode);
       expect(
-        (await call(b, "ed_lessons", { unit: "cs101/cs201" })).result.isError,
+        (await call(b, "ed_lessons", { unit: "cs102/cs101/cs103" })).result
+          .isError,
       ).not.toBe(true);
       await call(b, "unbind_course", { key: course.key });
       const saved = await action(b, "bind", {
-        code: "cs101/cs201",
+        code: "cs102/cs101/cs103",
         name: unit.name,
         campus: unit.campus,
         year: String(unit.year),
@@ -895,7 +962,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       expect(units[0].code).toBe(edCourseCode);
       expect(units[0].key).toMatch(/^[a-zA-Z0-9_-]+$/);
       const hyphenatedKey =
-        `CS101-CS201-${unit.campus}-${unit.year}-${unit.teaching_period}`
+        `CS102-CS101-CS103-${unit.campus}-${unit.year}-${unit.teaching_period}`
           .toLowerCase()
           .replace(/[^a-z0-9_-]/g, "-");
       expect(units[0].key).not.toBe(hyphenatedKey);

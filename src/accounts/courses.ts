@@ -26,7 +26,7 @@ export interface Discovery {
     matches: Array<{
       platform: Platform;
       id: number;
-      evidence: "exact_code" | "display_prefix";
+      evidence: "exact_code" | "display_prefix" | "code_component";
     }>;
   }>;
   expires_at: number;
@@ -82,6 +82,15 @@ export function finishDiscovery(
   const explicit = courses.filter((c) => c.code_source === "code");
   const anchors = explicit.length ? explicit : courses;
   const codes = [...new Set(anchors.flatMap((c) => (c.code ? [c.code] : [])))];
+  const components = (value: string) =>
+    value
+      .toUpperCase()
+      .split("/")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  const displayStartsWith = (display: string, code: string) =>
+    display === code ||
+    (display.startsWith(code) && /[^A-Z0-9]/.test(display[code.length] ?? ""));
   const groups = codes.map((code) => ({
     code,
     matches: courses.flatMap((c) => {
@@ -91,7 +100,16 @@ export function finishDiscovery(
         display.startsWith(code) &&
         display.length > code.length &&
         /[^A-Z0-9]/.test(display[code.length]!);
-      if (c.code !== code && !prefix) return [];
+      const component = components(code).some((part) =>
+        components(
+          c.code_source === "shortname" ? display : (c.code ?? ""),
+        ).some((candidate) =>
+          c.code_source === "shortname"
+            ? displayStartsWith(candidate, part)
+            : candidate === part,
+        ),
+      );
+      if (c.code !== code && !prefix && !component) return [];
       return [
         {
           platform: c.platform,
@@ -99,12 +117,14 @@ export function finishDiscovery(
           evidence:
             c.code === code
               ? ("exact_code" as const)
-              : ("display_prefix" as const),
+              : prefix
+                ? ("display_prefix" as const)
+                : ("code_component" as const),
         },
       ];
     }),
   }));
-  // Display prefixes are candidate evidence only, never an automatic identity rule.
+  // Prefixes and shared slash components suggest candidates, never identities or aliases.
   for (const course of courses) {
     if (
       course.code &&
@@ -142,6 +162,7 @@ export function finishDiscovery(
         matches,
         ambiguous:
           conflictingContext ||
+          matches.some((match) => match.evidence === "code_component") ||
           matches.some(
             (match) =>
               matches.filter((c) => c.platform === match.platform).length > 1 ||

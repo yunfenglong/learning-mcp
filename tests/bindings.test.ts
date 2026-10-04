@@ -64,6 +64,66 @@ async function fixture() {
 }
 
 describe("confirmed batch course bindings", () => {
+  it("confirms manually selected courses despite different labels, years, periods and locations", async () => {
+    const f = await fixture();
+    const chosen = {
+      ...first,
+      code: "CS102/CS101/CS103",
+      year: 2025,
+      teaching_period: "custom-term",
+      campus: "user-selected-location",
+    };
+    const preview = await f.account.previewBindings([chosen]);
+    expect(preview.courses[0]?.warnings).toContainEqual(
+      expect.objectContaining({
+        code: "DIFFERENT_COURSE_CONTEXT",
+        platform: "ed",
+        differences: {
+          year: { discovered: 2026, selected: 2025 },
+          teaching_period: { discovered: "S2", selected: "custom-term" },
+          campus: { discovered: "main", selected: "user-selected-location" },
+        },
+      }),
+    );
+    expect(await f.account.units()).toEqual([]);
+    await f.account.confirmBindings(preview.preview_id);
+    expect(await f.account.units()).toEqual([chosen]);
+  });
+  it("suggests every slash component without assuming its position, prefix or order", () => {
+    const result = finishDiscovery(
+      [
+        normalizeCourse("ed", { id: 1, code: "CS102/CS101/CS103" }),
+        normalizeCourse("ed", { id: 2, code: "MATH-7" }),
+        normalizeCourse("moodle", {
+          id: 3,
+          shortname: "CS103/CS102/CS101_S2_2026",
+        }),
+        normalizeCourse("moodle", { id: 4, shortname: "CS101_S2_2026" }),
+        normalizeCourse("moodle", { id: 5, shortname: "CS1010_S2_2026" }),
+        normalizeCourse("moodle", { id: 6, shortname: "OTHER/MATH-7/THIRD" }),
+        normalizeCourse("ontrack", { id: 7, unit: { id: 8, code: "CS101" } }),
+      ],
+      [],
+    );
+    const composite = result.suggestions.find(
+      (s) => s.code === "CS102/CS101/CS103",
+    )!;
+    expect(composite.course_ids).toEqual([
+      { platform: "ed", id: 1 },
+      { platform: "moodle", id: 3 },
+      { platform: "moodle", id: 4 },
+      { platform: "ontrack", id: 7 },
+    ]);
+    expect(composite.ambiguous).toBe(true);
+    expect(composite.needs_confirmation).toBe(true);
+    expect(
+      result.suggestions.find((s) => s.code === "CS101")?.course_ids,
+    ).toContainEqual({ platform: "ed", id: 1 });
+    expect(
+      result.suggestions.find((s) => s.code === "MATH-7")?.course_ids,
+    ).toContainEqual({ platform: "moodle", id: 6 });
+    expect(result.courses[0]?.code).toBe("CS102/CS101/CS103");
+  });
   it("treats display identifiers as evidence and previews their match to known codes", async () => {
     const f = await fixture();
     const result = await f.account.bind(first);

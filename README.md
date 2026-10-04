@@ -78,7 +78,7 @@ See [client setup](docs/clients.md) for ChatGPT plugin setup and OAuth discovery
 1. Connect an OAuth-capable MCP client. Sign in with your supported SSO provider base link, username, password and optional TOTP, or with an Ed API token. Use the same provider account or Ed account for future sign-ins. Existing platform-based accounts can use their original sign-in entry.
 2. Read and accept the data handling notice before entering credentials, then approve the client's requested access.
 3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.
-4. Add the other platforms to the same account: Ed uses an API token; Moodle and OnTrack use their own saved base links with SSO or an existing platform session. Enter the base link on first Connect; later sign-in and renewal reuse it. All three can be connected together. Moodle and OnTrack can reuse your saved SSO when available, with your approval. Enter credentials on the connection page.
+4. Connect only the platforms you need; Moodle alone is supported. Ed uses an API token; Moodle and OnTrack use their own saved base links with SSO or an existing platform session. Enter the base link on first Connect; later sign-in and renewal reuse it. Additional platforms can be connected to the same account later. Moodle and OnTrack can reuse your saved SSO when available, with your approval. Enter credentials on the connection page.
 5. Discover your enrolled courses and confirm which platform courses belong together. This works through MCP tools or the connection page.
 6. Ask about course materials, discussions, deadlines, grades, tasks or attendance-code evidence.
 

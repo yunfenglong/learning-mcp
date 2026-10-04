@@ -19,6 +19,12 @@ Use the same MCP URL with any client supporting the service's OAuth flow. The su
 
 ## Connection checks
 
+### Use only one platform
+
+Connect only the platforms you want. For Moodle alone, connect Moodle, discover its enrolled courses, then preview and confirm mappings containing only `moodle_course_id`. Ask the client to use Moodle tools for those courses. Ed and OnTrack connections are not required. The same MCP connection can later include other platforms. The tool list currently includes all supported platforms; seeing an Ed or OnTrack tool does not mean you must connect it.
+
+### OAuth checks
+
 - An unauthenticated request to `/mcp` returns `401` with a `WWW-Authenticate` challenge pointing to protected resource metadata.
 - `/.well-known/oauth-protected-resource/mcp` describes the canonical MCP resource and authorization server.
 - `/.well-known/oauth-authorization-server` publishes authorization, token and client registration endpoints.

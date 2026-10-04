@@ -37,7 +37,7 @@ Never paste tokens, cookies, passwords, TOTP secrets or full browser traces into
 
 ## Course binding needs review
 
-Use `preview_course_bindings` for multiple courses or replacements. A mapping's code is your agreed course label; platform display identifiers may include different names or semester suffixes. Keep year and teaching period in their separate fields. Display-code differences produce review warnings, while `COURSE_MISMATCH` indicates a conflicting discovered campus or teaching period. `COURSE_NOT_ACCESSIBLE` indicates an unavailable enrollment or incorrect platform ID.
+Use `preview_course_bindings` for multiple courses or replacements. A mapping's code is your agreed course label, including composite labels such as `CS102/CS101/CS103`; platform identifiers can differ. Keep year and teaching period in their separate fields. `DIFFERENT_PLATFORM_CODE` and `DIFFERENT_COURSE_CONTEXT` are review warnings, not binding failures. You can confirm manually selected courses despite these differences. `COURSE_NOT_ACCESSIBLE` indicates an unavailable enrollment or incorrect platform ID. An OnTrack project must belong to the selected OnTrack unit; if that relationship changes during reads, `ENTITY_NOT_ALLOWED` asks you to rediscover and review it.
 
 Review the entire batch, including existing mappings that will change, before calling `confirm_course_bindings`. `BINDING_PREVIEW_CHANGED` means discovery or mappings changed after preview; create and review another preview. `BINDING_PREVIEW_EXPIRED` requires a fresh preview. Neither error applies partial edits. Do not delete old mappings to get past a failed binding.
 

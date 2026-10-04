@@ -27,17 +27,21 @@ export function validateCourseBinding(unit: Unit, discovery: Discovery) {
         "Choose a verified course discovered for this account.",
         403,
       );
-    if (
-      (course.year && course.year !== unit.year) ||
-      (course.teaching_period &&
-        course.teaching_period !== unit.teaching_period) ||
-      (course.campus && course.campus !== unit.campus)
-    )
-      throw new SuiteError(
-        "COURSE_MISMATCH",
-        "The discovered campus or teaching period differs.",
-        409,
-      );
+    const differences = Object.fromEntries(
+      (["year", "teaching_period", "campus"] as const).flatMap((field) =>
+        course[field] !== undefined && course[field] !== unit[field]
+          ? [[field, { discovered: course[field], selected: unit[field] }]]
+          : [],
+      ),
+    );
+    if (Object.keys(differences).length)
+      warnings.push({
+        code: "DIFFERENT_COURSE_CONTEXT",
+        platform,
+        differences,
+        message:
+          "Platform semester or location details differ from your chosen mapping. Review these details before confirming; they do not prevent a manual association.",
+      });
     sources.push({
       platform,
       id,

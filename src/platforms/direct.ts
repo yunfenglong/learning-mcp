@@ -407,8 +407,8 @@ export class DirectBackend implements Backend {
           const project = object(await c.getProject(bound.ontrack_project_id));
           if (object(project.unit).id !== bound.ontrack_unit_id)
             throw new SuiteError(
-              "COURSE_MISMATCH",
-              "OnTrack project has changed.",
+              "ENTITY_NOT_ALLOWED",
+              "This OnTrack project no longer belongs to the bound unit. Discover courses again and review its association.",
               403,
             );
           return { unit: await c.getUnit(a.unit_id) };

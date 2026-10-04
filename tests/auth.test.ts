@@ -195,7 +195,7 @@ describe("user-confirmed course associations", () => {
       }),
     ).rejects.toMatchObject({ code: "COURSE_NOT_ACCESSIBLE" });
   });
-  it("checks OnTrack project-to-unit ownership and semester mismatches", async () => {
+  it("checks OnTrack project-to-unit ownership and warns about semester differences", async () => {
     const f = await fixture();
     await f.account.discovered(
       finishDiscovery(
@@ -220,8 +220,10 @@ describe("user-confirmed course associations", () => {
     await expect(
       f.account.bind({ ...only, ontrack_unit_id: 999 }),
     ).rejects.toMatchObject({ code: "COURSE_NOT_ACCESSIBLE" });
-    await expect(f.account.bind({ ...only, year: 2025 })).rejects.toMatchObject(
-      { code: "COURSE_MISMATCH" },
+    expect(
+      (await f.account.bind({ ...only, year: 2025 })).warnings,
+    ).toContainEqual(
+      expect.objectContaining({ code: "DIFFERENT_COURSE_CONTEXT" }),
     );
     await f.account.bind(only);
     await f.account.disconnect("ontrack");
