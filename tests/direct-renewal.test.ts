@@ -3,6 +3,70 @@ import { DirectBackend } from "../src/platforms/direct.ts";
 import type { Env } from "../src/config.ts";
 
 describe("bundled-client renewal errors", () => {
+  it.each([
+    [
+      503,
+      { password: "credential-canary" },
+      "UPSTREAM_UNAVAILABLE",
+      "HTTP 503",
+    ],
+    [
+      403,
+      { token: "credential-canary" },
+      "PLATFORM_REQUEST_REJECTED",
+      "HTTP 403",
+    ],
+    [
+      200,
+      [
+        {
+          id: 1,
+          unit: {
+            id: 2,
+            code: "ANY1",
+            name: "Example",
+            start_date: "not-a-date",
+          },
+        },
+      ],
+      "UPSTREAM_RESPONSE_INVALID",
+      "unit start_date must be a civil date",
+    ],
+  ])(
+    "preserves a safe OnTrack diagnosis for HTTP %s",
+    async (status, data, code, message) => {
+      const backend = new DirectBackend(
+        {
+          SSO_BROKER: {
+            fetch: async () =>
+              Response.json({
+                username: "user",
+                token: "access",
+                profile_id: "user",
+              }),
+          },
+          BROKER_SERVICE_TOKEN: "x".repeat(32),
+        } as unknown as Env,
+        "a".repeat(64),
+        "ontrack",
+        {
+          issuer: "https://suite.example.com",
+          units: [],
+          platforms: { ontrack: { site_url: "https://ontrack.example.edu" } },
+        },
+        vi.fn(async () => Response.json(data, { status })) as typeof fetch,
+      );
+      await expect(backend.call("list_courses", {})).rejects.toMatchObject({
+        code,
+        message: expect.stringContaining(message),
+      });
+      try {
+        await backend.call("list_courses", {});
+      } catch (error) {
+        expect(String(error)).not.toContain("credential-canary");
+      }
+    },
+  );
   it("uses broker-verified Moodle context when the site-info webservice is disabled", async () => {
     const broker = vi.fn(async () =>
       Response.json({

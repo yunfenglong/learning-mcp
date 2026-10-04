@@ -14,6 +14,16 @@ export function validateCourseBinding(unit: Unit, discovery: Discovery) {
   for (const [platform, field] of links) {
     const id = unit[field];
     if (!id) continue;
+    if (
+      discovery.coverage.some(
+        (c) => c.platform === platform && c.status === "unavailable",
+      )
+    )
+      throw new SuiteError(
+        "COURSE_DISCOVERY_UNAVAILABLE",
+        `Course discovery for ${platform} did not complete. Retry discover_courses and check its platform error before binding. Existing mappings have not changed.`,
+        409,
+      );
     const course = discovery.courses.find(
       (c) => c.platform === platform && c.id === id,
     );

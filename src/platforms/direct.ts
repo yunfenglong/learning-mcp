@@ -20,6 +20,7 @@ import {
 } from "./session-cookies.ts";
 import { object, rows, type Backend } from "../adapters/backend.ts";
 import { OutputBoundary } from "../security/output.ts";
+import { platformReadError } from "./read-error.ts";
 export class DirectBackend implements Backend {
   private client?: Promise<any>;
   private edInstitution = new Map<number, boolean>();
@@ -456,12 +457,7 @@ export class DirectBackend implements Backend {
         403,
       );
     } catch (error) {
-      if (error instanceof SuiteError) throw error;
-      throw new SuiteError(
-        "PLATFORM_UNAVAILABLE",
-        `The ${this.platform} read failed. Check its connection.`,
-        502,
-      );
+      throw platformReadError(this.platform, error);
     }
   }
   private async enrolled(id: number) {

@@ -1,6 +1,7 @@
 import type { Platform, Unit } from "../domain/units.ts";
 import type { Config } from "../config.ts";
 import { object, rows } from "../adapters/backend.ts";
+import { publicError } from "../errors.ts";
 export interface DiscoveredCourse {
   platform: Platform;
   id: number;
@@ -17,7 +18,11 @@ export interface DiscoveredCourse {
 }
 export interface Discovery {
   courses: DiscoveredCourse[];
-  coverage: Array<{ platform: Platform; status: string }>;
+  coverage: Array<{
+    platform: Platform;
+    status: string;
+    error?: { code: string; message: string };
+  }>;
   suggestions: Array<{
     code: string;
     course_ids: Array<{ platform: Platform; id: number }>;
@@ -198,7 +203,21 @@ export async function discover(
   settled.forEach((result, i) => {
     const platform = names[i]!;
     if (result.status === "rejected") {
-      coverage.push({ platform, status: "unavailable" });
+      const error = publicError(result.reason);
+      // Fixed diagnostic fields only; no exception text, identity, URLs, headers or source data.
+      console.warn(
+        JSON.stringify({
+          event: "platform_discovery_failed",
+          platform,
+          code: error.code,
+          http_status:
+            Number(error.message.match(/HTTP ([45]\d{2})\b/)?.[1]) || undefined,
+          response_field: error.message.match(
+            /\b(unit (?:id|code|name|my_role|start_date|end_date|active|allow_flexible_dates)|project (?:id|target_grade|portfolio_available|user_id|unit_id)) must be\b/,
+          )?.[1],
+        }),
+      );
+      coverage.push({ platform, status: "unavailable", error });
       return;
     }
     if (result.value === null) {

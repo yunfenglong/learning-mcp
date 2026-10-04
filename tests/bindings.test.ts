@@ -64,6 +64,28 @@ async function fixture() {
 }
 
 describe("confirmed batch course bindings", () => {
+  it("distinguishes a failed fresh discovery from an inaccessible course without accepting old IDs", async () => {
+    const f = await fixture();
+    await f.account.bind(unit);
+    const fresh = discovery();
+    fresh.courses = fresh.courses.filter((c) => c.platform !== "ontrack");
+    fresh.coverage = [
+      {
+        platform: "ontrack",
+        status: "unavailable",
+        error: { code: "UPSTREAM_UNAVAILABLE", message: "Retry later." },
+      },
+    ];
+    await f.account.discovered(fresh);
+    await expect(f.account.bind(unit)).rejects.toMatchObject({
+      code: "COURSE_DISCOVERY_UNAVAILABLE",
+    });
+    expect(await f.account.units()).toEqual([unit]);
+    await f.account.discovered(discovery());
+    await expect(
+      f.account.bind({ ...unit, ontrack_project_id: 999 }),
+    ).rejects.toMatchObject({ code: "COURSE_NOT_ACCESSIBLE" });
+  });
   it("confirms manually selected courses despite different labels, years, periods and locations", async () => {
     const f = await fixture();
     const chosen = {

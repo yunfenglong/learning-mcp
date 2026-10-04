@@ -20,6 +20,7 @@ interface Connection {
 }
 let a: Connection, b: Connection;
 let edCourseCode = "CSC1001";
+let ontrackDiscoveryUnavailable = false;
 let moodleAccountChanged = false,
   moodleExpired = false,
   moodleOutputCanary = false,
@@ -166,6 +167,12 @@ async function platformFixture(req: Request): Promise<Response> {
       token = req.headers.get("Auth-Token");
     if (token !== `ontrack-${username}` || !["a", "b"].includes(username ?? ""))
       return new Response(null, { status: 401 });
+    if (url.pathname === "/api/projects")
+      if (ontrackDiscoveryUnavailable)
+        return Response.json(
+          { token: "upstream-error-canary" },
+          { status: 503 },
+        );
     if (url.pathname === "/api/projects")
       return Response.json([
         {
@@ -668,6 +675,32 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
         })
       ).status,
     ).toBe(401);
+  });
+  it("reports OnTrack discovery failure and does not mislabel a binding attempt as an inaccessible course", async () => {
+    ontrackDiscoveryUnavailable = true;
+    try {
+      const discovery = (await call(a, "discover_courses")).result
+        .structuredContent;
+      expect(discovery.coverage).toContainEqual({
+        platform: "ontrack",
+        status: "unavailable",
+        error: {
+          code: "UPSTREAM_UNAVAILABLE",
+          message: "OnTrack returned HTTP 503. Retry later.",
+        },
+      });
+      expect(JSON.stringify(discovery)).not.toContain("upstream-error-canary");
+      expect(
+        (await call(a, "bind_course", { course: unit })).result
+          .structuredContent.code,
+      ).toBe("COURSE_DISCOVERY_UNAVAILABLE");
+      expect(
+        (await call(a, "course_units")).result.structuredContent.units,
+      ).toEqual([unit]);
+    } finally {
+      ontrackDiscoveryUnavailable = false;
+      await call(a, "discover_courses");
+    }
   });
   it("reads Moodle sections and OnTrack tasks using the embedded clients", async () => {
     const course = (await call(a, "moodle_unit", { unit: unit.code })).result;
