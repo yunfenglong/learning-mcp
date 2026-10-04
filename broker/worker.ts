@@ -500,7 +500,9 @@ export class BrokerState extends DurableObject<BrokerEnv> {
             candidate = verified;
           }
         } catch (error) {
-          if (!sessionFailure(error) || p === "ontrack") {
+          // A rejected/invalid refresh session needs the same saved-SSO recovery as
+          // a rejected refresh cookie. Outages and identity changes must stop here.
+          if (!sessionFailure(error)) {
             await this.ctx.storage.put(`retry_after:${p}`, Date.now() + 60000);
             throw error;
           }

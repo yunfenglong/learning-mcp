@@ -573,6 +573,140 @@ describe("private credential vault", () => {
       network.mockImplementation(fallback);
     }
   });
+  it.each(["missing-token", "expired-token"])(
+    "recovers an invalid OnTrack refresh response through saved SSO: %s",
+    async (failure) => {
+      login.mockReset();
+      const f = fixture();
+      const cookies = [
+        {
+          name: "refresh_token",
+          value: "refresh-a",
+          domain: "ontrack.example.edu",
+          path: "/api/auth",
+          secure: true,
+        },
+      ];
+      login
+        .mockResolvedValueOnce({
+          session: {
+            username: "user",
+            token: "access-a",
+            expires_at: new Date(Date.now() + 120000).toISOString(),
+          },
+          cookies,
+        })
+        .mockResolvedValueOnce({
+          session: {
+            username: "user",
+            token: "access-b",
+            expires_at: new Date(Date.now() + 3600000).toISOString(),
+          },
+          cookies: [{ ...cookies[0], value: "refresh-b" }],
+        });
+      expect(
+        (
+          await f.call("/v1/connect", {
+            platform: "ontrack",
+            mode: "sso",
+            input: { ...credentials, remember: true },
+          })
+        ).status,
+      ).toBe(200);
+      const fallback = network.getMockImplementation()!;
+      network.mockImplementation(async (input, init) =>
+        String(input).endsWith("/api/auth/access-token")
+          ? Response.json(
+              failure === "missing-token"
+                ? {}
+                : {
+                    auth_token: "expired",
+                    auth_token_expiry: new Date(
+                      Date.now() - 1000,
+                    ).toISOString(),
+                    user: { username: "user" },
+                  },
+            )
+          : fallback(input, init),
+      );
+      try {
+        const results = await Promise.all([
+          f.call("/v1/session", { platform: "ontrack" }),
+          f.call("/v1/session", { platform: "ontrack" }),
+        ]);
+        for (const result of results) {
+          expect(result.status).toBe(200);
+          expect(await result.json()).toMatchObject({
+            token: "access-b",
+            profile_id: "user",
+          });
+        }
+        expect(login).toHaveBeenCalledTimes(2);
+        expect(login.mock.calls[1]?.[0].input).toMatchObject({
+          username: credentials.username,
+          password: credentials.password,
+        });
+        expect(await f.storage.get("retry_after:ontrack")).toBeUndefined();
+        const status = JSON.stringify(
+          await (await f.call("/v1/status")).json(),
+        );
+        expect(status).not.toContain("access-b");
+        expect(status).not.toContain("refresh-b");
+      } finally {
+        network.mockImplementation(fallback);
+      }
+    },
+  );
+  it.each(["outage", "changed-account"])(
+    "does not start OnTrack browser recovery for %s",
+    async (failure) => {
+      login.mockReset();
+      const f = fixture();
+      login.mockResolvedValue({
+        session: {
+          username: "user",
+          token: "access-a",
+          expires_at: new Date(Date.now() + 120000).toISOString(),
+        },
+        cookies: [
+          {
+            name: "refresh_token",
+            value: "refresh-a",
+            domain: "ontrack.example.edu",
+            path: "/api/auth",
+          },
+        ],
+      });
+      await f.call("/v1/connect", {
+        platform: "ontrack",
+        mode: "sso",
+        input: { ...credentials, remember: true },
+      });
+      const fallback = network.getMockImplementation()!;
+      network.mockImplementation(async (input, init) =>
+        String(input).endsWith("/api/auth/access-token")
+          ? failure === "outage"
+            ? new Response(null, { status: 503 })
+            : Response.json({
+                auth_token: "foreign",
+                auth_token_expiry: new Date(Date.now() + 3600000).toISOString(),
+                user: { username: "different-user" },
+              })
+          : fallback(input, init),
+      );
+      try {
+        expect(
+          await (await f.call("/v1/session", { platform: "ontrack" })).json(),
+        ).toMatchObject({
+          code:
+            failure === "outage" ? "UPSTREAM_UNAVAILABLE" : "ACCOUNT_CHANGED",
+        });
+        expect(login).toHaveBeenCalledOnce();
+      } finally {
+        network.mockImplementation(fallback);
+      }
+    },
+  );
   it("proactively refreshes OnTrack once for concurrent reads and keeps refresh material private", async () => {
     const f = fixture(false);
     // Browser SSO supplies refresh cookies; use the encrypted vault fixture to model a previous connection.
