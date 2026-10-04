@@ -75,7 +75,7 @@ https://YOUR_SUITE_HOST/mcp
 
 See [client setup](docs/clients.md) for ChatGPT plugin setup and OAuth discovery details.
 
-1. Connect an OAuth-capable MCP client. Sign in with your supported SSO provider base link, username, password and optional TOTP, or with an Ed API token. Use the same provider account or Ed account for future sign-ins. Existing platform-based accounts can use their original sign-in entry.
+1. Connect an OAuth-capable MCP client. Sign in with your supported SSO provider base link, username, password and optional TOTP secret, or with an Ed API token. After password verification, choose from the current provider page’s available SSO OTP and TOTP methods. Use the same provider account or Ed account for future sign-ins. Platform-based sign-in is no longer offered; use provider sign-in or an Ed token. Existing platform-anchored data is not automatically merged into a provider account.
 2. Read and accept the data handling notice before entering credentials, then approve the client's requested access.
 3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.
 4. Connect only the platforms you need; Moodle alone is supported. Ed uses an API token; Moodle and OnTrack use their own saved base links with SSO or an existing platform session. Enter the base link on first Connect; later sign-in and renewal reuse it. Additional platforms can be connected to the same account later. Moodle and OnTrack can reuse your saved SSO when available, with your approval. Enter credentials on the connection page.
@@ -147,3 +147,5 @@ Pinned versions, commit hashes and file hashes are recorded in [`vendor/upstream
 The project's original code and documentation are available under the [PolyForm Noncommercial License 1.0.0](LICENSE). This is a source-available license that permits noncommercial use, modification and redistribution under its terms. It also expressly permits use by specified organizations, including educational institutions and charities, regardless of funding. Commercial use outside the license's permitted purposes is not authorized.
 
 Third-party clients and dependencies retain their own licenses. The bundled bunizao clients remain MIT-licensed; see [NOTICE](NOTICE) and the license files in `vendor/`.
+
+See the [error code and message catalog](docs/error-codes.md) for actionable sign-in, MFA, connection and read errors.

@@ -5,6 +5,9 @@ vi.mock("@cloudflare/playwright", () => ({ launch }));
 import { browserLogin } from "../broker/sso.ts";
 import { autoLogin } from "../broker/shared-auth.ts";
 import { parseTotp } from "../broker/totp.ts";
+import { InteractiveSignIn } from "../broker/interactive-sso.ts";
+import { inspectMfa } from "../broker/mfa-page.ts";
+import { MFA_TTL_MS } from "../src/auth/mfa.ts";
 const site = "https://moodle.example.edu",
   login = "https://tenant.okta.example";
 function fixture(
@@ -193,6 +196,26 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe("shared-auth browser SSO", () => {
+  it("stops rejected generated codes with a specific MFA error before session capture", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup: '<input name="otp"><input type="submit">',
+    });
+    f.setSubmit(() => {});
+    await expect(
+      browserLogin({
+        ...okta,
+        input: {
+          username: "u",
+          password: "p",
+          totp: parseTotp("JBSWY3DPEHPK3PXP"),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "MFA_TOTP_REJECTED" });
+    expect(f.filled).toHaveBeenCalledTimes(1);
+    expect(f.browser.close).toHaveBeenCalledOnce();
+  });
   it("never fills SSO credentials into a user-selected platform origin", async () => {
     const f = fixture({
       url: site,
@@ -468,5 +491,251 @@ describe("shared-auth browser SSO", () => {
     await autoLogin(f.page as any, { username: "u", password: "p" });
     expect(f.page.waitForTimeout).toHaveBeenCalledWith(1200);
     expect(f.page.waitForTimeout).toHaveBeenCalledWith(3200);
+  });
+});
+
+describe("interactive provider MFA", () => {
+  const input = { username: "u", password: "password-canary" };
+  const otp = '<input name="otp"><input type="submit">';
+  it("does not offer or click a provider push challenge", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup: "<h2>Push notification</h2><button>Send Push</button>",
+    });
+    const transaction = new InteractiveSignIn();
+    await expect(
+      transaction.start({} as Fetcher, login, [], input),
+    ).rejects.toMatchObject({ code: "SSO_INTERACTION_REQUIRED" });
+    expect(f.clicks).not.toHaveBeenCalled();
+    expect(f.browser.close).toHaveBeenCalledOnce();
+  });
+  it("keeps a failed optional setup key out of saved credentials after the password succeeds", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup: '<input type="password"><input type="submit">',
+    });
+    let submissions = 0;
+    f.setSubmit(() =>
+      f.setMarkup(
+        "<h2>Google Authenticator</h2>" +
+          otp +
+          (++submissions > 1
+            ? '<div role="alert">private rejection text</div>'
+            : ""),
+      ),
+    );
+    const transaction = new InteractiveSignIn();
+    const failed = await transaction.start({} as Fetcher, login, [], {
+      ...input,
+      remember: true,
+      totp_secret: "JBSWY3DPEHPK3PXP",
+    });
+    expect(failed).toMatchObject({
+      status: "mfa_required",
+      attempts_remaining: 2,
+      methods: ["totp"],
+      error: { code: "MFA_TOTP_REJECTED" },
+    });
+    expect(submissions).toBe(2);
+    expect(JSON.stringify(failed)).not.toContain("JBSWY3DPEHPK3PXP");
+    expect(f.browser.close).not.toHaveBeenCalled();
+    f.setSubmit(() => f.verify());
+    const result = await transaction.next({
+      method: "totp",
+      mfa_code: "012345",
+    });
+    expect(result).toHaveProperty("result.session.userId", "00uVerified");
+    expect(result).not.toHaveProperty("input.totp_secret");
+    expect(result).not.toHaveProperty("input.mfa_code");
+    expect(f.browser.close).toHaveBeenCalledOnce();
+  });
+  it("does not use a TOTP secret for a provider-only OTP challenge", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup: "<h2>Email</h2>" + otp,
+    });
+    const transaction = new InteractiveSignIn();
+    expect(
+      await transaction.start({} as Fetcher, login, [], {
+        ...input,
+        totp_secret: "JBSWY3DPEHPK3PXP",
+      }),
+    ).toMatchObject({
+      methods: ["sso_otp"],
+      error: { code: "MFA_METHOD_UNAVAILABLE" },
+    });
+    expect(f.filled).not.toHaveBeenCalled();
+    await transaction.close();
+  });
+  it("validates secrets before launch and discovers only provider-offered methods", async () => {
+    const transaction = new InteractiveSignIn();
+    await expect(
+      transaction.start({} as Fetcher, login, [], {
+        ...input,
+        totp_secret: "123456",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_TOTP" });
+    expect(launch).not.toHaveBeenCalled();
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup:
+        "<div><span>Google Authenticator</span><button>Select</button></div><div><span>Send a push notification</span><button>Select</button></div>",
+    });
+    const response = await transaction.start({} as Fetcher, login, [], input);
+    expect(response).toMatchObject({
+      status: "mfa_required",
+      methods: ["totp"],
+      attempts_remaining: 3,
+    });
+    expect(JSON.stringify(response)).not.toContain("password-canary");
+    expect(f.filled).not.toHaveBeenCalled();
+    await transaction.close();
+  });
+  it("counts invalid inputs and rejected secrets across method switches, closes at three errors and never replays a code", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup: "<h2>Authenticator app</h2>" + otp,
+    });
+    f.setSubmit(() => {});
+    const transaction = new InteractiveSignIn();
+    await transaction.start({} as Fetcher, login, [], input);
+    const first = await transaction.next({
+      method: "totp_secret",
+      totp_secret: "JBSWY3DPEHPK3PXP",
+    });
+    expect(first).toMatchObject({
+      attempts_remaining: 2,
+      error: { code: "MFA_TOTP_REJECTED" },
+    });
+    expect(f.filled).toHaveBeenCalledTimes(1);
+    const second = await transaction.next({
+      method: "totp",
+      mfa_code: "bad-code-canary",
+    });
+    expect(second).toMatchObject({
+      attempts_remaining: 1,
+      error: { code: "INVALID_OTP" },
+    });
+    expect(f.filled).toHaveBeenCalledTimes(1);
+    await expect(
+      transaction.next({ method: "totp", mfa_code: "123456" }),
+    ).rejects.toMatchObject({ code: "MFA_ATTEMPTS_EXCEEDED" });
+    expect(f.filled).toHaveBeenCalledTimes(2);
+    expect(f.browser.close).toHaveBeenCalledOnce();
+    await expect(
+      transaction.next({ method: "sso_otp", mfa_code: "654321" }),
+    ).rejects.toMatchObject({ code: "MFA_SESSION_EXPIRED" });
+  });
+  it("allows requesting a code before entering it and does not consume a verification error", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup: "<div><span>Email</span><button>Select</button></div>",
+    });
+    f.setSubmit(() => f.setMarkup(otp));
+    const transaction = new InteractiveSignIn();
+    await transaction.start({} as Fetcher, login, [], input);
+    expect(await transaction.next({ method: "sso_otp" })).toMatchObject({
+      attempts_remaining: 3,
+      error: { code: "MFA_CODE_REQUIRED" },
+    });
+    expect(f.clicks).toHaveBeenCalledTimes(1);
+    expect(f.filled).not.toHaveBeenCalled();
+    f.setSubmit(() => f.verify());
+    const result = await transaction.next({
+      method: "sso_otp",
+      mfa_code: "012345",
+    });
+    expect(result).toMatchObject({
+      result: { session: { status: "ACTIVE", userId: "00uVerified" } },
+    });
+    expect(result).not.toHaveProperty("input.mfa_code");
+    await transaction.close();
+  });
+  it("supports provider forms with separate code digit inputs", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup:
+        "<h2>Google Authenticator</h2>" +
+        '<input maxlength="1">'.repeat(6) +
+        '<input type="submit">',
+    });
+    const transaction = new InteractiveSignIn();
+    await transaction.start({} as Fetcher, login, [], input);
+    expect(
+      await transaction.next({ method: "totp", mfa_code: "012345" }),
+    ).toHaveProperty("result.session.userId", "00uVerified");
+    expect(f.filled).toHaveBeenCalledTimes(6);
+    expect(f.browser.close).toHaveBeenCalledOnce();
+  });
+  it("expires an abandoned verification transaction and releases its browser", async () => {
+    const g = fixture({ url: login, logged: false, markup: otp });
+    const expired = new InteractiveSignIn();
+    await expired.start({} as Fetcher, login, [], input);
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now + MFA_TTL_MS + 1);
+    await expect(
+      expired.next({ method: "sso_otp", mfa_code: "123456" }),
+    ).rejects.toMatchObject({ code: "MFA_SESSION_EXPIRED" });
+    expect(g.filled).not.toHaveBeenCalled();
+    expect(g.browser.close).toHaveBeenCalledOnce();
+  });
+  it("stores only a successfully verified secret for opted-in retention and never returns a code", async () => {
+    const f = fixture({
+      url: login,
+      logged: false,
+      markup: "<h2>Authenticator app</h2>" + otp,
+    });
+    const transaction = new InteractiveSignIn();
+    await transaction.start({} as Fetcher, login, [], {
+      ...input,
+      remember: true,
+    });
+    const seed = "JBSWY3DPEHPK3PXP";
+    const result = await transaction.next({
+      method: "totp_secret",
+      totp_secret: seed,
+    });
+    expect(result).toMatchObject({
+      input: { totp_secret: seed, remember: true },
+      result: { session: { userId: "00uVerified" } },
+    });
+    expect(result).not.toHaveProperty("input.mfa_code");
+    expect(f.browser.close).toHaveBeenCalledOnce();
+    const g = fixture({
+      url: login,
+      logged: false,
+      markup: "<h2>Authenticator app</h2>" + otp,
+    });
+    const transient = new InteractiveSignIn();
+    await transient.start({} as Fetcher, login, [], input);
+    expect(
+      await transient.next({ method: "totp_secret", totp_secret: seed }),
+    ).not.toHaveProperty("input.totp_secret");
+    expect(g.browser.close).toHaveBeenCalledOnce();
+  });
+  it("does not return raw provider text and checks the provider origin before verification", async () => {
+    const f = fixture({ url: login, logged: false, markup: otp });
+    const transaction = new InteractiveSignIn();
+    await transaction.start({} as Fetcher, login, [site], input);
+    f.navigate(site);
+    await expect(
+      transaction.next({ method: "sso_otp", mfa_code: "123456" }),
+    ).rejects.toMatchObject({ code: "SSO_CREDENTIAL_DESTINATION" });
+    expect(f.filled).not.toHaveBeenCalled();
+    expect(f.browser.close).toHaveBeenCalledOnce();
+    f.navigate(login);
+    f.setMarkup(
+      '<h2>Verify with Google Authenticator</h2><input name="otp"><div role="alert">credential-canary</div>',
+    );
+    expect(JSON.stringify(await inspectMfa(f.page as any))).not.toContain(
+      "credential-canary",
+    );
   });
 });

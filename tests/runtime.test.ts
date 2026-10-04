@@ -505,9 +505,9 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     expect(bodies[0]).toContain('name="provider"');
     expect(bodies[0]).toContain('name="platform" value="sso"');
     const connections = bodies[2]!;
-    expect(connections).toContain(
-      "You can connect Ed, Moodle and OnTrack together in this account",
-    );
+    expect(connections).toContain("Each course can use any combination.");
+    for (const name of ["Ed Discussion", "Moodle", "OnTrack"])
+      expect(connections).toContain(`<h3>${name}</h3>`);
     expect(connections).toContain('action="/account/ed"');
     for (const platform of ["moodle", "ontrack"])
       expect(connections).toContain(`name="platform" value="${platform}"`);

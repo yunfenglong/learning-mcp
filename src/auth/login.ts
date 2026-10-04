@@ -5,11 +5,15 @@ import { digest, randomToken } from "./crypto.ts";
 import { globalCall, stateCall } from "./client.ts";
 import { connectionSchema, type Profile } from "./state.ts";
 import { SuiteError } from "../errors.ts";
-import { verificationFields } from "../http/sign-in-fields.ts";
-import { cookie, html } from "../http/common.ts";
+import {
+  providerVerificationFields as verificationFields,
+  mfaForms,
+} from "../http/sign-in-fields.ts";
+import { page, signInJourney } from "../http/ui.ts";
+import { cookie, html, escapeHtml as e } from "../http/common.ts";
 import { brokerCall } from "../platforms/broker.ts";
 import { platformFetch } from "../platforms/network.ts";
-import { platformBaseLink } from "../platforms/base-link.ts";
+import { mfaChallengeSchema, MFA_TTL_MS, type MfaChallenge } from "./mfa.ts";
 import { USAGE_VERSION, usageNotice, usageLabel } from "../domain/usage.ts";
 
 export const SESSION_COOKIE = "__Host-learning-session";
@@ -20,6 +24,9 @@ export interface BrowserSession {
 interface Login {
   browser: string;
   return_to: string;
+  broker_account?: string;
+  mfa_expires?: number;
+  usage_version?: string;
 }
 export function safeReturn(value: string, issuer: string) {
   const u = new URL(value, issuer);
@@ -51,22 +58,18 @@ export async function startLogin(request: Request, env: Env, config: Config) {
     expires_at: Date.now() + 600_000,
   });
   const fields = `<input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}">`;
-  const approval = `<label><input type="checkbox" name="usage_consent" value="accept" required> ${usageLabel}</label>`;
-  const sso = (["moodle", "ontrack"] as const)
-    .map(
-      (p) =>
-        `<option value="${p}">${p === "moodle" ? "Moodle" : "OnTrack"}</option>`,
-    )
-    .join("");
+  const approval = `<label class="check"><input type="checkbox" name="usage_consent" value="accept" required><span>${usageLabel} <a href="#data-notice">Read the notice</a>.</span></label>`;
   const providerForm = config.ssoProviders?.length
-    ? `<form method="post" action="/login">${fields}<input type="hidden" name="platform" value="sso"><label>SSO provider base link<input name="provider" type="url" required placeholder="https://your-sso.example" maxlength="2048"></label><p>Enter your supported Okta provider's base link. Verify your identity here, then choose which learning platforms to connect.</p><label>SSO username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label>${verificationFields}<label><input name="remember" type="checkbox" value="yes"> Save my encrypted password and optional TOTP secret for automatic sign-in</label>${approval}<button>Verify SSO and sign in</button></form>`
+    ? `<h2>Sign in with SSO</h2><p>Use the account you normally use for your learning platforms.</p><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="sso"><label>SSO provider address<input name="provider" type="url" required placeholder="https://your-sso.example" maxlength="2048"></label><p class="help">Your supported Okta sign-in address, without a page path.</p><label>Username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label>${verificationFields}<label class="check"><input name="remember" type="checkbox" value="yes"><span>Remember my sign-in<small>Save my encrypted password and optional TOTP secret to sign in again when platform sessions expire.</small></span></label>${approval}<button>Continue to verification <span aria-hidden="true">→</span></button></form>`
+    : "";
+  const edForm = config.platforms.ed
+    ? `<details class="alternative"${providerForm ? "" : " open"}><summary>Use an Ed API token instead</summary><p class="help">Sign in with your Ed account. You can add other platforms afterwards.</p><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="ed"><label>Ed API token<input name="token" type="password" required autocomplete="off" maxlength="16000"></label>${approval}<button>Sign in with Ed <span aria-hidden="true">→</span></button></form></details>`
     : "";
   return html(
-    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Learning MCP</title><style>body{font:16px system-ui;max-width:720px;margin:6vh auto;padding:24px;line-height:1.6;color:#172f2c}label{display:block;margin:16px 0}input:not([type=checkbox]),select{display:block;width:100%;box-sizing:border-box;padding:10px;font:inherit}button{padding:12px 20px}.notice{border-left:3px solid #375447;padding:8px 20px;margin:24px 0}</style><h1>Sign in with your learning account</h1><p>Sign in with your SSO provider or an Ed API token. Then connect Ed, Moodle and OnTrack together from your connections page. Each course can use any combination of platforms.</p><p>Return with the same provider account or Ed account each time. Existing platform-based accounts can use their original sign-in below.</p>${usageNotice}${providerForm}${
-      sso
-        ? `<details${config.ssoProviders?.length ? "" : " open"}><summary>Sign in to an existing platform-based account</summary><p>Use the Moodle or OnTrack account you originally used to sign in. Provider sign-in creates a separate account from these existing platform-based accounts.</p><form method="post" action="/login">${fields}<label>Sign-in platform<select name="platform">${sso}</select></label><label>Platform base link<input name="base_link" type="url" required placeholder="https://your-platform.example" maxlength="2048"></label><p>Enter the base link you normally use to open this platform. The service must support that platform.</p><label>SSO username<input name="username" autocomplete="username" required maxlength="200"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1000"></label>${verificationFields}<label><input name="remember" type="checkbox" value="yes"> Save my encrypted password and optional TOTP secret for automatic sign-in</label>${approval}<button>Verify platform and sign in</button></form></details>`
-        : ""
-    }${config.platforms.ed ? `<details${sso ? "" : " open"}><summary>Sign in with an Ed API token</summary><form method="post" action="/login">${fields}<input type="hidden" name="platform" value="ed"><label>Ed API token<input name="token" type="password" required autocomplete="off" maxlength="16000"></label>${approval}<button>Verify Ed and sign in</button></form></details>` : ""}`,
+    page(
+      `<div class="auth-layout"><section class="auth-intro"><span class="eyebrow">Your learning workspace</span><h1>Start with your account.</h1><p>Sign in, complete verification, then connect the platforms your courses use.</p>${signInJourney(1)}<p class="small">Coming back? Use the same SSO account or Ed account each time. Different sign-in accounts have separate connections.</p></section><section class="auth-panel" aria-label="Sign-in options">${providerForm}${edForm}</section></div><div class="auth-notice">${usageNotice}</div>`,
+      "Sign in",
+    ),
     200,
     {
       "set-cookie": `__Host-learning-login=${browser}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
@@ -79,10 +82,12 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
   if (request.headers.get("origin") !== config.issuer)
     throw new SuiteError("INVALID_ORIGIN", "Open the sign-in page again.", 403);
   const form = await request.formData();
-  const nonce = z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .parse(form.get("nonce"));
+  const nonce = String(form.get("nonce") ?? "");
+  if (!/^[a-f0-9]{64}$/.test(nonce))
+    throw new SuiteError(
+      "INVALID_LOGIN_FORM",
+      "The sign-in form is invalid. Open the sign-in page again.",
+    );
   const key = `login:${await digest(nonce)}`;
   const pending = await globalCall<Login | null>(env, "/ephemeral/get", {
     key,
@@ -96,6 +101,49 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
       "Sign-in belongs to another browser or has expired.",
       401,
     );
+  if (pending.broker_account) {
+    if (
+      pending.usage_version !== USAGE_VERSION ||
+      Date.now() >= (pending.mfa_expires ?? 0)
+    )
+      throw new SuiteError(
+        "MFA_SESSION_EXPIRED",
+        "This verification session expired. Start a new sign-in.",
+        409,
+      );
+    if (!(await globalCall(env, "/ephemeral/get", { key, take: true })))
+      throw new SuiteError("LOGIN_FAILED", "Start a new sign-in.", 401);
+    if (form.get("action") === "cancel") {
+      await brokerCall(env, pending.broker_account, "/v1/sign-in/cancel");
+      return new Response(null, {
+        status: 303,
+        headers: {
+          location: `/login?return_to=${encodeURIComponent(pending.return_to)}`,
+        },
+      });
+    }
+    const result = await brokerCall<any>(
+      env,
+      pending.broker_account,
+      "/v1/sign-in/continue",
+      {
+        method: String(form.get("mfa_method") ?? ""),
+        ...(form.get("mfa_code")
+          ? { mfa_code: String(form.get("mfa_code")) }
+          : {}),
+        ...(form.get("totp_secret")
+          ? { totp_secret: String(form.get("totp_secret")) }
+          : {}),
+      },
+    );
+    return completeOrChallenge(result, pending, env);
+  }
+  if (["moodle", "ontrack"].includes(String(form.get("platform"))))
+    throw new SuiteError(
+      "LOGIN_METHOD_REMOVED",
+      "Platform sign-in has been removed. Sign in with your SSO provider or Ed API token.",
+      410,
+    );
   if (
     form.get("usage_consent") !== "accept" ||
     form.get("usage_version") !== USAGE_VERSION
@@ -105,9 +153,7 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
       "Review and accept the current usage notice.",
       403,
     );
-  const p = z
-    .enum(["sso", "ed", "moodle", "ontrack"])
-    .parse(form.get("platform"));
+  const p = z.enum(["sso", "ed"]).parse(form.get("platform"));
   if (
     p === "sso"
       ? !config.ssoProviders?.length
@@ -141,28 +187,31 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
         "This SSO provider is not supported by this service.",
         400,
       );
-    profile = z
-      .object({
-        id: z.string().regex(/^[a-f0-9]{64}$/),
-        name: z.string().max(200).optional(),
-      })
-      .strict()
-      .parse(
-        await brokerCall(env, randomToken(), "/v1/authenticate-sso", {
-          provider: u.origin,
-          input: {
-            username: String(form.get("username") ?? ""),
-            password: String(form.get("password") ?? ""),
-            mfa_code: String(form.get("mfa_code") ?? ""),
-            remember: form.get("remember") === "yes",
-            ...(form.get("totp_secret")
-              ? { totp_secret: String(form.get("totp_secret")) }
-              : {}),
-          },
-        }),
-      );
-    await stateCall(env, profile.id, "/profile/put", profile);
-  } else if (p === "ed") {
+    const broker_account = randomToken();
+    const mfa_expires = Date.now() + MFA_TTL_MS;
+    const result = await brokerCall<any>(
+      env,
+      broker_account,
+      "/v1/authenticate-sso",
+      {
+        provider: u.origin,
+        interactive: true,
+        input: {
+          username: String(form.get("username") ?? ""),
+          password: String(form.get("password") ?? ""),
+          remember: form.get("remember") === "yes",
+          ...(form.get("totp_secret")
+            ? { totp_secret: String(form.get("totp_secret")) }
+            : {}),
+        },
+      },
+    );
+    return completeOrChallenge(
+      result,
+      { ...pending, broker_account, mfa_expires, usage_version: USAGE_VERSION },
+      env,
+    );
+  } else {
     const token = connectionSchema.shape.token.parse(form.get("token"));
     let user: any;
     try {
@@ -176,15 +225,15 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
       ).user;
     } catch {
       throw new SuiteError(
-        "LOGIN_FAILED",
-        "The Ed token could not be verified.",
+        "ED_TOKEN_REJECTED",
+        "The Ed token could not be verified. Enter a valid token for your account.",
         401,
       );
     }
     if (!Number.isSafeInteger(user?.id) || user.id <= 0)
       throw new SuiteError(
-        "LOGIN_FAILED",
-        "Ed did not return a verified account.",
+        "ED_IDENTITY_UNVERIFIED",
+        "Ed did not return a verified account. Sign in again with a valid Ed token.",
         401,
       );
     profile = {
@@ -202,31 +251,38 @@ export async function finishLogin(request: Request, env: Env, config: Config) {
         display_name: "Ed account",
       }),
     );
-  } else {
-    const base = platformBaseLink(form.get("base_link"));
-    profile = z
-      .object({
-        id: z.string().regex(/^[a-f0-9]{64}$/),
-        name: z.string().max(200).optional(),
-      })
-      .strict()
-      .parse(
-        await brokerCall(env, randomToken(), "/v1/authenticate", {
-          platform: p,
-          base_link: base,
-          input: {
-            username: String(form.get("username") ?? ""),
-            password: String(form.get("password") ?? ""),
-            mfa_code: String(form.get("mfa_code") ?? ""),
-            remember: form.get("remember") === "yes",
-            ...(form.get("totp_secret")
-              ? { totp_secret: String(form.get("totp_secret")) }
-              : {}),
-          },
-        }),
-      );
-    await stateCall(env, profile.id, "/profile/put", profile);
   }
+  return establishSession(profile, pending, env);
+}
+async function completeOrChallenge(result: any, pending: Login, env: Env) {
+  if (result.status === "mfa_required") {
+    const challenge = mfaChallengeSchema.parse(result);
+    const nonce = randomToken();
+    await globalCall(env, "/ephemeral/put", {
+      key: `login:${await digest(nonce)}`,
+      value: pending,
+      expires_at: pending.mfa_expires,
+    });
+    return html(renderMfaPage(nonce, challenge));
+  }
+  const profile = z
+    .object({
+      id: z.string().regex(/^[a-f0-9]{64}$/),
+      name: z.string().max(200).optional(),
+    })
+    .strict()
+    .parse(result);
+  await stateCall(env, profile.id, "/profile/put", profile);
+  return establishSession(profile, pending, env);
+}
+/** Shared by the live flow and the local UI preview. */
+export function renderMfaPage(nonce: string, challenge: MfaChallenge) {
+  return page(
+    `<div class="auth-layout"><section class="auth-intro"><span class="eyebrow">One more step</span><h1>Verify it’s you.</h1><p>Your password was accepted. Complete the verification requested by your SSO provider to finish signing in.</p>${signInJourney(2)}<p class="small">Only methods available on your provider’s current sign-in page appear here. One-time codes are never saved.</p></section><section class="auth-panel"><h2>Choose a verification method</h2><p>Use a current code, or the setup key for your authenticator.</p>${challenge.error ? `<div class="error" role="alert"><p>${e(challenge.error.message)}</p><span class="error-code">Error code: ${e(challenge.error.code)}</span></div>` : ""}<div class="mfa-meta"><span>${challenge.attempts_remaining} ${challenge.attempts_remaining === 1 ? "attempt" : "attempts"} remaining</span><span>5-minute sign-in window</span></div>${mfaForms(nonce, challenge)}<form class="cancel" method="post" action="/login"><input type="hidden" name="nonce" value="${e(nonce)}"><button name="action" value="cancel">Cancel and start again</button></form></section></div>`,
+    "Verify your sign-in",
+  );
+}
+async function establishSession(profile: Profile, pending: Login, env: Env) {
   await stateCall(env, profile.id, "/usage/accept", { version: USAGE_VERSION });
   const session = randomToken();
   await globalCall(env, "/ephemeral/put", {

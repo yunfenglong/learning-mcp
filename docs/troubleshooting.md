@@ -16,6 +16,10 @@ Start a fresh authorization from the MCP client after updating the service. A su
 
 ## Sign-in or renewal needs attention
 
+See the complete [error code and message list](error-codes.md). Error pages show the code as well as the message. For landing sign-in, leave the optional TOTP secret empty to discover the current SSO page’s supported methods after the password step. Select SSO OTP with an empty code first to request/select it, then enter the code.
+
+`INVALID_TOTP` means the setup key or URI is malformed. A valid Base32 string can still belong to the wrong account; `MFA_TOTP_REJECTED` asks you to check that key, authenticator settings and clock. `INVALID_OTP` rejects codes outside 6–8 digits; `MFA_CODE_REJECTED` requires a fresh code. No code is automatically replayed. Three errors stop that sign-in with `MFA_ATTEMPTS_EXCEEDED`; start again with corrected details or a different available method. `MFA_SESSION_EXPIRED` requires a fresh sign-in.
+
 | Error                               | Next step                                                                                                                                                                                              |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `PLATFORM_NOT_CONNECTED`            | Connect that platform on the account page.                                                                                                                                                             |
@@ -52,3 +56,7 @@ Search covers bounded Ed and Moodle text. Images, attachments, older posts and i
 Check the [configuration reference](configuration.md): Moodle and OnTrack require each user to enter a valid HTTPS base link on first Connect. The broker Service Binding must match its deployed name, both Workers need the same service token, and encryption keys must decode to 32 bytes. Set the exact public suite origin and verify the identity-provider flow.
 
 If deployment stops at the upstream check, run `pnpm upstreams sync`, review the bundled changes and repeat validation. Builds and tests do not publish Workers. A successful dry run does not validate real credentials, platform policy or live SSO.
+
+## Local frontend preview
+
+Run `pnpm preview:ui` and open `http://127.0.0.1:4173`. The navigation shows the actual landing, sign-in, MFA and connections renderers with fixture data, plus a stopped-verification example. Credential fields are read-only samples. Form bodies are discarded without parsing, logging, storing or forwarding; no real sign-in or account change is performed. Use `LEARNING_UI_PORT` to choose another local port.

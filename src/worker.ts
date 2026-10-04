@@ -8,6 +8,7 @@ import { stateCall } from "./auth/client.ts";
 import { READ_SCOPE, MANAGE_SCOPE, type Profile } from "./auth/state.ts";
 import { startLogin, finishLogin } from "./auth/login.ts";
 import { authorize } from "./http/authorize.ts";
+import { errorContent } from "./http/ui.ts";
 import { landing, accountAction, page } from "./http/landing.ts";
 import { admin } from "./http/admin.ts";
 import {
@@ -15,7 +16,7 @@ import {
   json,
   responseSecurityHeaders,
 } from "./http/common.ts";
-import { SuiteError, publicError } from "./errors.ts";
+import { SuiteError, publicError, errorStatus } from "./errors.ts";
 import { EdAdapter } from "./adapters/ed.ts";
 import { MoodleAdapter } from "./adapters/moodle.ts";
 import { OnTrackAdapter } from "./adapters/ontrack.ts";
@@ -176,18 +177,20 @@ export default {
         original.headers.get("accept")?.includes("text/html") &&
         !new URL(original.url).pathname.startsWith("/mcp")
       ) {
-        const { html, escapeHtml } = await import("./http/common.ts");
+        const { html } = await import("./http/common.ts");
         return html(
           page(
-            `<span class="eyebrow">Connection needs attention</span><h1>Let's try that again.</h1><p>${escapeHtml(publicError(error).message)}</p>${new URL(original.url).pathname === "/login" ? '<a class="button" href="/login">Return to sign-in</a>' : '<a class="button" href="/landing">Return to your connections</a>'}`,
+            errorContent(
+              publicError(error).code,
+              publicError(error).message,
+              new URL(original.url).pathname === "/login",
+            ),
+            "Action needs attention",
           ),
-          error instanceof SuiteError ? error.status : 500,
+          errorStatus(error),
         );
       }
-      return json(
-        publicError(error),
-        error instanceof SuiteError ? error.status : 500,
-      );
+      return json(publicError(error), errorStatus(error));
     }
   },
 } satisfies ExportedHandler<Env>;

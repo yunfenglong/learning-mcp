@@ -26,13 +26,14 @@ if (command === "deploy") {
 }
 const logPath = resolve(".wrangler/logs");
 mkdirSync(logPath, { recursive: true });
+// Wrangler resolves bundle and README paths against different directories when
+// --config is nested. An absolute outdir keeps both artifacts in the same place.
+const args = [...commands[command], ...rest];
+const outdir = args.indexOf("--outdir");
+if (outdir >= 0) args[outdir + 1] = resolve(args[outdir + 1]);
 const result = spawnSync(
   process.execPath,
-  [
-    resolve("node_modules/wrangler/bin/wrangler.js"),
-    ...commands[command],
-    ...rest,
-  ],
+  [resolve("node_modules/wrangler/bin/wrangler.js"), ...args],
   {
     stdio: "inherit",
     env: {

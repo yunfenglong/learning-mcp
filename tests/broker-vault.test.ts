@@ -161,73 +161,30 @@ describe("private credential vault", () => {
     await f.call("/v1/disconnect", { platform: "moodle" });
     expect(await (await f.call("/v1/sites")).json()).toEqual({});
   });
-  it("authenticates SSO before deriving the account and saving credentials", async () => {
-    const stores = new Map<string, ReturnType<typeof fixture>>();
-    const env = {
-      ...fixture().env,
-      BROKER_SERVICE_TOKEN: "b".repeat(64),
-      BROKER_STATE: {
-        idFromName: (id: string) => id,
-        get: (id: string) => ({
-          fetch: (request: Request) => {
-            let f = stores.get(id);
-            if (!f) {
-              f = fixture();
-              stores.set(id, f);
-            }
-            return new BrokerState(
-              { storage: f.storage } as any,
-              env as any,
-            ).fetch(request);
-          },
+  it("rejects the removed platform login broker route before browser or storage access", async () => {
+    const f = fixture();
+    const env = { ...f.env, BROKER_SERVICE_TOKEN: "b".repeat(64) };
+    const response = await entrypoint.fetch(
+      new Request("https://broker/v1/authenticate", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.BROKER_SERVICE_TOKEN}`,
+          "x-suite-account": account,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          platform: "moodle",
+          input: { username: "u", password: "secret" },
         }),
-      },
-    };
-    const authenticate = (extra: any = {}) =>
-      entrypoint.fetch(
-        new Request("https://broker/v1/authenticate", {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${env.BROKER_SERVICE_TOKEN}`,
-            "x-suite-account": "c".repeat(64),
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            platform: "moodle",
-            base_link: "https://moodle.example.edu",
-            input: {
-              username: "user",
-              password: "password-secret",
-              totp_secret: seed,
-              remember: true,
-            },
-            ...extra,
-          }),
-        }),
-        env as any,
-      );
-    const first = await authenticate();
-    expect(first.status).toBe(200);
-    const profile = (await first.json()) as any;
-    expect(profile.id).toMatch(/^[a-f0-9]{64}$/);
-    expect(profile.id).not.toBe("c".repeat(64));
-    expect(JSON.stringify(profile)).not.toContain("password-secret");
-    expect(JSON.stringify(profile)).not.toContain(seed);
-    expect(stores.size).toBe(1);
-    expect(await stores.get(profile.id)!.storage.get("sso")).toHaveProperty(
-      "ciphertext",
+      }),
+      env as any,
     );
-    expect(((await (await authenticate()).json()) as any).id).toBe(profile.id);
-    const calls = login.mock.calls.length;
-    expect(
-      (await authenticate({ base_link: "https://localhost" })).status,
-    ).toBe(400);
-    expect(login.mock.calls).toHaveLength(calls);
-    login.mockRejectedValueOnce(new Error("password-secret"));
-    const failed = await authenticate();
-    expect(failed.status).not.toBe(200);
-    expect(await failed.text()).not.toContain("password-secret");
-    expect(stores.size).toBe(1);
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({
+      code: "LOGIN_METHOD_REMOVED",
+    });
+    expect(login).not.toHaveBeenCalled();
+    expect(f.storage.data.size).toBe(0);
   });
   it("anchors provider accounts to verified subjects and saves only scoped, opted-in secrets", async () => {
     const stores = new Map<string, ReturnType<typeof fixture>>();

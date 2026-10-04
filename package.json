@@ -12,14 +12,16 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "errors:catalog": "node scripts/error-catalog.mjs",
     "test": "vitest run",
     "test:runtime": "pnpm build && pnpm build:broker && vitest run --config vitest.runtime.config.ts",
     "build": "node scripts/wrangler.mjs build",
     "dev": "node scripts/wrangler.mjs dev",
+    "preview:ui": "node scripts/preview-ui.mjs",
     "deploy": "node scripts/wrangler.mjs deploy",
     "admin": "node scripts/admin.mjs",
     "upstreams": "node scripts/upstreams.mjs",
-    "build:broker": "node scripts/wrangler.mjs build --config broker/wrangler.jsonc --outdir ../dist-broker",
+    "build:broker": "node scripts/wrangler.mjs build --config broker/wrangler.jsonc --outdir dist-broker",
     "deploy:broker": "node scripts/wrangler.mjs deploy --config broker/wrangler.jsonc"
   },
   "dependencies": {
