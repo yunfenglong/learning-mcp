@@ -7,6 +7,8 @@ export interface DiscoveredCourse {
   unit_id?: number;
   name: string;
   code?: string;
+  platform_code?: string;
+  code_source?: "code" | "shortname";
   year?: number;
   teaching_period?: string;
   campus?: Unit["campus"];
@@ -20,6 +22,12 @@ export interface Discovery {
     code: string;
     course_ids: Array<{ platform: Platform; id: number }>;
     needs_confirmation: boolean;
+    ambiguous: boolean;
+    matches: Array<{
+      platform: Platform;
+      id: number;
+      evidence: "exact_code" | "display_prefix";
+    }>;
   }>;
   expires_at: number;
 }
@@ -49,6 +57,12 @@ export function normalizeCourse(
     ...(platform === "ontrack" ? { unit_id: Number(unit.id) } : {}),
     name,
     ...(code ? { code } : {}),
+    ...(code
+      ? { code_source: unit.code ? ("code" as const) : ("shortname" as const) }
+      : {}),
+    ...((unit.code ?? row.shortname)
+      ? { platform_code: String(unit.code ?? row.shortname).slice(0, 200) }
+      : {}),
     ...(year ? { year: Number(year) } : {}),
     ...(period ? { teaching_period: `S${period}` } : {}),
     ...(campus ? { campus } : {}),
@@ -65,17 +79,81 @@ export function finishDiscovery(
   courses: DiscoveredCourse[],
   coverage: Discovery["coverage"],
 ): Discovery {
-  const codes = [...new Set(courses.flatMap((c) => (c.code ? [c.code] : [])))];
+  const explicit = courses.filter((c) => c.code_source === "code");
+  const anchors = explicit.length ? explicit : courses;
+  const codes = [...new Set(anchors.flatMap((c) => (c.code ? [c.code] : [])))];
+  const groups = codes.map((code) => ({
+    code,
+    matches: courses.flatMap((c) => {
+      const display = (c.platform_code ?? c.code ?? "").toUpperCase();
+      const prefix =
+        c.code_source === "shortname" &&
+        display.startsWith(code) &&
+        display.length > code.length &&
+        /[^A-Z0-9]/.test(display[code.length]!);
+      if (c.code !== code && !prefix) return [];
+      return [
+        {
+          platform: c.platform,
+          id: c.id,
+          evidence:
+            c.code === code
+              ? ("exact_code" as const)
+              : ("display_prefix" as const),
+        },
+      ];
+    }),
+  }));
+  // Display prefixes are candidate evidence only, never an automatic identity rule.
+  for (const course of courses) {
+    if (
+      course.code &&
+      !groups.some((g) =>
+        g.matches.some(
+          (c) => c.platform === course.platform && c.id === course.id,
+        ),
+      )
+    )
+      groups.push({
+        code: course.code,
+        matches: [
+          { platform: course.platform, id: course.id, evidence: "exact_code" },
+        ],
+      });
+  }
   return {
     courses,
     coverage,
-    suggestions: codes.map((code) => ({
-      code,
-      course_ids: courses
-        .filter((c) => c.code === code)
-        .map((c) => ({ platform: c.platform, id: c.id })),
-      needs_confirmation: true,
-    })),
+    suggestions: groups.map(({ code, matches }) => {
+      const selected = courses.filter((c) =>
+        matches.some((m) => m.platform === c.platform && m.id === c.id),
+      );
+      const conflictingContext = (
+        ["year", "teaching_period", "campus"] as const
+      ).some(
+        (field) =>
+          new Set(
+            selected.flatMap((c) => (c[field] === undefined ? [] : [c[field]])),
+          ).size > 1,
+      );
+      return {
+        code,
+        course_ids: matches.map(({ platform, id }) => ({ platform, id })),
+        matches,
+        ambiguous:
+          conflictingContext ||
+          matches.some(
+            (match) =>
+              matches.filter((c) => c.platform === match.platform).length > 1 ||
+              groups.filter((g) =>
+                g.matches.some(
+                  (c) => c.platform === match.platform && c.id === match.id,
+                ),
+              ).length > 1,
+          ),
+        needs_confirmation: true,
+      };
+    }),
     expires_at: Date.now() + 10 * 60_000,
   };
 }

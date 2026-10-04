@@ -119,9 +119,9 @@ describe("user-confirmed course associations", () => {
       ontrack_project_id: undefined,
     };
     expect((await f.account.bind(combined)).unit.code).toBe("CS101/CS201");
-    await expect(
-      f.account.bind({ ...combined, code: "CS101" }),
-    ).rejects.toMatchObject({ code: "COURSE_MISMATCH" });
+    const relabeled = await f.account.bind({ ...combined, code: "CS101" });
+    expect(relabeled.unit.code).toBe("CS101");
+    expect(relabeled.warnings[0]?.platform_code).toBe("CS101/CS201");
   });
   it("allows any subset of platforms, including an Ed-only course within the deployment scope", async () => {
     const f = await fixture();

@@ -35,6 +35,12 @@ An existing OnTrack access token without refresh cookies cannot be renewed throu
 
 Never paste tokens, cookies, passwords, TOTP secrets or full browser traces into chat or an issue. Use the account page for credentials and share only sanitized error codes when asking for help.
 
+## Course binding needs review
+
+Use `preview_course_bindings` for multiple courses or replacements. A mapping's code is your agreed course label; platform display identifiers may include different names or semester suffixes. Keep year and teaching period in their separate fields. Display-code differences produce review warnings, while `COURSE_MISMATCH` indicates a conflicting discovered campus or teaching period. `COURSE_NOT_ACCESSIBLE` indicates an unavailable enrollment or incorrect platform ID.
+
+Review the entire batch, including existing mappings that will change, before calling `confirm_course_bindings`. `BINDING_PREVIEW_CHANGED` means discovery or mappings changed after preview; create and review another preview. `BINDING_PREVIEW_EXPIRED` requires a fresh preview. Neither error applies partial edits. Do not delete old mappings to get past a failed binding.
+
 ## Attendance search finds nothing
 
 Search covers bounded Ed and Moodle text. Images, attachments, older posts and information displayed only in class may be missed. Inspect the returned coverage and date context, then review the original course sources. A matching string is a candidate, not proof that a code is current or valid.

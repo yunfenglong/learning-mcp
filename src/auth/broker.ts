@@ -91,6 +91,12 @@ export class AccountState extends DurableObject<Env> {
         case "/bind":
           result = await state.bind(v);
           break;
+        case "/bindings/preview":
+          result = await state.previewBindings(v.courses);
+          break;
+        case "/bindings/confirm":
+          result = await state.confirmBindings(v.preview_id);
+          break;
         case "/unbind":
           result = await state.unbind(z.string().min(1).max(100).parse(v.key));
           break;

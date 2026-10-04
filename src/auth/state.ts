@@ -4,10 +4,15 @@ import {
   decrypt,
   encrypt,
   randomToken,
+  digest,
   type EncryptedRecord,
 } from "./crypto.ts";
 import { parseUnits, type Unit } from "../domain/units.ts";
 import type { Discovery } from "../accounts/courses.ts";
+import {
+  planCourseBindings,
+  validateCourseBinding,
+} from "../accounts/bindings.ts";
 import { USAGE_VERSION, type UsageAcceptance } from "../domain/usage.ts";
 export const READ_SCOPE = "learning:read",
   MANAGE_SCOPE = "learning:bindings";
@@ -220,49 +225,105 @@ export class AccountStore {
           "Refresh enrolled courses before confirming a mapping.",
           409,
         );
-      for (const [platform, id] of [
-        ["ed", unit.ed_course_id],
-        ["moodle", unit.moodle_course_id],
-        ["ontrack", unit.ontrack_project_id],
-      ] as const)
-        if (id) {
-          const course = discovery.courses.find(
-            (c) => c.platform === platform && c.id === id,
-          );
-          if (
-            !course ||
-            !course.accessible ||
-            (platform === "ontrack" && course.unit_id !== unit.ontrack_unit_id)
-          )
-            throw new SuiteError(
-              "COURSE_NOT_ACCESSIBLE",
-              "Choose a verified Learning course discovered for this account.",
-              403,
-            );
-          if (course.code && course.code !== unit.code)
-            throw new SuiteError(
-              "COURSE_MISMATCH",
-              "The course code differs from the discovered course.",
-              409,
-            );
-          if (
-            (course.year && course.year !== unit.year) ||
-            (course.teaching_period &&
-              course.teaching_period !== unit.teaching_period) ||
-            (course.campus && course.campus !== unit.campus)
-          )
-            throw new SuiteError(
-              "COURSE_MISMATCH",
-              "The discovered campus or teaching period differs.",
-              409,
-            );
-        }
+      const preview = validateCourseBinding(unit, discovery);
       const current = ((await store.get<Unit[]>("units")) ?? []).filter(
         (u) => u.key !== unit.key,
       );
       parseUnits([...current, unit]);
       await store.put("units", [...current, unit]);
-      return { unit };
+      return { unit, sources: preview.sources, warnings: preview.warnings };
+    });
+  }
+  async previewBindings(input: unknown) {
+    const courses = parseUnits(input);
+    return this.store.transaction(async (store) => {
+      const discovery = await store.get<Discovery>("discovery");
+      if (!discovery || discovery.expires_at <= this.now())
+        throw new SuiteError(
+          "DISCOVERY_REQUIRED",
+          "Refresh enrolled courses before reviewing mappings.",
+          409,
+        );
+      const current = (await store.get<Unit[]>("units")) ?? [];
+      const plan = planCourseBindings(current, courses, discovery);
+      const preview_id = randomToken();
+      const key = `binding-preview:${await digest(preview_id)}`;
+      const expires_at = Math.min(discovery.expires_at, this.now() + 600_000);
+      const value = {
+        courses,
+        registry: await digest(JSON.stringify(current)),
+        discovery: await digest(JSON.stringify(discovery.courses)),
+      };
+      await store.put(key, {
+        expires_at,
+        record: await encrypt(this.key, `${this.account}:${key}`, value),
+      });
+      return {
+        preview_id,
+        expires_at,
+        needs_confirmation: true,
+        courses: plan.previews,
+        existing_changes: plan.existing_changes,
+        message:
+          "Review all course selections and existing changes, then confirm this preview. No mappings have changed.",
+      };
+    });
+  }
+  async confirmBindings(input: unknown) {
+    const preview_id = z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .parse(input);
+    const key = `binding-preview:${await digest(preview_id)}`;
+    return this.store.transaction(async (store) => {
+      const draft = await store.get<{
+        expires_at: number;
+        record: EncryptedRecord;
+      }>(key);
+      if (!draft || draft.expires_at <= this.now())
+        throw new SuiteError(
+          "BINDING_PREVIEW_EXPIRED",
+          "Create a fresh binding preview. No mappings have changed.",
+          409,
+        );
+      const value = await decrypt<{
+        courses: Unit[];
+        registry: string;
+        discovery: string;
+        receipt?: {
+          courses: Unit[];
+          saved: number;
+          existing_changes: unknown[];
+        };
+      }>(this.key, `${this.account}:${key}`, draft.record);
+      if (value.receipt) return { ...value.receipt, already_confirmed: true };
+      const discovery = await store.get<Discovery>("discovery");
+      const current = (await store.get<Unit[]>("units")) ?? [];
+      if (
+        !discovery ||
+        discovery.expires_at <= this.now() ||
+        (await digest(JSON.stringify(discovery.courses))) !== value.discovery ||
+        (await digest(JSON.stringify(current))) !== value.registry
+      )
+        throw new SuiteError(
+          "BINDING_PREVIEW_CHANGED",
+          "Courses or mappings changed. Review a fresh preview before confirming; no mappings have changed.",
+          409,
+        );
+      const courses = parseUnits(value.courses);
+      const plan = planCourseBindings(current, courses, discovery);
+      await store.put("units", plan.units);
+      const receipt = {
+        courses,
+        existing_changes: plan.existing_changes,
+        saved: courses.length,
+      };
+      // A network retry returns the original result without committing the batch again.
+      await store.put(key, {
+        expires_at: this.now() + 600_000,
+        record: await encrypt(this.key, `${this.account}:${key}`, { receipt }),
+      });
+      return receipt;
     });
   }
   async unbind(key: string) {

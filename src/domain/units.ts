@@ -6,13 +6,21 @@ const id = z.number().int().positive();
 export const COURSE_CODE_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9_.\/\-]*`;
 export const unitSchema = z
   .object({
-    key: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
+    key: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,100}$/)
+      .describe(
+        "Stable key for this course mapping; reuse its existing key when replacing it.",
+      ),
     code: z
       .string()
       .min(1)
       .max(64)
       .regex(new RegExp(`^${COURSE_CODE_PATTERN}$`))
-      .toUpperCase(),
+      .toUpperCase()
+      .describe(
+        "User-confirmed course code for this mapping, not a platform's display identifier. Keep year and teaching period in their separate fields.",
+      ),
     name: z.string().min(1).max(200),
     campus: z.string().min(1).max(100),
     year: z.number().int().min(2020).max(2100),

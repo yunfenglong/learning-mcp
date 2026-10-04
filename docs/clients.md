@@ -9,7 +9,7 @@ Learning MCP supports remote MCP over Streamable HTTP with OAuth. Use `https://Y
 3. Use OAuth for authentication. Let the client discover the server's authorization configuration and identify or register its OAuth client; deployment secrets are not client credentials.
 4. Follow the service's sign-in page, review the data handling notice, and approve reading plus connection management (`learning:read learning:bindings`). This lets the client connect platforms and bind courses during setup. Educational platform operations remain read-only. Use the same supported SSO provider account or Ed identity as any existing platform connections.
 5. Install the plugin in your personal plugins, start a new conversation with it enabled, and ask “Show my connected platforms and courses.”
-6. Connect additional platforms through `start_connection` or `https://YOUR_SUITE_HOST/landing`, then discover courses and confirm their associations.
+6. Connect additional platforms through `start_connection` or `https://YOUR_SUITE_HOST/landing`. Discover courses, ask the client to preview their associations together, review the selected platforms and any changes to existing mappings, then confirm the batch once. Do not remove old mappings before replacing them.
 
 These steps follow OpenAI's [connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt) and [plugin quickstart](https://developers.openai.com/plugins/quickstart). OAuth discovery and registration are described in the [authentication guide](https://developers.openai.com/plugins/build/auth).
 

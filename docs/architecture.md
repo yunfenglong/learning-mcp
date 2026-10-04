@@ -30,8 +30,12 @@ OAuth consent pages allow form redirects only to the current client's registered
 1. The client authenticates through suite OAuth. The user reviews the notice and grants read or connection-management access.
 2. `start_connection` creates an account-bound web link valid for ten minutes. The user enters platform credentials on that page, outside the chat. Users can also start at `/landing`.
 3. The suite verifies each platform account and discovers current enrollments.
-4. The user confirms which platform courses belong together, including teaching period and location. Any subset of platforms is valid; title similarity alone does not establish an association.
+4. The client prepares `preview_course_bindings` from fresh discovery and shows the selected platforms, teaching period, location, warnings and changes to existing mappings. The user confirms once, then `confirm_course_bindings` saves the exact batch atomically. A failed or changed preview leaves existing mappings intact; retries return the original confirmation receipt. Any subset of platforms is valid; code or title similarity alone does not establish an association.
 5. Read tools check enrollment and resource ownership before returning content to the client.
+
+The mapping's course code is a user-confirmed label. Each source retains its platform identifier, so a standard code such as `CS101` can refer to a Moodle display identifier such as `CS101_S2_2026`. Display differences are shown for confirmation and do not override enrollment, object ownership or semester checks. Discovery proposes exact-code matches and generic display-prefix candidates; duplicate semesters, classes or competing matches require selection. It does not automatically save suggestions.
+
+Batch replacement transfers only the selected platform links. Other platform links in an old mapping are retained unless the user explicitly replaces that mapping's key. Preview records are encrypted, account-bound and expire with discovery, no later than ten minutes. Confirmation checks both the enrollment snapshot and current registry again, preventing stale or concurrent edits from silently changing the reviewed plan.
 
 ## Platform sessions
 

@@ -150,7 +150,7 @@ async function platformFixture(req: Request): Promise<Response> {
                   ? [
                       {
                         id: who === "a" ? 202 : 203,
-                        shortname: "CSC1001 2026 S2 Main",
+                        shortname: "CSC1001_S2_2026",
                         fullname: "Algorithms",
                         visible: 1,
                         startdate: 0,
@@ -747,6 +747,17 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     expect(denied._meta["mcp/www_authenticate"][0]).toContain(
       "insufficient_scope",
     );
+    expect(
+      (await call(reader, "preview_course_bindings", { courses: [unit] }))
+        .result.structuredContent.code,
+    ).toBe("INSUFFICIENT_SCOPE");
+    expect(
+      (
+        await call(reader, "confirm_course_bindings", {
+          preview_id: "a".repeat(64),
+        })
+      ).result.structuredContent.code,
+    ).toBe("INSUFFICIENT_SCOPE");
     const response = await request("/oauth/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -787,7 +798,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
     const tools = ((await response.json()) as any).result.tools;
-    expect(tools).toHaveLength(22);
+    expect(tools).toHaveLength(24);
     expect(tools.find((t: any) => t.name === "get_profile")).toMatchObject({
       _meta: { "openai/profile": true },
       outputSchema: { required: ["id"] },
@@ -796,10 +807,52 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       tools.find((t: any) => t.name === "bind_course").securitySchemes[0]
         .scopes,
     ).toContain("learning:bindings");
+    for (const name of ["preview_course_bindings", "confirm_course_bindings"])
+      expect(
+        tools.find((t: any) => t.name === name).securitySchemes[0].scopes,
+      ).toContain("learning:bindings");
     expect(
       (await call(a, "upstream_versions")).result.structuredContent.upstreams.ed
         .sha,
     ).toHaveLength(40);
+  });
+  it("previews cross-platform display codes and atomically confirms mappings in the real account state", async () => {
+    const before = (await call(a, "course_units")).result.structuredContent
+      .units;
+    const replacement = { ...unit, key: "canonical-course" };
+    const preview = (
+      await call(a, "preview_course_bindings", { courses: [replacement] })
+    ).result;
+    expect(preview.isError).not.toBe(true);
+    expect(preview.structuredContent.needs_confirmation).toBe(true);
+    expect(preview.structuredContent.courses[0].warnings).toContainEqual(
+      expect.objectContaining({
+        platform: "moodle",
+        platform_code: "CSC1001_S2_2026",
+      }),
+    );
+    expect(
+      (await call(a, "course_units")).result.structuredContent.units,
+    ).toEqual(before);
+    const preview_id = preview.structuredContent.preview_id;
+    expect(
+      (await call(b, "confirm_course_bindings", { preview_id })).result
+        .structuredContent.code,
+    ).toBe("BINDING_PREVIEW_EXPIRED");
+    expect(
+      (await call(a, "confirm_course_bindings", { preview_id })).result
+        .structuredContent.saved,
+    ).toBe(1);
+    expect(
+      (await call(a, "course_units")).result.structuredContent.units,
+    ).toEqual([replacement]);
+    expect(
+      (await call(a, "confirm_course_bindings", { preview_id })).result
+        .structuredContent.already_confirmed,
+    ).toBe(true);
+    expect(
+      (await call(a, "ed_lessons", { unit: replacement.key })).result.isError,
+    ).not.toBe(true);
   });
   it("accepts slash-separated codes through both MCP and the browser binding form", async () => {
     edCourseCode = "CS101/CS201";

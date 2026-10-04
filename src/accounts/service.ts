@@ -123,6 +123,16 @@ export class AccountService {
   async bind(unit: Unit) {
     return stateCall(this.env, this.profile.id, "/bind", unit);
   }
+  async previewBindings(courses: Unit[]) {
+    return stateCall(this.env, this.profile.id, "/bindings/preview", {
+      courses,
+    });
+  }
+  async confirmBindings(preview_id: string) {
+    return stateCall(this.env, this.profile.id, "/bindings/confirm", {
+      preview_id,
+    });
+  }
   async unbind(key: string) {
     return stateCall(this.env, this.profile.id, "/unbind", { key });
   }
