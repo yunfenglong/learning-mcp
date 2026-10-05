@@ -117,4 +117,4 @@ For sign-in, `INVALID_TOTP` checks encoding and supported parameters; it cannot 
 | `WRITE_LIMIT` | Too many write previews. Wait for unused previews to expire. |
 | `WRITE_NOT_ALLOWED` | This upload or preview belongs to another client authorization.<br>This preview is not executing. |
 | `WRITE_OUTCOME_UNCERTAIN` | A write step may have executed. Check the platform before preparing another write; this preview will not execute again.<br>This preview was already attempted. Check the platform before preparing another write.<br>An Ed write request failed. Check the platform before preparing another write.<br>The write session failed. Check the platform before preparing another write. |
-| `WRITE_PREVIEW_CHANGED` | The course binding changed. Review a fresh preview.<br>The platform state changed. Review a fresh preview before executing. |
+| `WRITE_PREVIEW_CHANGED` | The course binding changed. Review a fresh preview.<br>The platform state changed. Review a fresh preview before executing.<br>The platform state changed before execution. Review a fresh preview. |

@@ -373,9 +373,15 @@ export class AccountStore {
         : undefined;
     });
   }
-  async cleanup() {
-    for (const [k, v] of await this.store.list<{ expires_at?: number }>())
-      if (v.expires_at && v.expires_at <= this.now())
-        await this.store.delete(k);
+  async cleanup(): Promise<number | undefined> {
+    return this.store.transaction(async (s) => {
+      let next: number | undefined;
+      for (const [k, v] of await s.list<{ expires_at?: number }>()) {
+        if (!v.expires_at) continue;
+        if (v.expires_at <= this.now()) await s.delete(k);
+        else next = Math.min(next ?? Infinity, v.expires_at);
+      }
+      return next;
+    });
   }
 }

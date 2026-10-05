@@ -499,9 +499,10 @@ export class DirectBackend implements Backend {
     args: WriteArgs,
     unit: Unit,
     files: StagedFile[],
+    expectedFingerprint: string,
   ) {
     return this.writeExecution.run(true, () =>
-      this.platformWrite(name, args, unit, files, true),
+      this.platformWrite(name, args, unit, files, true, expectedFingerprint),
     );
   }
   private async platformWrite(
@@ -510,6 +511,7 @@ export class DirectBackend implements Backend {
     unit: Unit,
     files: StagedFile[],
     execute: boolean,
+    expectedFingerprint?: string,
   ) {
     if (!writeOperations[this.platform].has(name))
       throw new SuiteError(
@@ -531,6 +533,7 @@ export class DirectBackend implements Backend {
         output: this.output,
         unit,
         files,
+        expectedFingerprint,
         enrolled: (id: number) => this.enrolled(id),
         username: this.platformUsername,
       };

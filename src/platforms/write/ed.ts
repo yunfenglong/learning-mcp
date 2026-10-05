@@ -7,7 +7,7 @@ import type {
 import type { WriteArgs } from "../../capabilities/write/index.ts";
 import { SuiteError } from "../../errors.ts";
 import { requireOwner, required } from "../read/shared.ts";
-import { prepared, type WriteContext } from "./shared.ts";
+import { verifyPlan, type WriteContext } from "./shared.ts";
 function contains(comments: Comment[], id: number): boolean {
   return comments.some((c) => c.id === id || contains(c.comments, id));
 }
@@ -87,7 +87,8 @@ export async function edWrite(
       ],
       state: { thread_title: t?.title },
     };
-    if (!execute) return prepared(plan);
+    const preview = await verifyPlan(ctx, plan);
+    if (!execute) return preview;
     const input = { content, anonymous: a.anonymous, private: a.private };
     if (name === "create_thread") {
       const thread = await c.createThread(course, {
@@ -146,7 +147,8 @@ export async function edWrite(
         "This changes viewed/completed learning progress. Quiz slides are viewed, never completed without answers.",
       ],
     };
-    if (!execute) return prepared(plan);
+    const preview = await verifyPlan(ctx, plan);
+    if (!execute) return preview;
     const receipts: unknown[] = [];
     for (const l of lessons) {
       await c.fetchLesson(l.id, { view: true });
@@ -207,7 +209,8 @@ export async function edWrite(
     ],
     state: { questions, responses },
   };
-  if (!execute) return prepared(plan);
+  const preview = await verifyPlan(ctx, plan);
+  if (!execute) return preview;
   if (name === "submit_slide_answer")
     return {
       response: await c.submitSlideAnswer(question!.id, choices, {

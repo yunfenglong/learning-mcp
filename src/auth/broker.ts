@@ -85,7 +85,7 @@ export class AccountState extends DurableObject<Env> {
           default:
             throw new SuiteError("NOT_FOUND", "Unknown write operation.", 404);
         }
-        await this.ctx.storage.setAlarm(Date.now() + 600_000);
+        await this.scheduleCleanup();
         return Response.json(result, {
           headers: { "cache-control": "no-store" },
         });
@@ -206,7 +206,7 @@ export class AccountState extends DurableObject<Env> {
         default:
           throw new SuiteError("NOT_FOUND", "Unknown account operation.", 404);
       }
-      await this.ctx.storage.setAlarm(Date.now() + 600_000);
+      await this.scheduleCleanup();
       return Response.json(result, {
         headers: { "cache-control": "no-store" },
       });
@@ -216,12 +216,23 @@ export class AccountState extends DurableObject<Env> {
       });
     }
   }
+  private async scheduleCleanup() {
+    const deadline = Date.now() + 600_000;
+    const scheduled = await this.ctx.storage.getAlarm();
+    // Continued activity must not keep postponing expiry cleanup.
+    if (scheduled === null || scheduled > deadline)
+      await this.ctx.storage.setAlarm(deadline);
+  }
   async alarm() {
-    await new AccountStore(
+    const next = await new AccountStore(
       this.ctx.storage as unknown as Store,
       "identity",
       this.env.CREDENTIALS_KEY,
     ).cleanup();
+    // A first alarm can run before an upload expires. Keep watching remaining
+    // expiring records even when the user makes no further requests.
+    if (next !== undefined)
+      await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, next));
   }
 }
 function validateKey(key: unknown) {

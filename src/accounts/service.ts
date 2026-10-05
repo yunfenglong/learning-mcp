@@ -195,21 +195,20 @@ export class AccountService {
       unit,
       files,
     );
-    const preview = await stateCall<Record<string, unknown>>(
-      this.env,
-      this.profile.id,
-      "/writes/preview",
-      {
-        owner,
-        payload: {
-          platform,
-          operation,
-          args,
-          unit,
-          fingerprint: prepared.fingerprint,
-        },
+    const preview = await stateCall<{
+      preview_id: string;
+      expires_in: number;
+      requires_confirmation: boolean;
+    }>(this.env, this.profile.id, "/writes/preview", {
+      owner,
+      payload: {
+        platform,
+        operation,
+        args,
+        unit,
+        fingerprint: prepared.fingerprint,
       },
-    );
+    });
     return { ...preview, beta: true, plan: prepared.plan };
   }
   async confirmWrite(owner: WriteOwner, preview_id: string) {
@@ -280,6 +279,7 @@ export class AccountService {
             payload.args,
             unit,
             files,
+            payload.fingerprint,
           ),
         );
         await stateCall(this.env, this.profile.id, "/writes/result", {
@@ -288,7 +288,12 @@ export class AccountService {
           receipt,
           success: true,
         });
-      } catch {
+      } catch (error) {
+        if (
+          error instanceof SuiteError &&
+          error.code === "WRITE_PREVIEW_CHANGED"
+        )
+          throw error;
         throw new SuiteError(
           "WRITE_OUTCOME_UNCERTAIN",
           "A write step may have executed. Check the platform before preparing another write; this preview will not execute again.",

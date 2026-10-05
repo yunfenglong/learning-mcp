@@ -2,7 +2,7 @@ import type { OnTrackClient } from "../../../vendor/ontrack/client.js";
 import type { WriteArgs } from "../../capabilities/write/index.ts";
 import { SuiteError } from "../../errors.ts";
 import { required, requireOwner } from "../read/shared.ts";
-import { fileManifest, prepared, type WriteContext } from "./shared.ts";
+import { fileManifest, verifyPlan, type WriteContext } from "./shared.ts";
 export async function ontrackWrite(
   name: string,
   a: WriteArgs,
@@ -70,18 +70,18 @@ export async function ontrackWrite(
     ];
   } else
     throw new SuiteError("TOOL_NOT_ALLOWED", "Unknown OnTrack write.", 403);
-  if (!execute)
-    return prepared({
-      target,
-      changes,
-      irreversible,
-      warnings,
-      state: {
-        status: progress?.status ?? "not_started",
-        unread: progress?.num_new_comments ?? 0,
-        requirements: task.upload_requirements,
-      },
-    });
+  const preview = await verifyPlan(ctx, {
+    target,
+    changes,
+    irreversible,
+    warnings,
+    state: {
+      status: progress?.status ?? "not_started",
+      unread: progress?.num_new_comments ?? 0,
+      requirements: task.upload_requirements,
+    },
+  });
+  if (!execute) return preview;
   if (name === "chat_history" || name === "mark_chat_read") {
     const comments = await c.getTaskComments(projectId, task.id);
     return name === "chat_history"

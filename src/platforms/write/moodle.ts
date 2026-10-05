@@ -2,7 +2,7 @@ import type { MoodleClientCore } from "../../../vendor/moodle/client.js";
 import type { WriteArgs } from "../../capabilities/write/index.ts";
 import { SuiteError } from "../../errors.ts";
 import { required, requireOwner } from "../read/shared.ts";
-import { fileManifest, prepared, type WriteContext } from "./shared.ts";
+import { fileManifest, verifyPlan, type WriteContext } from "./shared.ts";
 export async function moodleWrite(
   name: string,
   a: WriteArgs,
@@ -127,7 +127,8 @@ export async function moodleWrite(
         statement_accepted: Boolean(a.accept_statement),
       },
     };
-    if (!execute) return prepared(plan);
+    const preview = await verifyPlan(ctx, plan);
+    if (!execute) return preview;
     if (receipt.draft_stage !== true && !a.final)
       throw new SuiteError(
         "FINAL_SUBMISSION_REQUIRED",
@@ -174,16 +175,16 @@ export async function moodleWrite(
           attempt_id: active[0]!.id,
         }
       : await c.planQuizStart(activity.id);
-    if (!execute)
-      return prepared({
-        target,
-        changes: start,
-        irreversible: start.action === "start",
-        warnings: [
-          ...warnings,
-          "A new attempt can consume an attempt allowance and start a timer immediately.",
-        ],
-      });
+    const preview = await verifyPlan(ctx, {
+      target,
+      changes: start,
+      irreversible: start.action === "start",
+      warnings: [
+        ...warnings,
+        "A new attempt can consume an attempt allowance and start a timer immediately.",
+      ],
+    });
+    if (!execute) return preview;
     return { attempt: await c.startQuizAttempt(activity.id) };
   }
   const attempt = required(a.attempt_id, "attempt_id");
@@ -207,26 +208,25 @@ export async function moodleWrite(
         "INVALID_INPUT",
         "Choose a valid page; a sequential quiz can only advance one page.",
       );
-    if (!execute)
-      return prepared({
-        target,
-        changes: {
-          page: a.page,
-          current_page: current.page + 1,
-          navigation_method: current.navigation_method,
-        },
-        irreversible:
-          current.navigation_method === "sequential" &&
-          requested > current.page,
-        warnings: [
-          ...warnings,
-          ...(current.navigation_method === "sequential" &&
-          requested > current.page
-            ? ["Advancing permanently locks the current page and its answers."]
-            : []),
-        ],
-        state: { navigation: current.navigation, questions: current.questions },
-      });
+    const preview = await verifyPlan(ctx, {
+      target,
+      changes: {
+        page: a.page,
+        current_page: current.page + 1,
+        navigation_method: current.navigation_method,
+      },
+      irreversible:
+        current.navigation_method === "sequential" && requested > current.page,
+      warnings: [
+        ...warnings,
+        ...(current.navigation_method === "sequential" &&
+        requested > current.page
+          ? ["Advancing permanently locks the current page and its answers."]
+          : []),
+      ],
+      state: { navigation: current.navigation, questions: current.questions },
+    });
+    if (!execute) return preview;
     return {
       attempt: await c.getQuizAttemptPage(attempt, activity.id, requested, {
         advance: true,
@@ -251,14 +251,14 @@ export async function moodleWrite(
       nav.page === current.page
         ? current
         : await c.getQuizAttemptPage(attempt, activity.id, nav.page);
-    if (!execute)
-      return prepared({
-        target,
-        changes: { question, value: a.value },
-        irreversible: true,
-        warnings,
-        state: { page: page.page, questions: page.questions },
-      });
+    const preview = await verifyPlan(ctx, {
+      target,
+      changes: { question, value: a.value },
+      irreversible: true,
+      warnings,
+      state: { page: page.page, questions: page.questions },
+    });
+    if (!execute) return preview;
     return {
       attempt: await c.answerQuizQuestion({
         attemptId: attempt,
@@ -270,17 +270,17 @@ export async function moodleWrite(
   }
   if (name === "quiz_finish") {
     const summary = await c.getQuizAttemptSummary(attempt, activity.id);
-    if (!execute)
-      return prepared({
-        target,
-        changes: { submit_all_and_finish: true },
-        irreversible: true,
-        warnings: [
-          ...warnings,
-          "This finishes the attempt and submits all saved answers for grading. It cannot be undone.",
-        ],
-        state: summary.rows,
-      });
+    const preview = await verifyPlan(ctx, {
+      target,
+      changes: { submit_all_and_finish: true },
+      irreversible: true,
+      warnings: [
+        ...warnings,
+        "This finishes the attempt and submits all saved answers for grading. It cannot be undone.",
+      ],
+      state: summary.rows,
+    });
+    if (!execute) return preview;
     return { submission: await c.finishQuizAttempt(attempt, activity.id) };
   }
   throw new SuiteError("TOOL_NOT_ALLOWED", "Unknown Moodle write.", 403);
