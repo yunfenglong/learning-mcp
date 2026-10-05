@@ -93,15 +93,9 @@ Users can remove course associations, disconnect platforms, forget saved sign-in
 
 ## Available tools
 
-| Category    | Tools                                                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Account     | `get_profile`, `connection_status`, `start_connection`, `disconnect_platform`                                            |
-| Courses     | `discover_courses`, `preview_course_bindings`, `confirm_course_bindings`, `bind_course`, `unbind_course`, `course_units` |
-| Ed          | `ed_lessons`, `ed_lesson`, `ed_threads`, `ed_thread`                                                                     |
-| Moodle      | `moodle_unit`, `moodle_due`, `moodle_grades`, `moodle_search_forums`, `moodle_thread`                                    |
-| OnTrack     | `ontrack_unit`, `ontrack_tasks`, `ontrack_task`                                                                          |
-| Attendance  | `find_attendance_code`                                                                                                   |
-| Diagnostics | `upstream_versions`                                                                                                      |
+The complete tool and parameter reference is generated from the [capability catalog](docs/capabilities.md); `capability_catalog` returns the same inventory through MCP. Reads cover platform identities and enrollment, Ed lessons/threads/files/slides/views, Moodle materials/files/sync/forums/quiz reviews, OnTrack projects/task sheets/resources/unread counts, and attendance-code discovery.
+
+Account tools preserve connection status, sign-in links, fresh discovery and user-confirmed course associations. [Read semantics and maintenance](docs/read-contract.md) explains scope, pagination and file limits. Platform writes awaiting approval are listed in the catalog; chat history is withheld because the upstream OnTrack read marks comments read. Attendance submission and learning-progress updates remain prohibited.
 
 OAuth scopes are `learning:read`, `learning:bindings` and `offline_access`. Platform reads check enrollment and object ownership; course associations require user confirmation.
 

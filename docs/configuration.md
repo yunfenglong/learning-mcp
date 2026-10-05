@@ -4,15 +4,18 @@ Configure the suite in [`wrangler.jsonc`](../wrangler.jsonc) and the broker in [
 
 ## Variables
 
-| Variable          | Worker | Value                                                                                                   |
-| ----------------- | ------ | ------------------------------------------------------------------------------------------------------- |
-| `LEGAL_CONFIG`    | Suite  | Optional JSON object with instance operator and privacy contact disclosures; see below.                 |
-| `ISSUER`          | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
-| `PLATFORM_CONFIG` | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                 |
-| `SSO_PROVIDERS`   | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
-| `LOGIN_ORIGINS`   | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed. |
+| Variable           | Worker | Value                                                                                                   |
+| ------------------ | ------ | ------------------------------------------------------------------------------------------------------- |
+| `LEGAL_CONFIG`     | Suite  | Optional JSON object with instance operator and privacy contact disclosures; see below.                 |
+| `ISSUER`           | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
+| `PLATFORM_CONFIG`  | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                 |
+| `SSO_PROVIDERS`    | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
+| `RESOURCE_ORIGINS` | Suite  | Optional JSON array of exact public HTTPS origins for fresh Ed attachment downloads; default `[]`.      |
+| `LOGIN_ORIGINS`    | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed. |
 
 Users enter Moodle and OnTrack base links when connecting a platform on their authenticated account page. The broker validates and saves the exact public HTTPS origin in that user's encrypted connection storage. It uses the saved address for platform reads, sign-in and renewal. Worker variables do not need Moodle or OnTrack addresses. To use a different address, disconnect that platform and connect it again; course associations must be confirmed again.
+
+Ed file downloads also require each attachment host's exact HTTPS origin in `RESOURCE_ORIGINS`, for example `["https://files.example.edu"]` when verified metadata uses that host. The upstream Ed client additionally restricts supported attachment URL forms. Requests carry no Ed credentials, follow no redirects, and cannot be directed to a caller-supplied URL. This setting is independent of the broker's SSO browser origins. A missing origin prevents that file download; API reading remains available.
 
 Ed uses `https://edstem.org` automatically. Optional Ed scope can be supplied through the suite's `PLATFORM_CONFIG`:
 

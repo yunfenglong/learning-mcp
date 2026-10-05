@@ -11,6 +11,10 @@ flowchart LR
   Broker --> Login[Platform SSO and session renewal]
 ```
 
+## Educational capability contracts
+
+Public read definitions live in `src/capabilities/`, organized by platform. MCP registration, backend allowlists, operation/argument types and the generated reference come from that catalog. Platform handlers use the bundled official clients; shared authentication, enrollment and file/output boundaries remain centralized. See [read semantics and maintenance](read-contract.md) for the contract and upgrade workflow.
+
 ## Authentication flows
 
 | Flow                      | Purpose                                             | Renewal                                                                                                |
