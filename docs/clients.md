@@ -7,7 +7,7 @@ Learning MCP supports remote MCP over Streamable HTTP with OAuth. Use `https://Y
 1. Open ChatGPT Settings → Security and login and enable Developer mode. Availability depends on the account and workspace policy.
 2. Open ChatGPT Plugins, select the plus button, and create a connection named **Learning MCP** with the server URL `https://YOUR_SUITE_HOST/mcp`.
 3. Use OAuth for authentication. Let the client discover the server's authorization configuration and identify or register its OAuth client; deployment secrets are not client credentials.
-4. Follow the service's sign-in page, review the data handling notice, and approve reading plus connection management (`learning:read learning:bindings`). This lets the client connect platforms and bind courses during setup. Educational platform operations remain read-only. Use the same supported SSO provider account or Ed identity as any existing platform connections.
+4. Follow the service's sign-in page, review the data handling notice, and approve reading plus connection management (`learning:read learning:bindings`). This lets the client connect platforms and bind courses during setup. This setup permission does not authorize educational writes. This beta offers a separate `learning:write` permission; explicitly request it and review the write access notice before approving. Each mutation still requires confirmation of its exact preview. Use the same supported SSO provider account or Ed identity as any existing platform connections.
 5. Install the plugin in your personal plugins, start a new conversation with it enabled, and ask “Show my connected platforms and courses.”
 6. Connect additional platforms through `start_connection` or `https://YOUR_SUITE_HOST/landing`. Discover courses, ask the client to preview their associations together, review the selected platforms and any changes to existing mappings, then confirm the batch once. Do not remove old mappings before replacing them.
 
@@ -33,3 +33,5 @@ Connect only the platforms you want. For Moodle alone, connect Moodle, discover 
 - A client previously authorized with only `learning:read` needs one permission upgrade before it can connect platforms or bind courses. Refresh the connection and approve `learning:bindings`; this is separate from token expiry. Existing read-only grants continue to work for reading.
 
 Do not paste SSO passwords, TOTP secrets, platform tokens or deployment secrets into chat or client configuration. Enter platform credentials only on the account connection page.
+
+Beta writes require `learning:read learning:write` (plus `learning:bindings` when setup management is needed). Existing read-only clients keep working; refreshing their tokens cannot add write scope. File staging and confirmation tools are documented in [write semantics](write-contract.md).

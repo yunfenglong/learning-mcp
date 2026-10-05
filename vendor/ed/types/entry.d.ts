@@ -1,4 +1,5 @@
 export { EdClient } from "./src/ed/client.js";
+export { markdownToEdDocument } from "./src/ed/document.js";
 export { listLessonFiles, listThreadFiles } from "./src/ed/files.js";
 export { listThreads, listLessons, parseSinceValue } from "./src/ed/operations.js";
 export { projectThreadDetail } from "./src/ed/projections.js";

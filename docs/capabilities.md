@@ -1,4 +1,4 @@
-# Read capability reference
+# Read and beta write capability reference
 
 Generated from `src/capabilities/` by `pnpm capabilities:docs`. Do not edit this table by hand. Runtime/deployment management is excluded; connection and course binding controls remain in the account service.
 
@@ -79,29 +79,29 @@ Arguments marked * are required. Defaults, validation bounds and full descriptio
 | `ontrack_task_file` | `task_file` | `unit`*, `task_definition_id`, `task`, `resources` = false |
 | `ontrack_unit_file` | `unit_file` | `unit`* |
 
-## Writes awaiting approval
+## Beta writes
 
-These operations are not exposed or invoked. Attendance submission remains prohibited by repository policy.
+These tools require `learning:write` and prepare an encrypted preview. Show the preview and obtain explicit user confirmation before `confirm_platform_write` executes it. File tools: `begin_upload`, `upload_chunk`, `finish_upload`, `cancel_upload`. Attendance submission is unavailable.
 
-### ed
+| Tool | Backend operation | Arguments |
+| --- | --- | --- |
+| `ed_create_thread` | `create_thread` | `unit`*, `title`*, `body`*, `type` = "question", `category` = "", `anonymous` = false, `private` = false |
+| `ed_reply_thread` | `reply_thread` | `unit`*, `thread_id`, `number`, `comment_id`, `body`*, `type`, `anonymous` = false, `private` = false |
+| `ed_mark_lessons_read` | `mark_lessons_read` | `unit`*, `lesson_ids`* |
+| `ed_mark_slide_read` | `mark_slide_read` | `unit`*, `lesson_id`*, `slide_id`* |
+| `ed_submit_slide_answer` | `submit_slide_answer` | `unit`*, `lesson_id`*, `slide_id`*, `question_id`*, `choices`*, `amend` = false |
+| `ed_submit_slide` | `submit_slide` | `unit`*, `lesson_id`*, `slide_id`* |
+| `moodle_submit_assignment` | `submit_assignment` | `unit`*, `activity_id`*, `upload_ids` = [], `final` = false, `replace` = false, `accept_statement` = false |
+| `moodle_quiz_start` | `quiz_start` | `unit`*, `quiz_id`* |
+| `moodle_quiz_page` | `quiz_page` | `unit`*, `quiz_id`*, `attempt_id`*, `page`* |
+| `moodle_quiz_answer` | `quiz_answer` | `unit`*, `quiz_id`*, `attempt_id`*, `question`*, `value`* |
+| `moodle_quiz_finish` | `quiz_finish` | `unit`*, `quiz_id`*, `attempt_id`* |
+| `ontrack_chat_history` | `chat_history` | `unit`*, `task`* |
+| `ontrack_mark_chat_read` | `mark_chat_read` | `unit`*, `task`* |
+| `ontrack_send_chat` | `send_chat` | `unit`*, `task`*, `message`* |
+| `ontrack_set_task_state` | `set_task_state` | `unit`*, `task`*, `state`* |
+| `ontrack_submit_task` | `submit_task` | `unit`*, `task`*, `upload_ids`*, `type` = "ready_for_feedback", `comment`, `accept_tii_eula` = false |
 
-- mark lessons/slides read
-- save/amend quiz responses
-- submit saved slide responses
-- publish threads
-- reply to threads/comments
-
-### moodle
-
-- assignment upload/replace/draft/final submit
-- quiz start/resume/page navigation/save answers/finish
-
-### ontrack
-
-- read chat history (automatically marks comments read)
-- mark chat read
-- send chat
-- change task state
-- submit task files
+See [beta write semantics](write-contract.md) for confirmation, uploads, expiry and uncertain outcomes.
 
 See [read semantics and maintenance](read-contract.md) for scope, pagination, file delivery and side-effect boundaries.

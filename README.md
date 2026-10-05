@@ -12,15 +12,15 @@ Runs on Cloudflare Workers with a private Okta / SSO broker. Users do not need t
 
 ## Features
 
-- **Ed Discussion** — browse lessons, threads and replies.
-- **Moodle** — read course materials, deadlines, grades, feedback and forum discussions.
-- **OnTrack** — read projects, tasks and progress.
+- **Ed Discussion** — browse lessons, threads and replies; publish discussions, update lesson progress and submit user-provided quiz responses.
+- **Moodle** — read course materials, deadlines, grades, feedback and forums; upload assignment drafts, submit assignments and operate quiz attempts.
+- **OnTrack** — read projects, tasks and progress; manage task chats and working states and submit task files.
 - **Course connections** — discover enrolled courses and confirm associations across any combination of platforms.
 - **Attendance-code search** — find candidates in Ed and Moodle text, with source links and dates. Does not submit attendance.
 - **Cloud SSO** — reuse platform sessions and optionally retain encrypted credentials for automatic sign-in.
 - **Per-user access** — separate accounts, configurable platform origins, scoped OAuth grants and revocation controls.
 
-This beta branch is being extended with educational platform writes, separately authorized through `learning:write` and confirmed from a fresh preview. Existing read-only grants retain reading access. Connection and course-association tools use `learning:bindings`. Attendance submission remains unavailable.
+This beta branch supports educational platform writes, separately authorized through `learning:write` and confirmed from a fresh preview. Existing read-only grants retain reading access. Connection and course-association tools use `learning:bindings`. Attendance submission remains unavailable.
 
 Beta scope: Ed threads/replies, lesson and slide progress and quiz responses; Moodle assignment drafts/final submissions and quiz attempts; OnTrack chat history/read markers, messages, task state and file submissions. Ed posting has only been validated by upstream with mocked responses; Moodle quiz operations are beta. Changes on this branch are committed locally only until explicitly approved for publication or deployment.
 
@@ -97,9 +97,9 @@ Users can remove course associations, disconnect platforms, forget saved sign-in
 
 The complete tool and parameter reference is generated from the [capability catalog](docs/capabilities.md); `capability_catalog` returns the same inventory through MCP. Reads cover platform identities and enrollment, Ed lessons/threads/files/slides/views, Moodle materials/files/sync/forums/quiz reviews, OnTrack projects/task sheets/resources/unread counts, and attendance-code discovery.
 
-Account tools preserve connection status, sign-in links, fresh discovery and user-confirmed course associations. [Read semantics and maintenance](docs/read-contract.md) explains scope, pagination and file limits. Platform writes awaiting approval are listed in the catalog; chat history is withheld because the upstream OnTrack read marks comments read. Attendance submission and learning-progress updates remain prohibited.
+Account tools preserve connection status, sign-in links, fresh discovery and user-confirmed course associations. [Read semantics and maintenance](docs/read-contract.md) explains scope, pagination and file limits. Beta writes use a separate permission and preview confirmation. OnTrack chat history is included as a write because reading it marks comments read. See [write semantics](docs/write-contract.md) for file staging, irreversible effects and uncertain outcomes. Attendance submission remains unavailable.
 
-OAuth scopes are `learning:read`, `learning:bindings` and `offline_access`. Platform reads check enrollment and object ownership; course associations require user confirmation.
+OAuth scopes are `learning:read`, `learning:bindings`, `learning:write` and `offline_access`. Platform reads check enrollment and object ownership; course associations require user confirmation.
 
 ## Authentication and data handling
 

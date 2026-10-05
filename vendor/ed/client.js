@@ -535,6 +535,100 @@ function ensureTrailingSlash(value) {
   return value.endsWith("/") ? value : `${value}/`;
 }
 
+// src/ed/document.ts
+var FENCE = /^```/;
+var HEADING = /^(#{1,6})\s+(.*)$/;
+var BULLET_ITEM = /^-\s+(.*)$/;
+var NUMBER_ITEM = /^\d+\.\s+(.*)$/;
+var CODE_SPAN = /^`[^`]+`$/;
+var LINK = /\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g;
+var BOLD = /\*\*([^*]+)\*\*/g;
+var ITALIC = /\*([^*]+)\*/g;
+function markdownToEdDocument(text) {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = (lines[index] ?? "").trim();
+    if (!line) {
+      index += 1;
+      continue;
+    }
+    if (FENCE.test(line)) {
+      const code = [];
+      index += 1;
+      while (index < lines.length && !FENCE.test((lines[index] ?? "").trim())) {
+        code.push(lines[index] ?? "");
+        index += 1;
+      }
+      index += 1;
+      blocks.push(`<pre>${escapeText(code.join("\n"))}</pre>`);
+      continue;
+    }
+    const heading = HEADING.exec(line);
+    if (heading) {
+      const level = heading[1]?.length ?? 1;
+      blocks.push(`<heading level="${level}">${renderInline(heading[2] ?? "")}</heading>`);
+      index += 1;
+      continue;
+    }
+    const style = listStyle(line);
+    if (style) {
+      const items = [];
+      while (index < lines.length && listStyle((lines[index] ?? "").trim()) === style) {
+        items.push(itemContent((lines[index] ?? "").trim()));
+        index += 1;
+      }
+      blocks.push(`<list style="${style}">${items.map((item) => `<list-item><paragraph>${renderInline(item)}</paragraph></list-item>`).join("")}</list>`);
+      continue;
+    }
+    const paragraph = [];
+    while (index < lines.length && isParagraphLine((lines[index] ?? "").trim())) {
+      paragraph.push((lines[index] ?? "").trim());
+      index += 1;
+    }
+    blocks.push(`<paragraph>${renderInline(paragraph.join(" "))}</paragraph>`);
+  }
+  return `<document version="2.0">${blocks.join("")}</document>`;
+}
+function isParagraphLine(line) {
+  return Boolean(line) && !FENCE.test(line) && !HEADING.test(line) && !listStyle(line);
+}
+function listStyle(line) {
+  if (BULLET_ITEM.test(line)) return "bullet";
+  if (NUMBER_ITEM.test(line)) return "number";
+  return void 0;
+}
+function itemContent(line) {
+  return (BULLET_ITEM.exec(line)?.[1] ?? NUMBER_ITEM.exec(line)?.[1] ?? "").trim();
+}
+function renderInline(text) {
+  return text.split(/(`[^`]+`)/).map((part) => CODE_SPAN.test(part) ? `<code>${escapeText(part.slice(1, -1))}</code>` : renderLinks(escapeText(part))).join("");
+}
+function renderLinks(text) {
+  const links = [];
+  let marker = "\0";
+  while (text.includes(marker)) marker += "\0";
+  const placeholders = text.replace(LINK, (_match, label, href) => {
+    const index = links.length;
+    links.push(`<link href="${escapeAttribute(href)}">${renderEmphasis(label)}</link>`);
+    return `${marker}${index}${marker}`;
+  });
+  return renderEmphasis(placeholders).replace(
+    new RegExp(`${marker}(\\d+)${marker}`, "g"),
+    (match, index) => links[Number(index)] ?? match
+  );
+}
+function renderEmphasis(text) {
+  return text.replace(BOLD, "<bold>$1</bold>").replace(ITALIC, "<italic>$1</italic>");
+}
+function escapeText(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escapeAttribute(value) {
+  return value.replace(/"/g, "&quot;");
+}
+
 // src/ed/files.ts
 import { parse } from "node-html-parser";
 function listLessonFiles(lesson) {
@@ -1415,6 +1509,7 @@ export {
   listLessons,
   listThreadFiles,
   listThreads,
+  markdownToEdDocument,
   parseSinceValue,
   projectThreadDetail,
   slideToMarkdown,

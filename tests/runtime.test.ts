@@ -1,3 +1,5 @@
+import { beta, betaPlatform } from "./fixtures/beta-platforms.ts";
+import { writeCapabilities } from "../src/capabilities/write/index.ts";
 import { runInNewContext } from "node:vm";
 import { parse } from "node-html-parser";
 import { readCapabilities } from "../src/capabilities/index.ts";
@@ -53,6 +55,8 @@ async function request(
 }
 async function platformFixture(req: Request): Promise<Response> {
   const url = new URL(req.url);
+  const betaResponse = await betaPlatform(req);
+  if (betaResponse) return betaResponse;
   if (url.origin === "https://edstem.org") {
     const token = req.headers.get("authorization");
     const who =
@@ -99,6 +103,9 @@ async function platformFixture(req: Request): Promise<Response> {
       type: "question",
       category: "General",
       is_seen: false,
+      comments: beta.enabled
+        ? [{ id: 99, comments: [{ id: 100, comments: [] }] }]
+        : [],
     };
     if (url.pathname === "/api/user")
       return Response.json({
@@ -143,13 +150,13 @@ async function platformFixture(req: Request): Promise<Response> {
       return Response.json({ items: [{ thread }] });
     }
     if (url.pathname === "/api/lessons/5") {
-      expect(url.searchParams.has("view")).toBe(false);
+      if (!beta.enabled) expect(url.searchParams.has("view")).toBe(false);
       return Response.json({
         lesson,
       });
     }
     if (url.pathname === "/api/lessons/slides/8") {
-      expect(url.searchParams.has("view")).toBe(false);
+      if (!beta.enabled) expect(url.searchParams.has("view")).toBe(false);
       return Response.json({ slide });
     }
     if (url.pathname === "/api/lessons/slides/8/questions")
@@ -413,7 +420,13 @@ async function platformFixture(req: Request): Promise<Response> {
       return Response.json({
         id: username === "a" ? 404 : 405,
         unit: { id: 303, code: "CSC1001", name: "CSC1001 Main 2026 S2" },
-        tasks: [{ id: 600, task_definition_id: 501, status: "not_started" }],
+        tasks: [
+          {
+            id: 600,
+            task_definition_id: 501,
+            status: beta.enabled ? beta.taskStatus : "not_started",
+          },
+        ],
       });
     if (url.pathname === "/api/units/303")
       return Response.json({
@@ -421,7 +434,23 @@ async function platformFixture(req: Request): Promise<Response> {
         code: "CSC1001",
         name: "CSC1001 Main 2026 S2",
         task_definitions: [
-          { id: 501, abbreviation: "1.1P", name: "Programming basics" },
+          {
+            id: 501,
+            abbreviation: "1.1P",
+            name: "Programming basics",
+            ...(beta.enabled
+              ? {
+                  upload_requirements: [
+                    {
+                      key: "file0",
+                      name: "Report",
+                      type: "document",
+                      submission_history: false,
+                    },
+                  ],
+                }
+              : {}),
+          },
         ],
       });
     if (url.pathname === "/api/units/303/task_definitions/501/task_pdf")
@@ -944,6 +973,426 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       ).status,
     ).toBe(401);
   });
+  it("requires separate write scope and executes Ed previews only once through the real Worker", async () => {
+    const denied = (
+      await call(a, "ed_create_thread", {
+        unit: unit.key,
+        title: "Beta post",
+        body: "User **authored** post",
+      })
+    ).result;
+    expect(denied.structuredContent.code).toBe("INSUFFICIENT_SCOPE");
+    expect(denied._meta["mcp/www_authenticate"][0]).toContain("learning:write");
+    const writer = await connect(
+      "writer",
+      "learning:read learning:write offline_access",
+    );
+    beta.enabled = true;
+    try {
+      for (const [name, args] of [
+        [
+          "ed_create_thread",
+          {
+            title: "Beta post",
+            body: "User **authored** post",
+            type: "question",
+            category: "General",
+            anonymous: true,
+            private: true,
+          },
+        ],
+        [
+          "ed_reply_thread",
+          {
+            thread_id: 11,
+            comment_id: 100,
+            body: "User reply",
+            type: "comment",
+          },
+        ],
+        ["ed_mark_lessons_read", { lesson_ids: [5] }],
+        ["ed_mark_slide_read", { lesson_id: 5, slide_id: 8 }],
+        [
+          "ed_submit_slide_answer",
+          {
+            lesson_id: 5,
+            slide_id: 8,
+            question_id: 33,
+            choices: [0],
+            amend: true,
+          },
+        ],
+        ["ed_submit_slide", { lesson_id: 5, slide_id: 8 }],
+      ] as const) {
+        const before = beta.calls.length;
+        const preview = (await call(writer, name, { unit: unit.key, ...args }))
+          .result;
+        expect(preview.isError, JSON.stringify(preview)).not.toBe(true);
+        expect(beta.calls).toHaveLength(before);
+        const id = preview.structuredContent.preview_id;
+        expect(
+          (
+            await call(a, "confirm_platform_write", {
+              preview_id: id,
+              confirmed: true,
+            })
+          ).result.structuredContent.code,
+        ).toBe("INSUFFICIENT_SCOPE");
+        const receipt = (
+          await call(writer, "confirm_platform_write", {
+            preview_id: id,
+            confirmed: true,
+          })
+        ).result;
+        expect(receipt.isError, JSON.stringify(receipt)).not.toBe(true);
+        expect(beta.calls.length).toBeGreaterThan(before);
+        const completed = beta.calls.length;
+        expect(
+          (
+            await call(writer, "confirm_platform_write", {
+              preview_id: id,
+              confirmed: true,
+            })
+          ).result.structuredContent.already_executed,
+        ).toBe(true);
+        expect(beta.calls).toHaveLength(completed);
+      }
+      const other = await connect(
+        "another-writer",
+        "learning:read learning:write",
+      );
+      const preview = (
+        await call(writer, "ed_create_thread", {
+          unit: unit.key,
+          title: "Private preview",
+          body: "User body",
+        })
+      ).result.structuredContent;
+      expect(
+        (
+          await call(other, "confirm_platform_write", {
+            preview_id: preview.preview_id,
+            confirmed: true,
+          })
+        ).result.structuredContent.code,
+      ).toBe("WRITE_NOT_ALLOWED");
+      expect(
+        (
+          await call(writer, "confirm_platform_write", {
+            preview_id: preview.preview_id,
+            confirmed: false,
+          })
+        ).result.isError,
+      ).toBe(true);
+      beta.failEdPost = true;
+      const before = beta.calls.length;
+      expect(
+        (
+          await call(writer, "confirm_platform_write", {
+            preview_id: preview.preview_id,
+            confirmed: true,
+          })
+        ).result.structuredContent.code,
+      ).toBe("WRITE_OUTCOME_UNCERTAIN");
+      expect(beta.calls).toHaveLength(before + 1);
+      expect(
+        (
+          await call(writer, "confirm_platform_write", {
+            preview_id: preview.preview_id,
+            confirmed: true,
+          })
+        ).result.structuredContent.code,
+      ).toBe("WRITE_OUTCOME_UNCERTAIN");
+      expect(beta.calls).toHaveLength(before + 1);
+    } finally {
+      beta.enabled = false;
+      beta.failEdPost = false;
+    }
+  });
+  it("stages verified files and executes Moodle/OnTrack writes with real client forms and multipart bytes", async () => {
+    const writer = await connect("write-files", "learning:read learning:write");
+    beta.enabled = true;
+    const run = async (name: string, args: Record<string, unknown>) => {
+      const before = beta.calls.length;
+      const preview = (await call(writer, name, { unit: unit.key, ...args }))
+        .result;
+      expect(preview.isError, JSON.stringify(preview)).not.toBe(true);
+      expect(beta.calls).toHaveLength(before);
+      const result = (
+        await call(writer, "confirm_platform_write", {
+          preview_id: preview.structuredContent.preview_id,
+          confirmed: true,
+        })
+      ).result;
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      return result.structuredContent.receipt;
+    };
+    try {
+      const bytes = Buffer.from("User authored file");
+      const upload = (
+        await call(writer, "begin_upload", {
+          filename: "essay.txt",
+          content_type: "text/plain",
+          size: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        })
+      ).result.structuredContent;
+      expect(upload.upload_id).toHaveLength(64);
+      expect(
+        (
+          await call(writer, "upload_chunk", {
+            upload_id: upload.upload_id,
+            offset: 0,
+            data: bytes.toString("base64"),
+          })
+        ).result.isError,
+      ).not.toBe(true);
+      expect(
+        (await call(writer, "finish_upload", { upload_id: upload.upload_id }))
+          .result.structuredContent.ready,
+      ).toBe(true);
+      const draft = await run("moodle_submit_assignment", {
+        activity_id: 10,
+        upload_ids: [upload.upload_id],
+      });
+      expect(draft.submission.action).toBe("saved");
+      expect(draft.submission.files[0].name).toBe("essay.txt");
+      const replaced = await run("moodle_submit_assignment", {
+        activity_id: 10,
+        upload_ids: [upload.upload_id],
+        replace: true,
+      });
+      expect(replaced.submission.removed).toEqual(["essay.txt"]);
+      const final = await run("moodle_submit_assignment", {
+        activity_id: 10,
+        final: true,
+        accept_statement: true,
+      });
+      expect(final.submission.action).toBe("submitted");
+      expect(
+        (await run("ontrack_chat_history", { task: "1.1P" })).marked_read,
+      ).toBe(true);
+      expect(
+        (await run("ontrack_mark_chat_read", { task: 501 })).marked_read,
+      ).toBe(true);
+      expect(
+        (
+          await run("ontrack_send_chat", {
+            task: 501,
+            message: "Please review my work.",
+          })
+        ).comment.id,
+      ).toBe(700);
+      expect(
+        (
+          await run("ontrack_set_task_state", {
+            task: 501,
+            state: "working_on_it",
+          })
+        ).task.status,
+      ).toBe("working_on_it");
+      expect(
+        (
+          await run("ontrack_submit_task", {
+            task: 501,
+            upload_ids: [upload.upload_id],
+            accept_tii_eula: true,
+          })
+        ).task.status,
+      ).toBe("ready_for_feedback");
+      expect(
+        (await call(writer, "cancel_upload", { upload_id: upload.upload_id }))
+          .result.structuredContent.cancelled,
+      ).toBe(true);
+    } finally {
+      beta.enabled = false;
+    }
+  });
+  it("previews timer start and sequential navigation, saves user answers and finally submits a Moodle quiz", async () => {
+    const writer = await connect("write-quiz", "learning:read learning:write");
+    beta.enabled = true;
+    try {
+      for (const [name, args] of [
+        ["moodle_quiz_start", {}],
+        ["moodle_quiz_start", {}],
+        [
+          "moodle_quiz_answer",
+          { attempt_id: 500, question: "1", value: "User answer" },
+        ],
+        ["moodle_quiz_page", { attempt_id: 500, page: 2 }],
+        [
+          "moodle_quiz_answer",
+          { attempt_id: 500, question: "2", value: "Another user answer" },
+        ],
+        ["moodle_quiz_finish", { attempt_id: 500 }],
+      ] as const) {
+        const before = beta.calls.length,
+          preview = (
+            await call(writer, name, { unit: unit.key, quiz_id: 20, ...args })
+          ).result;
+        expect(preview.isError, JSON.stringify(preview)).not.toBe(true);
+        expect(beta.calls).toHaveLength(before);
+        if (name === "moodle_quiz_page")
+          expect(preview.structuredContent.plan.warnings.join(" ")).toContain(
+            "permanently locks",
+          );
+        const result = (
+          await call(writer, "confirm_platform_write", {
+            preview_id: preview.structuredContent.preview_id,
+            confirmed: true,
+          })
+        ).result;
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      }
+      expect(beta.quizFinished).toBe(true);
+    } finally {
+      beta.enabled = false;
+    }
+  });
+  it("rejects changed write plans, unaccepted declarations and foreign objects before mutation", async () => {
+    const writer = await connect(
+      "write-boundaries",
+      "learning:read learning:write",
+    );
+    beta.enabled = true;
+    const prepare = async (name: string, args: Record<string, unknown>) => {
+      const result = (await call(writer, name, { unit: unit.key, ...args }))
+        .result;
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      return result.structuredContent;
+    };
+    const confirm = async (id: string) =>
+      (
+        await call(writer, "confirm_platform_write", {
+          preview_id: id,
+          confirmed: true,
+        })
+      ).result;
+    const group = beta.group,
+      status = beta.taskStatus;
+    try {
+      const before = beta.calls.length;
+      const declaration = await prepare("moodle_submit_assignment", {
+        activity_id: 10,
+        final: true,
+      });
+      expect(declaration.plan.requirements).toContain("accept_statement: true");
+      expect(
+        (await confirm(declaration.preview_id)).structuredContent.code,
+      ).toBe("WRITE_ACCEPTANCE_REQUIRED");
+      const bytes = Buffer.from("User authored file");
+      const upload = (
+        await call(writer, "begin_upload", {
+          filename: "essay.txt",
+          content_type: "text/plain",
+          size: bytes.length,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        })
+      ).result.structuredContent;
+      await call(writer, "upload_chunk", {
+        upload_id: upload.upload_id,
+        offset: 0,
+        data: bytes.toString("base64"),
+      });
+      await call(writer, "finish_upload", { upload_id: upload.upload_id });
+      beta.draftStage = false;
+      const direct = await prepare("moodle_submit_assignment", {
+        activity_id: 10,
+        accept_statement: true,
+        upload_ids: [upload.upload_id],
+      });
+      expect(direct.plan.requirements).toContain("final: true");
+      expect((await confirm(direct.preview_id)).structuredContent.code).toBe(
+        "WRITE_ACCEPTANCE_REQUIRED",
+      );
+      await call(writer, "cancel_upload", { upload_id: upload.upload_id });
+      beta.draftStage = true;
+      const shared = await prepare("moodle_submit_assignment", {
+        activity_id: 10,
+        final: true,
+        accept_statement: true,
+      });
+      beta.group = "Changed group";
+      expect((await confirm(shared.preview_id)).structuredContent.code).toBe(
+        "WRITE_PREVIEW_CHANGED",
+      );
+      beta.group = group;
+      const task = await prepare("ontrack_set_task_state", {
+        task: 501,
+        state: "need_help",
+      });
+      beta.taskStatus = "changed_on_platform";
+      expect((await confirm(task.preview_id)).structuredContent.code).toBe(
+        "WRITE_PREVIEW_CHANGED",
+      );
+      for (const [name, args, code] of [
+        [
+          "ed_reply_thread",
+          { thread_id: 999, body: "User reply" },
+          "ENTITY_NOT_ALLOWED",
+        ],
+        [
+          "ed_reply_thread",
+          { thread_id: 11, comment_id: 999, body: "User reply" },
+          "ENTITY_NOT_ALLOWED",
+        ],
+        [
+          "ed_submit_slide_answer",
+          { lesson_id: 5, slide_id: 8, question_id: 33, choices: [8] },
+          "INVALID_INPUT",
+        ],
+        [
+          "moodle_quiz_finish",
+          { quiz_id: 20, attempt_id: 999 },
+          "ENTITY_NOT_ALLOWED",
+        ],
+        ["ontrack_submit_task", { task: 501, upload_ids: [] }, "INVALID_INPUT"],
+      ] as const) {
+        expect(
+          (await call(writer, name, { unit: unit.key, ...args })).result
+            .structuredContent.code,
+        ).toBe(code);
+      }
+      expect(beta.calls).toHaveLength(before);
+    } finally {
+      beta.enabled = false;
+      beta.draftStage = true;
+      beta.group = group;
+      beta.taskStatus = status;
+    }
+  });
+  it("does not retry progress-changing Ed GETs when the upstream response is uncertain", async () => {
+    const writer = await connect(
+      "write-get-failure",
+      "learning:read learning:write",
+    );
+    beta.enabled = true;
+    try {
+      const preview = (
+        await call(writer, "ed_mark_slide_read", {
+          unit: unit.key,
+          lesson_id: 5,
+          slide_id: 8,
+        })
+      ).result.structuredContent;
+      expect(preview.preview_id).toHaveLength(64);
+      beta.failEdView = true;
+      const before = beta.calls.length;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = (
+          await call(writer, "confirm_platform_write", {
+            preview_id: preview.preview_id,
+            confirmed: true,
+          })
+        ).result;
+        expect(result.structuredContent.code).toBe("WRITE_OUTCOME_UNCERTAIN");
+        expect(beta.calls).toHaveLength(before + 1);
+      }
+    } finally {
+      beta.enabled = false;
+      beta.failEdView = false;
+    }
+  });
   it("reports OnTrack discovery failure and does not mislabel a binding attempt as an inaccessible course", async () => {
     ontrackDiscoveryUnavailable = true;
     try {
@@ -1419,6 +1868,10 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       "learning:read",
       "learning:bindings",
     ]);
+    const asMetadata = await request("/.well-known/oauth-authorization-server");
+    expect(((await asMetadata.json()) as any).scopes_supported).toContain(
+      "learning:write",
+    );
     const unauthenticated = await request("/mcp");
     expect(unauthenticated.status).toBe(401);
     expect(unauthenticated.headers.get("www-authenticate")).toContain(
@@ -1474,7 +1927,9 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       }),
     ]);
     const tools = ((await response.json()) as any).result.tools;
-    expect(tools).toHaveLength(readCapabilities.length + 10);
+    expect(tools).toHaveLength(
+      readCapabilities.length + writeCapabilities.length + 15,
+    );
     expect(tools.find((t: any) => t.name === "get_profile")).toMatchObject({
       _meta: { "openai/profile": true },
       outputSchema: { required: ["id"] },

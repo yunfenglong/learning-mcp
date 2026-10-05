@@ -12,7 +12,7 @@ Start a fresh authorization from the MCP client after updating the service. A su
 
 ## Binding prompts for authorization after reading works
 
-`INSUFFICIENT_SCOPE` means the client has read-only permission. It does not mean the login expired. First-time connection discovery requests `learning:read learning:bindings` so setup can finish without a later permission prompt. Existing read-only grants require one explicit permission upgrade to connect platforms or change course mappings; their reading access remains usable. Client interfaces may display a generic reconnect message for the OAuth upgrade.
+`INSUFFICIENT_SCOPE` means the client lacks the permission required by that tool. It does not mean the login expired. First-time connection discovery requests `learning:read learning:bindings` so setup can finish without a later permission prompt. Existing read-only grants require one explicit permission upgrade to connect platforms or change course mappings; their reading access remains usable. Client interfaces may display a generic reconnect message for the OAuth upgrade.
 
 ## Sign-in or renewal needs attention
 
@@ -60,3 +60,7 @@ If deployment stops at the upstream check, run `pnpm upstreams sync`, review the
 ## Local frontend preview
 
 Run `pnpm preview:ui` and open `http://127.0.0.1:4173`. The navigation shows the actual landing, sign-in, MFA and connections renderers with fixture data, plus a stopped-verification example. Credential fields are read-only samples. Form bodies are discarded without parsing, logging, storing or forwarding; no real sign-in or account change is performed. Use `LEARNING_UI_PORT` to choose another local port.
+
+## Beta write permissions and uncertain results
+
+`INSUFFICIENT_SCOPE` on a write or upload tool requires a separate `learning:write` approval. Connection management permission does not allow platform writes. `WRITE_PREVIEW_CHANGED` requires reviewing a new preview. `WRITE_OUTCOME_UNCERTAIN` means a step may already have executed: inspect the platform before preparing another operation. Retrying the same successful confirmation returns its original receipt without writing again.

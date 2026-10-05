@@ -6,14 +6,14 @@ Learning MCP Suite runs as two Workers in the same Cloudflare account. The publi
 flowchart LR
   Client[OAuth-capable MCP client] --> Suite[Public suite Worker]
   Browser[User's browser] --> Suite
-  Suite --> Platforms[Ed / Moodle / OnTrack reads]
+  Suite --> Platforms[Ed / Moodle / OnTrack reads and beta writes]
   Suite --> Broker[Private SSO broker]
   Broker --> Login[Platform SSO and session renewal]
 ```
 
 ## Educational capability contracts
 
-Public read definitions live in `src/capabilities/`, organized by platform. MCP registration, backend allowlists, operation/argument types and the generated reference come from that catalog. Platform handlers use the bundled official clients; shared authentication, enrollment and file/output boundaries remain centralized. See [read semantics and maintenance](read-contract.md) for the contract and upgrade workflow.
+Public read definitions live in `src/capabilities/`, organized by platform. Beta write definitions live in `src/capabilities/write/`, with per-platform handlers in `src/platforms/write/`. MCP registration, backend allowlists, operation/argument types and the generated reference come from that catalog. Platform handlers use the bundled official clients; shared authentication, enrollment and file/output boundaries remain centralized. See [read semantics and maintenance](read-contract.md) for the contract and upgrade workflow. See [beta writes](write-contract.md) for the separate permission, confirmation and upload contracts.
 
 ## Authentication flows
 
@@ -31,7 +31,7 @@ OAuth consent pages allow form redirects only to the current client's registered
 
 ## Connecting a course
 
-1. The client authenticates through suite OAuth. The user reviews the notice and grants read or connection-management access.
+1. The client authenticates through suite OAuth. The user reviews the notice and grants read or connection-management access; educational writes require the separate `learning:write` permission.
 2. `start_connection` creates an account-bound web link valid for ten minutes. The user enters platform credentials on that page, outside the chat. Users can also start at `/landing`.
 3. The suite verifies each platform account and discovers current enrollments.
 4. The client prepares `preview_course_bindings` from fresh discovery and shows the selected platforms, teaching period, location, warnings and changes to existing mappings. The user confirms once, then `confirm_course_bindings` saves the exact batch atomically. A failed or changed preview leaves existing mappings intact; retries return the original confirmation receipt. Any subset of platforms is valid; code or title similarity alone does not establish an association.
@@ -55,7 +55,7 @@ Broker operations are serialized per user. Brief renewal reuse avoids duplicate 
 
 ## Storage and deletion
 
-OAuth records use KV. Suite account state and broker state use separate per-user Durable Objects. Ed tokens, platform sessions, refresh cookies and opted-in passwords / TOTP configuration are encrypted using separate suite and broker keys. The operator can access these records using its keys. One-time MFA codes are transient.
+OAuth records use KV. Suite account state and broker state use separate per-user Durable Objects. Ed tokens, platform sessions, refresh cookies and opted-in passwords / TOTP configuration are encrypted using separate suite and broker keys. The operator can access these records using its keys. One-time MFA codes are transient. Beta uploads, write previews and receipts are encrypted in the account Durable Object and bound to the client and grant. Uploads and unused previews expire after 15 minutes; claimed previews and receipts expire after 24 hours. Atomic claims prevent concurrent or uncertain mutation retries. Confirmation reloads course bindings, rechecks enrollment and object ownership, and verifies live write authorization immediately before execution. Automatic platform authentication retries are disabled during writes.
 
 | Action                       | Effect                                                                                                                                                              |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -80,6 +80,6 @@ Every code is submitted once. Three validation or verification errors stop the t
 
 `/privacy`, `/terms` and `/data-controls` are public read-only HTML routes. `LEGAL_CONFIG` provides validated, escaped instance-specific operator, contact, region and retention disclosures. A personal deployment's operator is distinct from the source repository maintainer. The privacy page describes actual application retention and removal limits; configurable disclosures do not implement deletion or residency controls.
 
-Browser sign-in, current-notice acceptance and OAuth approval require separate notice acknowledgement and terms acceptance, bound to the current notice version. Sign-in checks these before broker credential processing, and records acceptance only after verified identity. Current notice and terms versions gate learning reads and new grants. An authenticated browser with outdated acceptance can still revoke clients, disconnect platforms, remove saved sign-in or sign out, including from the notice-update page.
+Browser sign-in, current-notice acceptance and OAuth approval require separate notice acknowledgement and terms acceptance, bound to the current notice version. Sign-in checks these before broker credential processing, and records acceptance only after verified identity. Current notice and terms versions gate learning reads, beta writes and new grants. An authenticated browser with outdated acceptance can still revoke clients, disconnect platforms, remove saved sign-in or sign out, including from the notice-update page.
 
 Password retention (`remember`) and additional TOTP retention (`remember_totp`) are default-off. The broker rejects TOTP retention without password retention, stores a supplied TOTP configuration only with both selections, and records the choices and time in the encrypted shared-sign-in record. Interactive MFA additionally requires successful verification of that secret. One-time codes are never stored. A fresh sign-in without retention replaces saved credentials with session-only state; existing platform sessions can still renew independently.

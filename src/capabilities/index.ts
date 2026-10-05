@@ -1,3 +1,5 @@
+import { writeCapabilities } from "./write/index.ts";
+export { writeCapabilities } from "./write/index.ts";
 import {
   defineRead,
   type ReadServices,
@@ -10,29 +12,10 @@ import { ontrackCapabilities } from "./ontrack.ts";
 import { suiteCapabilities } from "./suite.ts";
 import upstreams from "../../vendor/upstreams.json" with { type: "json" };
 export { ED_VIEW_URI } from "./schemas.ts";
-export const pendingWrites = {
-  ed: [
-    "mark lessons/slides read",
-    "save/amend quiz responses",
-    "submit saved slide responses",
-    "publish threads",
-    "reply to threads/comments",
-  ],
-  moodle: [
-    "assignment upload/replace/draft/final submit",
-    "quiz start/resume/page navigation/save answers/finish",
-  ],
-  ontrack: [
-    "read chat history (automatically marks comments read)",
-    "mark chat read",
-    "send chat",
-    "change task state",
-    "submit task files",
-  ],
-} as const;
+export const pendingWrites = { ed: [], moodle: [], ontrack: [] } as const;
 const catalog: ReadCapability<undefined, "", {}> = defineRead(
   "capability_catalog",
-  "List integrated reads and writes awaiting approval. Runtime/deployment operations are excluded.",
+  "List integrated reads and beta writes with their authorization and confirmation requirements. Runtime/deployment operations are excluded.",
   {},
   undefined,
   "",
@@ -52,9 +35,17 @@ const catalog: ReadCapability<undefined, "", {}> = defineRead(
         description,
       }),
     ),
+    write_tools: writeCapabilities.map((c) => c.name),
     writes_pending: pendingWrites,
+    write_workflow: [
+      "begin_upload",
+      "upload_chunk",
+      "finish_upload",
+      "cancel_upload",
+      "confirm_platform_write",
+    ],
     policy:
-      "Educational platform operations are read-only. Connection/binding controls use learning:bindings.",
+      "Beta writes require learning:write and explicit confirmation of an account/client-bound preview. Reads use learning:read; connection/binding controls use learning:bindings. Attendance submission is prohibited.",
     file_delivery:
       "Embedded MCP binary resources; 16 MiB per file and per Moodle batch. No local paths or arbitrary URLs.",
   }),

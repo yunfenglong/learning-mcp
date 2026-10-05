@@ -5,7 +5,12 @@ import OAuthProvider, {
 } from "@cloudflare/workers-oauth-provider";
 import { loadConfig, type Env } from "./config.ts";
 import { stateCall } from "./auth/client.ts";
-import { READ_SCOPE, MANAGE_SCOPE, type Profile } from "./auth/state.ts";
+import {
+  READ_SCOPE,
+  MANAGE_SCOPE,
+  WRITE_SCOPE,
+  type Profile,
+} from "./auth/state.ts";
 import { startLogin, finishLogin } from "./auth/login.ts";
 import { legalPage } from "./http/legal.ts";
 import { authorize } from "./http/authorize.ts";
@@ -75,6 +80,7 @@ export async function protectedMcp(
     },
     service,
     context.auth.scope,
+    { grant_id: context.props.grant_id, client_id: context.auth.clientId },
   );
 }
 export default {
@@ -111,7 +117,7 @@ export default {
               return json({
                 ok: true,
                 service: "learning-mcp-suite",
-                version: "0.3.0",
+                version: "0.4.0-beta.1",
               });
             }
             if (["/privacy", "/terms", "/data-controls"].includes(p))
@@ -135,7 +141,12 @@ export default {
         onError: () => {},
         accessTokenTTL: 900,
         refreshTokenTTL: 30 * 86400,
-        scopesSupported: [READ_SCOPE, MANAGE_SCOPE, "offline_access"],
+        scopesSupported: [
+          READ_SCOPE,
+          MANAGE_SCOPE,
+          WRITE_SCOPE,
+          "offline_access",
+        ],
         // Advertise the complete setup flow at first connection. Tool guards still
         // permit explicit read-only grants and require bindings for account changes.
         requiredScopes: [READ_SCOPE, MANAGE_SCOPE],

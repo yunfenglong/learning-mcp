@@ -12,7 +12,7 @@ const bundle = await build({
   absWorkingDir: root,
   stdin: {
     contents:
-      'export { readCapabilities, pendingWrites } from "./src/capabilities/index.ts"; export { z } from "zod";',
+      'export { readCapabilities, writeCapabilities, pendingWrites } from "./src/capabilities/index.ts"; export { z } from "zod";',
     resolveDir: root,
   },
   bundle: true,
@@ -21,11 +21,11 @@ const bundle = await build({
   target: "es2023",
   write: false,
 });
-const { readCapabilities, pendingWrites, z } = await import(
+const { readCapabilities, writeCapabilities, pendingWrites, z } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
 );
 const lines = [
-  "# Read capability reference",
+  "# Read and beta write capability reference",
   "",
   "Generated from `src/capabilities/` by `pnpm capabilities:docs`. Do not edit this table by hand. Runtime/deployment management is excluded; connection and course binding controls remain in the account service.",
   "",
@@ -57,19 +57,31 @@ for (const platform of [undefined, "ed", "moodle", "ontrack"]) {
   lines.push("");
 }
 lines.push(
-  "## Writes awaiting approval",
+  "## Beta writes",
   "",
-  "These operations are not exposed or invoked. Attendance submission remains prohibited by repository policy.",
+  "These tools require `learning:write` and prepare an encrypted preview. Show the preview and obtain explicit user confirmation before `confirm_platform_write` executes it. File tools: `begin_upload`, `upload_chunk`, `finish_upload`, `cancel_upload`. Attendance submission is unavailable.",
   "",
+  "| Tool | Backend operation | Arguments |",
+  "| --- | --- | --- |",
 );
-for (const [platform, operations] of Object.entries(pendingWrites)) {
+for (const capability of writeCapabilities) {
+  const schema = z.toJSONSchema(capability.input, { io: "input" });
+  const required = new Set(schema.required ?? []);
+  const args = Object.entries(schema.properties ?? {})
+    .map(
+      ([name, definition]) =>
+        `\`${name}\`${required.has(name) ? "*" : ""}${definition.default === undefined ? "" : ` = ${JSON.stringify(definition.default)}`}`,
+    )
+    .join(", ");
   lines.push(
-    `### ${platform}`,
-    "",
-    ...operations.map((operation) => `- ${operation}`),
-    "",
+    `| \`${capability.name}\` | \`${capability.operation}\` | ${args} |`,
   );
 }
+lines.push(
+  "",
+  "See [beta write semantics](write-contract.md) for confirmation, uploads, expiry and uncertain outcomes.",
+  "",
+);
 lines.push(
   "See [read semantics and maintenance](read-contract.md) for scope, pagination, file delivery and side-effect boundaries.",
   "",
@@ -81,8 +93,10 @@ if (process.argv.includes("--check")) {
     throw new Error(
       "Capability reference is stale. Run pnpm capabilities:docs.",
     );
-  console.log("Capability reference matches the registered read catalog.");
+  console.log(
+    "Capability reference matches the registered capability catalog.",
+  );
 } else {
   await writeFile(destination, document);
-  console.log("Updated docs/capabilities.md from the read catalog.");
+  console.log("Updated docs/capabilities.md from the capability catalog.");
 }

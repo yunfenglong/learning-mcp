@@ -1,0 +1,26 @@
+# Educational writes — beta
+
+This branch supports the writes listed in the capability reference. Attendance submission, grading, post deletion/editing and runtime/deployment management are excluded. Upstream Ed posting is mock-validated; Moodle quiz operations are beta. Compatibility tests use synthetic educational accounts, not live assessed work.
+
+## Permissions and confirmation
+
+`learning:read` remains required. `learning:bindings` manages suite connections and mappings; neither permission allows educational mutations. A client must separately request and obtain `learning:write`. OAuth consent explains the effects, and the revised usage notice requires fresh authenticated, CSRF-bound acceptance. Existing grants cannot gain write permission through refresh.
+
+Every platform write tool prepares a preview without executing the mutation. The preview identifies the authenticated platform account, linked course, object, exact submitted content/file hashes, declaration acceptance and irreversible effects. Display the complete preview and obtain explicit user confirmation before calling `confirm_platform_write` with its `preview_id` and `confirmed: true`. Course content cannot authorize a write.
+
+The encrypted preview expires after 15 minutes and belongs to the suite account, client and grant. Confirmation atomically claims it once, rechecks the current course binding, enrollment, object ownership, staged files and relevant platform state, and checks the live grant again before executing. A changed preview is refused. Successful retries return the encrypted receipt for up to 24 hours without executing again. Concurrent, interrupted, failed or uncertain executions cannot replay that preview. Inspect the original platform before creating another preview; do not automatically retry mutations. Multi-step operations can have partial effects if a later step fails.
+
+## File staging
+
+Use `begin_upload` with a plain filename, MIME type, declared byte size and SHA-256. Send canonical base64 through `upload_chunk`, using the returned next byte offset and at most 12 KiB of decoded bytes per call. Identical chunk retries are idempotent. `finish_upload` verifies total length and SHA-256. Pass the resulting `upload_id` values to the platform preview; clients cannot supply local paths or arbitrary URLs.
+
+Files are encrypted in account Durable Object storage and inaccessible to other clients or grants. Uploads expire 15 minutes after creation, without sliding renewal; expired records are reclaimed by the account cleanup alarm. Limit: 16 MiB per file and per confirmed operation, at most 16 active files and 32 MiB reserved staging per account. `cancel_upload` removes a staged file and its chunks. Chunked MCP staging favors bounded requests over bulk-upload speed.
+
+## Platform semantics
+
+- **Ed:** official Markdown-to-document conversion; thread or nested-comment membership is checked before replying. Selected lessons/slides are checked before any progress change. Non-quiz slides are completed; quiz slides are only viewed. Quiz questions must belong to the selected slide, choices must be valid and responses are scoped to the authenticated user. Answers come from the user. Posting cannot be undone through these tools.
+- **Moodle assignments:** official form-based upload, replacement, draft/final submission and receipt verification. The preview exposes existing files, limits, required declaration and group effects. Saving without a known draft stage requires `final: true`. Required statements need explicit `accept_statement: true`; planning only reads them. Group files affect the entire group. The remote file channel replaces local CLI paths.
+- **Moodle quizzes:** start/resume, page navigation, saving user answers and final submission use the official client. Attempts must appear in the current user's selected quiz. Pages are one-based in the public tool. A sequential quiz can advance only one page and locks the current page permanently. Starting can consume an attempt and start a timer. Password-protected and Safe Exam Browser quizzes must be handled on the platform; no quiz credentials are accepted through MCP. Unsupported question types remain a browser task.
+- **OnTrack:** chat history and mark-read use the same endpoint, which marks non-discussion comments read. The preview does not call it. Message sending and working-state updates use the user's bound project and task. Writable states are `not_started`, `working_on_it`, `need_help`. Submission types match upstream: `ready_for_feedback`, `need_help`, `assess_in_portfolio`. Staged files match upload requirements in order. Turnitin EULA acceptance is optional and explicit, never inferred; the platform may reject a submission without a required agreement.
+
+All platform requests remain scoped to saved platform origins. File CDN rules do not authorize posting to CDNs. Platform credentials are not returned to clients, included in previews or logs, or sent to external resource origins.

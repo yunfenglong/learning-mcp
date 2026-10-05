@@ -1,3 +1,13 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  writeOperations,
+  type WriteArgs,
+} from "../capabilities/write/index.ts";
+import type { Unit } from "../domain/units.ts";
+import type { StagedFile } from "../accounts/write-store.ts";
+import { edWrite } from "./write/ed.ts";
+import { moodleWrite } from "./write/moodle.ts";
+import { ontrackWrite } from "./write/ontrack.ts";
 import { EdClient } from "../../vendor/ed/client.js";
 import { MoodleClientCore } from "../../vendor/moodle/client.js";
 import { OnTrackClient, HttpClient } from "../../vendor/ontrack/client.js";
@@ -44,6 +54,7 @@ interface PlatformClient {
 }
 export class DirectBackend implements Backend {
   private readonly reads: PlatformReadBoundary;
+  private readonly writeExecution = new AsyncLocalStorage<boolean>();
   private client?: Promise<EdClient | MoodleClientCore | OnTrackClient>;
   private edInstitution = new Map<number, boolean>();
   private moodleSessionExpired?: SuiteError;
@@ -119,6 +130,14 @@ export class DirectBackend implements Backend {
             false,
             resource ? MAX_FILE_BYTES : undefined,
           )(input, init);
+          // Some Ed GETs mark learning progress. Do not let vendor GET retry logic
+          // repeat any request once a confirmed write has begun.
+          if (this.writeExecution.getStore() && !response.ok)
+            throw new SuiteError(
+              "WRITE_OUTCOME_UNCERTAIN",
+              "An Ed write request failed. Check the platform before preparing another write.",
+              409,
+            );
           if (new URL(String(input)).pathname === "/api/user" && response.ok) {
             const data = object(await response.clone().json());
             for (const entry of rows(data, "courses")) {
@@ -177,6 +196,12 @@ export class DirectBackend implements Backend {
         pageContext: context(c),
         fetchImpl,
         onLoginRequired: async () => {
+          if (this.writeExecution.getStore())
+            throw new SuiteError(
+              "WRITE_OUTCOME_UNCERTAIN",
+              "The write session failed. Check the platform before preparing another write.",
+              409,
+            );
           const refreshed = moodleSessionSchema.parse(
             await this.renew("moodle"),
           );
@@ -228,6 +253,12 @@ export class DirectBackend implements Backend {
           return response;
         }),
         refresh: async () => {
+          if (this.writeExecution.getStore())
+            throw new SuiteError(
+              "WRITE_OUTCOME_UNCERTAIN",
+              "The write session failed. Check the platform before preparing another write.",
+              409,
+            );
           const v = ontrackSessionSchema.parse(await this.renew("ontrack"));
           if (v.profile_id !== c.profile_id)
             throw new SuiteError(
@@ -451,6 +482,82 @@ export class DirectBackend implements Backend {
         "This course is no longer enrolled for the connected account.",
         403,
       );
+  }
+  async prepareWrite(
+    name: string,
+    args: WriteArgs,
+    unit: Unit,
+    files: StagedFile[],
+  ) {
+    return this.platformWrite(name, args, unit, files, false) as Promise<{
+      plan: import("./write/shared.ts").WritePlan;
+      fingerprint: string;
+    }>;
+  }
+  async executeWrite(
+    name: string,
+    args: WriteArgs,
+    unit: Unit,
+    files: StagedFile[],
+  ) {
+    return this.writeExecution.run(true, () =>
+      this.platformWrite(name, args, unit, files, true),
+    );
+  }
+  private async platformWrite(
+    name: string,
+    args: WriteArgs,
+    unit: Unit,
+    files: StagedFile[],
+    execute: boolean,
+  ) {
+    if (!writeOperations[this.platform].has(name))
+      throw new SuiteError(
+        "TOOL_NOT_ALLOWED",
+        "This beta write is not supported.",
+        403,
+      );
+    if (
+      !this.config.units.some((u) => JSON.stringify(u) === JSON.stringify(unit))
+    )
+      throw new SuiteError(
+        "UNIT_NOT_ALLOWED",
+        "This course binding changed. Prepare a fresh preview.",
+        403,
+      );
+    return this.reads.run(async () => {
+      const context = {
+        config: this.config,
+        output: this.output,
+        unit,
+        files,
+        enrolled: (id: number) => this.enrolled(id),
+        username: this.platformUsername,
+      };
+      if (this.platform === "ed")
+        return edWrite(
+          name,
+          args,
+          { ...context, client: await this.api("ed") },
+          execute,
+        );
+      if (this.platform === "moodle")
+        return moodleWrite(
+          name,
+          args,
+          { ...context, client: await this.api("moodle") },
+          execute,
+        );
+      const client = await this.api("ontrack");
+      return ontrackJson(
+        await ontrackWrite(
+          name,
+          args,
+          { ...context, client, username: this.platformUsername },
+          execute,
+        ),
+      );
+    });
   }
   async close() {}
 }

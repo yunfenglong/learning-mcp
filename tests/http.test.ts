@@ -267,7 +267,7 @@ describe("OAuth client consent", () => {
     const full = await fixture();
     expect(
       await (await authorize(get(), full.env, full.config)).text(),
-    ).toContain("These permissions cover setup as well as reading");
+    ).toContain("This permission covers suite setup");
     const reader = await fixture();
     reader.auth.scope = [READ_SCOPE];
     const page = await authorize(get(), reader.env, reader.config);

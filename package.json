@@ -1,10 +1,10 @@
 {
   "name": "learning-mcp-suite",
-  "version": "0.3.0",
+  "version": "0.4.0-beta.1",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
   "packageManager": "pnpm@10.14.0",
-  "description": "Cloud MCP suite with Okta SSO, Ed, Moodle and OnTrack connections",
+  "description": "Beta cloud MCP suite with separately authorized Ed, Moodle and OnTrack reads and writes",
   "type": "module",
   "engines": {
     "node": ">=24",

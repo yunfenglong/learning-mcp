@@ -1,3 +1,10 @@
+import {
+  writeCapabilities,
+  type WriteArgs,
+} from "../capabilities/write/index.ts";
+import { resolveUnit } from "../domain/units.ts";
+import { SuiteError } from "../errors.ts";
+import type { StagedFile, WriteOwner } from "./write-store.ts";
 import { z } from "zod";
 import { platformConfigSchema, type Config, type Env } from "../config.ts";
 import type { Platform, Unit } from "../domain/units.ts";
@@ -143,9 +150,168 @@ export class AccountService {
       });
     return stateCall(this.env, this.profile.id, "/disconnect", { platform });
   }
+  async upload(
+    owner: WriteOwner,
+    operation: "start" | "chunk" | "finish" | "cancel",
+    args: unknown,
+  ) {
+    return stateCall(this.env, this.profile.id, `/writes/upload/${operation}`, {
+      owner,
+      ...(operation === "start" || operation === "chunk"
+        ? { input: args }
+        : (args as object)),
+    });
+  }
+  private async staged(
+    owner: WriteOwner,
+    ids: string[] = [],
+  ): Promise<StagedFile[]> {
+    if (!ids.length) return [];
+    const files = await stateCall<
+      Array<Omit<StagedFile, "bytes"> & { bytes: string }>
+    >(this.env, this.profile.id, "/writes/upload/files", { owner, ids });
+    return files.map((f) => ({
+      ...f,
+      bytes: Uint8Array.from(atob(f.bytes), (c) => c.charCodeAt(0)),
+    }));
+  }
+  async previewWrite(
+    owner: WriteOwner,
+    platform: Platform,
+    operation: string,
+    input: unknown,
+  ) {
+    const capability = writeCapabilities.find(
+      (c) => c.platform === platform && c.operation === operation,
+    );
+    if (!capability)
+      throw new SuiteError("TOOL_NOT_ALLOWED", "Unsupported beta write.", 403);
+    const args = capability.input.parse(input) as WriteArgs;
+    const unit = resolveUnit(this.config.units, String(args.unit));
+    const files = await this.staged(owner, args.upload_ids);
+    const prepared = await this.backends[platform].prepareWrite(
+      operation,
+      args,
+      unit,
+      files,
+    );
+    const preview = await stateCall<Record<string, unknown>>(
+      this.env,
+      this.profile.id,
+      "/writes/preview",
+      {
+        owner,
+        payload: {
+          platform,
+          operation,
+          args,
+          unit,
+          fingerprint: prepared.fingerprint,
+        },
+      },
+    );
+    return { ...preview, beta: true, plan: prepared.plan };
+  }
+  async confirmWrite(owner: WriteOwner, preview_id: string) {
+    const claimed = await stateCall<{
+      duplicate: boolean;
+      receipt?: unknown;
+      payload?: {
+        platform: Platform;
+        operation: string;
+        args: WriteArgs;
+        unit: Unit;
+        fingerprint: string;
+      };
+    }>(this.env, this.profile.id, "/writes/claim", { owner, preview_id });
+    if (claimed.duplicate)
+      return { receipt: claimed.receipt, already_executed: true };
+    const payload = claimed.payload!;
+    try {
+      const unit = resolveUnit(this.config.units, payload.unit.key);
+      if (JSON.stringify(unit) !== JSON.stringify(payload.unit))
+        throw new SuiteError(
+          "WRITE_PREVIEW_CHANGED",
+          "The course binding changed. Review a fresh preview.",
+          409,
+        );
+      const files = await this.staged(owner, payload.args.upload_ids);
+      const prepared = await this.backends[payload.platform].prepareWrite(
+        payload.operation,
+        payload.args,
+        unit,
+        files,
+      );
+      if (prepared.fingerprint !== payload.fingerprint)
+        throw new SuiteError(
+          "WRITE_PREVIEW_CHANGED",
+          "The platform state changed. Review a fresh preview before executing.",
+          409,
+        );
+      if (prepared.plan.requirements?.length)
+        throw new SuiteError(
+          "WRITE_ACCEPTANCE_REQUIRED",
+          "Review the preview and prepare it again with the required final-submission or declaration acceptance options.",
+          409,
+        );
+      // Preflight can await network calls; reload mappings before the mutation.
+      const { units: freshUnits } = await stateCall<{ units: Unit[] }>(
+        this.env,
+        this.profile.id,
+        "/units",
+      );
+      const currentUnit = freshUnits.find((v) => v.key === unit.key);
+      if (!currentUnit || JSON.stringify(currentUnit) !== JSON.stringify(unit))
+        throw new SuiteError(
+          "WRITE_PREVIEW_CHANGED",
+          "The course binding changed. Review a fresh preview.",
+          409,
+        );
+      // Recheck the live grant after preflight and immediately before the mutation.
+      await stateCall(this.env, this.profile.id, "/authorize", {
+        ...owner,
+        scopes: ["learning:read", "learning:write"],
+      });
+      let receipt: unknown;
+      try {
+        receipt = this.output.redact(
+          await this.backends[payload.platform].executeWrite(
+            payload.operation,
+            payload.args,
+            unit,
+            files,
+          ),
+        );
+        await stateCall(this.env, this.profile.id, "/writes/result", {
+          owner,
+          preview_id,
+          receipt,
+          success: true,
+        });
+      } catch {
+        throw new SuiteError(
+          "WRITE_OUTCOME_UNCERTAIN",
+          "A write step may have executed. Check the platform before preparing another write; this preview will not execute again.",
+          409,
+        );
+      }
+      return { receipt, beta: true };
+    } catch (error) {
+      await stateCall(this.env, this.profile.id, "/writes/result", {
+        owner,
+        preview_id,
+        receipt: {
+          status: "not_repeated",
+          message: "Check the platform before preparing a new write.",
+        },
+        success: false,
+      }).catch(() => {});
+      throw error;
+    }
+  }
   versions() {
     return {
-      suite: "0.3.0",
+      suite: "0.4.0-beta.1",
       upstreams: Object.fromEntries(
         Object.entries(upstreams).map(([k, v]) => [
           k,

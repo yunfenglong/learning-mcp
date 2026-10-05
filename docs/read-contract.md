@@ -32,15 +32,4 @@ Ed and Moodle refuse partial range responses and truncated uncompressed bodies i
 
 ## Excluded side effects
 
-[The generated reference](capabilities.md#writes-awaiting-approval) lists all omitted platform writes. OnTrack chat-history GET is included there because the upstream endpoint marks non-discussion comments read. It is not exposed as a read-only tool. Runtime, deployment, login/logout CLI, installation, configuration, keepalive and diagnostic management commands are excluded from the platform capability catalog. Suite connection and authentication controls retain their existing implementation.
-
-No attendance submission is implemented. Repository policy also forbids updating learning progress; listing such upstream operations is not authorization to enable them. Any future write integration needs explicit user approval and a compatible repository policy.
-
-## Changing a capability
-
-1. Review the pinned upstream method and its side effects. Change the platform definition and corresponding handler together; keep authenticated identity, current enrollment and ownership checks.
-2. Use the public schema's inferred types. Do not add a separate public tool-name list, allowlist or manual parameter declaration. Keep platform normalization in its handler and reusable file/authentication logic at the shared boundary.
-3. Add tests for the behavior or security boundary affected by the change. Run `pnpm capabilities:docs`, then `pnpm capabilities:check`, `pnpm upstreams verify` and the repository's required validation commands.
-4. When changing upstream versions, run `pnpm upstreams sync`, review source and API changes, and regenerate/validate. `pnpm upstreams sync --locked` changes the bundled exports and generated declarations while retaining the pinned versions and commits. Never edit generated vendor files by hand. Check upstream freshness before an explicitly requested deployment.
-
-Validation for Worker/authentication changes is `pnpm check`, `pnpm test`, `pnpm build`, `pnpm build:broker` and `pnpm test:runtime`. Runtime tests use actual Worker transports and platform fixtures; they do not prove a live institution's SSO, permissions or file-host configuration.
+[The generated reference](capabilities.md#beta-writes) now lists separately authorized beta writes. OnTrack chat-history GET is a write because it marks non-discussion comments read; it is never invoked by a read-only tool. See [write semantics](write-contract.md) for previews, confirmation, uploads and retry boundaries. Runtime, deployment, login/logout CLI, installation, configuration, keepalive and diagnostic management commands are excluded. Suite connection and authentication controls retain their separate `learning:bindings` permission.

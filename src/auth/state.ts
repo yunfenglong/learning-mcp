@@ -15,7 +15,8 @@ import {
 } from "../accounts/bindings.ts";
 import { USAGE_VERSION, type UsageAcceptance } from "../domain/usage.ts";
 export const READ_SCOPE = "learning:read",
-  MANAGE_SCOPE = "learning:bindings";
+  MANAGE_SCOPE = "learning:bindings",
+  WRITE_SCOPE = "learning:write";
 export interface Store {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
@@ -110,7 +111,10 @@ export class AccountStore {
     if (
       !scopes.includes(READ_SCOPE) ||
       scopes.some(
-        (s) => ![READ_SCOPE, MANAGE_SCOPE, "offline_access"].includes(s),
+        (s) =>
+          ![READ_SCOPE, MANAGE_SCOPE, WRITE_SCOPE, "offline_access"].includes(
+            s,
+          ),
       )
     )
       throw new SuiteError("INVALID_SCOPE", "Unsupported permission.");

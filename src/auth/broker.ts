@@ -1,8 +1,16 @@
+import { WriteStore } from "../accounts/write-store.ts";
+import { base64 } from "../platforms/read/files.ts";
 import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
 import type { Env } from "../config.ts";
 import { publicError, SuiteError } from "../errors.ts";
-import { AccountStore, type Profile, type Store } from "./state.ts";
+import {
+  AccountStore,
+  READ_SCOPE,
+  WRITE_SCOPE,
+  type Profile,
+  type Store,
+} from "./state.ts";
 import type { Discovery } from "../accounts/courses.ts";
 export class AccountState extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
@@ -21,6 +29,67 @@ export class AccountState extends DurableObject<Env> {
         account,
         this.env.CREDENTIALS_KEY,
       );
+      if (new URL(request.url).pathname.startsWith("/writes/")) {
+        const owner = z
+          .object({
+            grant_id: z.string().regex(/^[a-f0-9]{64}$/),
+            client_id: z.string().min(1).max(2000),
+          })
+          .strict()
+          .parse(v.owner);
+        await state.authorize(account, owner.grant_id, owner.client_id, [
+          READ_SCOPE,
+          WRITE_SCOPE,
+        ]);
+        const writes = new WriteStore(
+          this.ctx.storage as unknown as Store,
+          account,
+          this.env.CREDENTIALS_KEY,
+        );
+        let result: unknown;
+        switch (new URL(request.url).pathname) {
+          case "/writes/upload/start":
+            result = await writes.start(owner, v.input);
+            break;
+          case "/writes/upload/chunk":
+            result = await writes.chunk(owner, v.input);
+            break;
+          case "/writes/upload/finish":
+            result = await writes.finish(owner, v.upload_id);
+            break;
+          case "/writes/upload/cancel":
+            result = await writes.cancel(owner, v.upload_id);
+            break;
+          case "/writes/upload/files":
+            result = (
+              await writes.files(
+                owner,
+                z.array(z.string()).max(16).parse(v.ids),
+              )
+            ).map((f) => ({ ...f, bytes: base64(f.bytes) }));
+            break;
+          case "/writes/preview":
+            result = await writes.preview(owner, v.payload);
+            break;
+          case "/writes/claim":
+            result = await writes.claim(owner, v.preview_id);
+            break;
+          case "/writes/result":
+            result = await writes.result(
+              owner,
+              v.preview_id,
+              v.receipt,
+              Boolean(v.success),
+            );
+            break;
+          default:
+            throw new SuiteError("NOT_FOUND", "Unknown write operation.", 404);
+        }
+        await this.ctx.storage.setAlarm(Date.now() + 600_000);
+        return Response.json(result, {
+          headers: { "cache-control": "no-store" },
+        });
+      }
       let result: unknown;
       switch (new URL(request.url).pathname) {
         case "/login/rate":

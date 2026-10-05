@@ -32,15 +32,16 @@ For sign-in, `INVALID_TOTP` checks encoding and supported parameters; it cannot 
 | `ED_IDENTITY_UNVERIFIED` | Ed did not return a verified account. Sign in again with a valid Ed token. |
 | `ED_LOGIN_FAILED` | The Ed token could not be verified. Check the token and try again.<br>Ed did not return a verified account. |
 | `ED_TOKEN_REJECTED` | The Ed token could not be verified. Enter a valid token for your account. |
-| `ENTITY_NOT_ALLOWED` | The OnTrack unit does not match this Learning unit.<br>This task is not in the configured OnTrack project.<br>The requested item does not belong to this configured course.<br>This slide is not part of the selected lesson.<br>Choose one activity ID or exact name from the selected course.<br>This forum is not part of the selected course.<br>Choose one of your attempts listed by this quiz.<br>Choose one task definition ID or exact abbreviation from this project.<br>This object does not belong to the selected course. |
+| `ENTITY_NOT_ALLOWED` | The OnTrack unit does not match this Learning unit.<br>This task is not in the configured OnTrack project.<br>The requested item does not belong to this configured course.<br>This slide is not part of the selected lesson.<br>Choose one activity ID or exact name from the selected course.<br>This forum is not part of the selected course.<br>Choose one of your attempts listed by this quiz.<br>Choose one task definition ID or exact abbreviation from this project.<br>This object does not belong to the selected course.<br>This comment is not in the selected thread.<br>No selected slide belongs to these lessons.<br>This question is not in the selected slide.<br>This activity has the wrong type for the requested write.<br>Moodle returned multiple active attempts. Check the quiz in a browser.<br>This attempt is not listed for the current user and quiz.<br>This question is not in the selected attempt.<br>Choose one task ID or exact abbreviation from this project. |
 | `FILE_CONTAINS_CREDENTIALS` | This file contains credential material and cannot be returned.<br>This image contains credential material. |
 | `FILE_INCOMPLETE` | The platform returned only part of this file. Retry the download.<br>The platform returned an incomplete file. Retry the download. |
 | `FILE_NOT_FOUND` | Choose a file index from the fresh file listing.<br>Moodle could not find this item or file.<br>Choose a file index returned by this activity.<br>This page has no readable document. |
 | `FILE_REDIRECT_LIMIT` | The file server exceeded the download redirect limit. |
 | `FILE_TOO_LARGE` | Platform response exceeds its remote size limit.<br>This file exceeds the remote download limit.<br>Remote files are limited to 16 MiB each.<br>This document contains too many inline images.<br>Task sheets are limited to 200 pages. |
 | `FILE_UNAVAILABLE` | The platform could not return this file.<br>The file server returned a redirect without a destination. |
+| `FINAL_SUBMISSION_REQUIRED` | Saving may submit immediately for grading. Prepare a new preview with final: true only if you intend final submission. |
 | `INCOMPLETE_COURSE_CONTEXT` | Some platforms omit semester or location details. Check the selected courses before confirming. |
-| `INSUFFICIENT_SCOPE` | This client has read-only access. Authorize learning:bindings to connect platforms or change course mappings. This is a permission upgrade, not an expired login; reading remains available. |
+| `INSUFFICIENT_SCOPE` | Authorize learning:write to prepare or execute educational writes. Reading and connection permissions do not authorize writing.<br>This client lacks connection-management access. Authorize learning:bindings to connect platforms or change course mappings. This is a permission upgrade, not an expired login; reading remains available. |
 | `INTERNAL_ERROR` | The request could not be completed. |
 | `INVALID_BASE_LINK` | Enter a public HTTPS platform base link, without a path, query, fragment or credentials. |
 | `INVALID_CALLBACK` | Use a valid OAuth callback. |
@@ -51,7 +52,7 @@ For sign-in, `INVALID_TOTP` checks encoding and supported parameters; it cannot 
 | `INVALID_DATE` | Use a valid calendar date in YYYY-MM-DD format. |
 | `INVALID_DESTINATION` | Use a configured HTTPS service. |
 | `INVALID_HOST` | Use the configured Learning MCP origin. |
-| `INVALID_INPUT` | Choose a linked course.<br>Provide exactly one lesson_id or thread_id.<br>Provide exactly one thread_id or course-local number.<br>Provide exactly one task_definition_id or task abbreviation.<br>One or more request fields are missing or invalid. Check the form and try again.<br>The selected page is outside this task sheet.<br>Provide {label}. |
+| `INVALID_INPUT` | Use canonical base64.<br>Choose distinct staged files.<br>Choose a linked course.<br>Provide exactly one lesson_id or thread_id.<br>Provide exactly one thread_id or course-local number.<br>Provide exactly one task_definition_id or task abbreviation.<br>One or more request fields are missing or invalid. Check the form and try again.<br>The selected page is outside this task sheet.<br>Provide {label}.<br>Choose exactly one thread_id or course-local number.<br>Choose distinct lesson IDs.<br>This question accepts exactly one choice.<br>Choose distinct valid answer indexes.<br>Choose a valid page; a sequential quiz can only advance one page.<br>Answer the current page before confirming a separate page advance.<br>Provide one staged file for each upload requirement, in the displayed order. |
 | `INVALID_LOGIN_FORM` | The sign-in form is invalid. Open the sign-in page again. |
 | `INVALID_MFA_METHOD` | Select a verification method offered on the sign-in page. |
 | `INVALID_ORIGIN` | Open the sign-in page again.<br>Open the account page again.<br>Use private administration. |
@@ -76,7 +77,7 @@ For sign-in, `INVALID_TOTP` checks encoding and supported parameters; it cannot 
 | `MFA_REQUIRED` | The provider requested a verification code. Supply a current code or a TOTP secret for automated sign-in. |
 | `MFA_SESSION_EXPIRED` | This verification session expired. Start a new sign-in.<br>This verification session has expired or is no longer available. Start a new sign-in. |
 | `MFA_TOTP_REJECTED` | The provider did not accept the generated TOTP code. Check that the setup secret belongs to this account and authenticator, and check its digits, period and clock settings. You can choose another available method. |
-| `NOT_FOUND` | Unknown account operation.<br>Unknown administration route.<br>Unknown account action.<br>Unknown MCP route.<br>Unknown route.<br>Unknown broker route. |
+| `NOT_FOUND` | Unknown write operation.<br>Unknown account operation.<br>Unknown administration route.<br>Unknown account action.<br>Unknown MCP route.<br>Unknown route.<br>Unknown broker route. |
 | `PKCE_REQUIRED` | PKCE S256 is required. |
 | `PLATFORM_NOT_CONFIGURED` | This unit has no Ed course.<br>Connect Moodle and enter its base link.<br>This unit has no Moodle course.<br>This unit has no OnTrack project.<br>Bind at least one Moodle course before reading course content. |
 | `PLATFORM_NOT_CONNECTED` | Connect Ed on the account page.<br>Connect {this.platform} and enter its base link on your account page.<br>Connect {p} on the account page.<br>Connect Moodle on the account page.<br>Connect the platform on the account page. |
@@ -99,10 +100,21 @@ For sign-in, `INVALID_TOTP` checks encoding and supported parameters; it cannot 
 | `SSO_TIMEOUT` | Sign-in took too long. Open the sign-in page and try again. |
 | `SSO_UNAVAILABLE` | The cloud sign-in could not complete. Open the sign-in page and try again. |
 | `STATE_UNAVAILABLE` | Account state is unavailable. |
-| `TOOL_NOT_ALLOWED` | Client platform mismatch.<br>Only approved platform reads are available.<br>Unhandled read operation: {operation} |
+| `STATEMENT_ACCEPTANCE_REQUIRED` | Review the declaration and prepare a preview with accept_statement: true. |
+| `TOOL_NOT_ALLOWED` | Unsupported beta write.<br>Client platform mismatch.<br>Only approved platform reads are available.<br>This beta write is not supported.<br>Unhandled read operation: {operation}<br>Unknown Ed write.<br>Unknown Moodle write.<br>Unknown OnTrack write. |
 | `UNAUTHORIZED` | Administrator authentication required.<br>Private broker authentication required. |
-| `UNIT_NOT_ALLOWED` | This unit is not in the Learning course registry.<br>Bind this OnTrack project first. |
+| `UNIT_NOT_ALLOWED` | This unit is not in the Learning course registry.<br>This course binding changed. Prepare a fresh preview.<br>Bind this OnTrack project first. |
+| `UPLOAD_HASH_MISMATCH` | The staged file does not match its SHA-256. |
+| `UPLOAD_INCOMPLETE` | Upload all file bytes before using this file.<br>Upload all file bytes before finishing.<br>Finish this upload before preparing a write. |
+| `UPLOAD_LIMIT` | Finish or cancel existing uploads before staging more files.<br>A write is limited to 16 MiB of staged files. |
+| `UPLOAD_OFFSET` | Use the next upload offset without changing previously staged bytes. |
 | `UPSTREAM_CONTRACT_ERROR` | Unexpected platform response.<br>Unexpected platform list.<br>OnTrack did not return a PDF task sheet. |
 | `UPSTREAM_RESPONSE_INVALID` | OnTrack returned a response the platform client could not read.{detail} |
 | `UPSTREAM_UNAVAILABLE` | The service could not complete this request.<br>OnTrack returned HTTP {status}. Retry later.<br>OnTrack could not complete the network request. Retry later.<br>Moodle timed out while reading the response. Retry later.<br>Moodle could not complete the network request. Retry later.<br>Moodle returned HTTP {status}. Retry later.<br>Ed could not complete the network request. Retry later.<br>Moodle could not renew this session. Retry later.<br>OnTrack could not renew this session. Retry later.<br>OnTrack returned an invalid renewal response.<br>Moodle could not verify this session. Retry later.<br>Moodle could not verify this session.<br>Moodle could not verify this session. Reconnect or retry later. |
 | `USAGE_REQUIRED` | Review and accept the current usage notice.<br>Review the current usage notice.<br>Read and accept the usage notice on the account page.<br>Accept the usage notice. |
+| `WRITE_ACCEPTANCE_REQUIRED` | Review the preview and prepare it again with the required final-submission or declaration acceptance options. |
+| `WRITE_EXPIRED` | Create a fresh upload or write preview. |
+| `WRITE_LIMIT` | Too many write previews. Wait for unused previews to expire. |
+| `WRITE_NOT_ALLOWED` | This upload or preview belongs to another client authorization.<br>This preview is not executing. |
+| `WRITE_OUTCOME_UNCERTAIN` | A write step may have executed. Check the platform before preparing another write; this preview will not execute again.<br>This preview was already attempted. Check the platform before preparing another write.<br>An Ed write request failed. Check the platform before preparing another write.<br>The write session failed. Check the platform before preparing another write. |
+| `WRITE_PREVIEW_CHANGED` | The course binding changed. Review a fresh preview.<br>The platform state changed. Review a fresh preview before executing. |
