@@ -14,9 +14,12 @@ export class EdAdapter {
     return unit.ed_course_id;
   }
 
-  async lessons(unit: Unit) {
+  async lessons(unit: Unit, options: Record<string, unknown> = {}) {
     const result = rows(
-      await this.backend.call("list_lessons", { courseId: this.course(unit) }),
+      await this.backend.call("list_lessons", {
+        ...options,
+        courseId: this.course(unit),
+      }),
       "lessons",
     );
     result.forEach((item) => assertOwnership(unit, "ed", item.courseId));
@@ -24,17 +27,23 @@ export class EdAdapter {
   }
 
   async lesson(unit: Unit, lessonId: number) {
-    const result = object(await this.backend.call("get_lesson", { lessonId }));
+    const result = object(
+      await this.backend.call("get_lesson", {
+        lessonId,
+        courseId: this.course(unit),
+      }),
+    );
     assertOwnership(unit, "ed", result.courseId);
     return result;
   }
 
-  async threads(unit: Unit) {
+  async threads(unit: Unit, options: Record<string, unknown> = {}) {
     const result = rows(
       await this.backend.call("list_threads", {
-        courseId: this.course(unit),
         limit: 100,
         sort: "new",
+        ...options,
+        courseId: this.course(unit),
       }),
       "threads",
     );
@@ -42,12 +51,27 @@ export class EdAdapter {
     return result;
   }
 
-  async thread(unit: Unit, threadId: number) {
+  async thread(unit: Unit, threadId: number, includeHtml = true) {
     const result = object(
-      await this.backend.call("get_thread", { threadId, includeHtml: true }),
+      await this.backend.call("get_thread", {
+        threadId,
+        includeHtml,
+        courseId: this.course(unit),
+      }),
     );
     assertOwnership(unit, "ed", result.courseId);
     return result;
+  }
+
+  async read(
+    name: string,
+    unit: Unit | undefined,
+    options: Record<string, unknown> = {},
+  ) {
+    return this.backend.call(name, {
+      ...options,
+      ...(unit ? { courseId: this.course(unit) } : {}),
+    });
   }
 
   async searchAttendance(unit: Unit): Promise<EvidenceSearch> {

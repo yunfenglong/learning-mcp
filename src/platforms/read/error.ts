@@ -1,5 +1,5 @@
-import { SuiteError } from "../errors.ts";
-import type { Platform } from "../domain/units.ts";
+import { SuiteError } from "../../errors.ts";
+import type { Platform } from "../../domain/units.ts";
 
 // Never forward a vendor exception or upstream error body: either can contain credentials.
 export function platformReadError(

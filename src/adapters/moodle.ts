@@ -40,7 +40,7 @@ export class MoodleAdapter {
     return unit.moodle_course_id;
   }
 
-  async unit(unit: Unit, section?: number) {
+  async unit(unit: Unit, section?: number | string) {
     await this.checkSite();
     const result = object(
       await this.backend.call("unit", {
@@ -52,13 +52,13 @@ export class MoodleAdapter {
     return result;
   }
 
-  async due(unit: Unit, days: number) {
+  async due(unit: Unit, days: number, limit = 100) {
     await this.checkSite();
     const result = rows(
       await this.backend.call("due", {
         unit: this.course(unit),
         days,
-        limit: 100,
+        limit,
       }),
       "due",
     );
@@ -66,27 +66,35 @@ export class MoodleAdapter {
     return result;
   }
 
-  async grades(unit: Unit) {
+  async grades(unit: Unit, options: Record<string, unknown> = {}) {
     await this.checkSite();
     const result = object(
-      await this.backend.call("grades", { unit: this.course(unit) }),
+      await this.backend.call("grades", {
+        ...options,
+        unit: this.course(unit),
+      }),
     );
     for (const item of rows(result, "grades"))
       assertOwnership(unit, "moodle", item.unit_id);
     return result;
   }
 
-  async search(unit: Unit, query: string) {
+  async search(
+    unit: Unit,
+    query: string,
+    options: Record<string, unknown> = {},
+  ) {
     await this.checkSite();
     const result = object(
       await this.backend.call("search_forums", {
-        courseId: this.course(unit),
         query,
         includePostText: true,
         limit: 30,
         maxForums: 10,
         maxDiscussionsPerForum: 20,
         sortBy: "recent",
+        ...options,
+        courseId: this.course(unit),
       }),
     );
     for (const item of rows(result, "results"))
@@ -94,16 +102,41 @@ export class MoodleAdapter {
     return result;
   }
 
-  async thread(unit: Unit, discussionId: number) {
+  async thread(
+    unit: Unit,
+    discussionId: number,
+    options: Record<string, unknown> = {},
+  ) {
     await this.checkSite();
     const result = object(
       await this.backend.call("thread", {
-        discussion_id: discussionId,
         limit: 50,
+        ...options,
+        unit: this.course(unit),
+        discussion_id: discussionId,
       }),
     );
     assertOwnership(unit, "moodle", object(result.thread).unit_id);
     return result;
+  }
+
+  async read(
+    name: string,
+    units: Unit | Unit[] | undefined,
+    options: Record<string, unknown> = {},
+  ) {
+    await this.checkSite();
+    const scoped =
+      units === undefined
+        ? {}
+        : Array.isArray(units)
+          ? {
+              courseIds: units
+                .filter((u) => u.moodle_course_id)
+                .map((u) => this.course(u)),
+            }
+          : { unit: this.course(units) };
+    return this.backend.call(name, { ...options, ...scoped });
   }
 
   async searchAttendance(

@@ -2,11 +2,25 @@ import { EdClient } from "../../vendor/ed/client.js";
 import { MoodleClientCore } from "../../vendor/moodle/client.js";
 import { OnTrackClient, HttpClient } from "../../vendor/ontrack/client.js";
 import type { Config, Env } from "../config.ts";
-import type { Platform, Unit } from "../domain/units.ts";
+import type { Platform } from "../domain/units.ts";
 import { stateCall } from "../auth/client.ts";
 import type { Connection } from "../auth/state.ts";
 import { SuiteError } from "../errors.ts";
 import { platformFetch } from "./network.ts";
+import type {
+  EdReadArgs,
+  MoodleReadArgs,
+  OnTrackReadArgs,
+  EdOperation,
+  MoodleOperation,
+  OnTrackOperation,
+} from "./read/contracts.ts";
+import { platformOperations } from "../capabilities/index.ts";
+import { MAX_FILE_BYTES } from "./read/files.ts";
+import { edRead } from "./read/ed.ts";
+import { moodleRead } from "./read/moodle.ts";
+import { ontrackJson } from "./read/ontrack-json.ts";
+import { ontrackRead } from "./read/ontrack.ts";
 import {
   brokerCall,
   moodleSessionSchema,
@@ -20,13 +34,19 @@ import {
 } from "./session-cookies.ts";
 import { object, rows, type Backend } from "../adapters/backend.ts";
 import { OutputBoundary } from "../security/output.ts";
-import { platformReadError } from "./read-error.ts";
+import { platformReadError } from "./read/error.ts";
+interface PlatformClient {
+  ed: EdClient;
+  moodle: MoodleClientCore;
+  ontrack: OnTrackClient;
+}
 export class DirectBackend implements Backend {
-  private client?: Promise<any>;
+  private client?: Promise<EdClient | MoodleClientCore | OnTrackClient>;
   private edInstitution = new Map<number, boolean>();
   private moodleSessionExpired?: SuiteError;
   private ontrackSessionExpired = false;
   private authenticationFailure?: SuiteError;
+  private platformUsername?: string;
   private async renew(platform: "moodle" | "ontrack") {
     try {
       const value = await brokerCall(this.env, this.account, "/v1/renew", {
@@ -66,18 +86,43 @@ export class DirectBackend implements Backend {
       const client = new EdClient({
         token: c.token,
         apiBaseUrl: "https://edstem.org/api/",
-        fetch: async (input: any, init: any) => {
+        fetch: async (input, init) => {
+          const target = new URL(String(input));
+          const resource = target.origin !== "https://edstem.org";
+          if (
+            resource &&
+            !(this.config.resourceOrigins ?? []).includes(target.origin)
+          )
+            throw new SuiteError(
+              "RESOURCE_ORIGIN_NOT_ALLOWED",
+              "The operator must configure this Ed file's exact HTTPS origin in RESOURCE_ORIGINS.",
+              403,
+            );
+          if (
+            resource &&
+            (new Headers(init?.headers).has("authorization") ||
+              new Headers(init?.headers).has("cookie"))
+          )
+            throw new SuiteError(
+              "SITE_NOT_ALLOWED",
+              "Credentials cannot be sent to file resource origins.",
+              403,
+            );
           const response = await platformFetch(
-            "https://edstem.org",
+            resource ? target.origin : "https://edstem.org",
             this.fetchImpl,
+            false,
+            resource ? MAX_FILE_BYTES : undefined,
           )(input, init);
           if (new URL(String(input)).pathname === "/api/user" && response.ok) {
-            const data = (await response.clone().json()) as any;
-            for (const entry of data.courses ?? []) {
-              const row = entry.course ?? entry;
-              const institution = row.university ?? row.institution;
+            const data = object(await response.clone().json());
+            for (const entry of rows(data, "courses")) {
+              const row = object(entry.course ?? entry);
+              const institution = object(
+                row.university ?? row.institution ?? {},
+              );
               const institutionId = Number(
-                row.university_id ?? row.institution_id ?? institution?.id,
+                row.university_id ?? row.institution_id ?? institution.id,
               );
               const allowed = this.config.platforms.ed?.institution_ids;
               this.edInstitution.set(
@@ -162,15 +207,18 @@ export class DirectBackend implements Backend {
       }),
     );
     this.output.rememberSession(c);
+    this.platformUsername = c.username;
     return new OnTrackClient(
       new HttpClient({
         baseUrl: site,
         credentials: { username: c.username, accessToken: c.token },
-        fetch: async (input: any, init: any) => {
-          const response = await platformFetch(site, this.fetchImpl)(
-            input,
-            init,
-          );
+        fetch: async (input, init) => {
+          const response = await platformFetch(
+            site,
+            this.fetchImpl,
+            false,
+            MAX_FILE_BYTES,
+          )(input, init);
           if (response.status === 401) this.ontrackSessionExpired = true;
           return response;
         },
@@ -187,14 +235,21 @@ export class DirectBackend implements Backend {
       }),
     );
   }
-  async api(): Promise<any> {
-    return (this.client ??= this.connect());
+  async api<P extends Platform>(platform: P): Promise<PlatformClient[P]> {
+    if (platform !== this.platform)
+      throw new SuiteError(
+        "TOOL_NOT_ALLOWED",
+        "Client platform mismatch.",
+        403,
+      );
+    // The discriminant is checked here; callers never receive another platform's client.
+    return (this.client ??= this.connect()) as Promise<PlatformClient[P]>;
   }
   private moodleFetch(
     site: string,
     session: { current: MoodleSession },
   ): typeof fetch {
-    const network = platformFetch(site, this.fetchImpl, true);
+    const network = platformFetch(site, this.fetchImpl, true, MAX_FILE_BYTES);
     let active = session.current;
     const makeJar = () =>
       cookieFetch(
@@ -299,158 +354,55 @@ export class DirectBackend implements Backend {
     a: Record<string, unknown>,
   ): Promise<unknown> {
     try {
-      const c = await this.api();
+      const allowed = platformOperations[this.platform];
+      if (
+        !allowed.has(name) &&
+        name !== "list_courses" &&
+        !(this.platform === "moodle" && name === "get_user")
+      )
+        throw new SuiteError(
+          "TOOL_NOT_ALLOWED",
+          "Only approved platform reads are available.",
+          403,
+        );
+      const context = {
+        config: this.config,
+        output: this.output,
+        enrolled: (id: number) => this.enrolled(id),
+        username: this.platformUsername,
+      };
       if (this.platform === "ed") {
-        switch (name) {
-          case "list_courses":
-            return (await c.fetchUser()).courses.map((course: any) => ({
-              ...course,
-              scope_verified: this.edInstitution.get(course.id) === true,
-            }));
-          case "list_lessons":
-            await this.enrolled(Number(a.courseId));
-            return await c.fetchLessons(a.courseId);
-          case "get_lesson": {
-            const lesson = await c.fetchLesson(a.lessonId, { view: false });
-            await this.enrolled(lesson.courseId);
-            return lesson;
-          }
-          case "list_threads":
-            await this.enrolled(Number(a.courseId));
-            return {
-              threads: await c.fetchThreads(a.courseId, {
-                limit: 100,
-                offset: 0,
-                sort: "new",
-              }),
-            };
-          case "get_thread": {
-            const thread = await c.fetchThread(a.threadId);
-            await this.enrolled(thread.courseId);
-            return thread;
-          }
-        }
+        const c = await this.api("ed");
+        if (name === "list_courses")
+          return (await c.fetchUser()).courses.map((course) => ({
+            ...course,
+            scope_verified: this.edInstitution.get(course.id) === true,
+          }));
+        if (platformOperations.ed.has(name))
+          return await edRead(name as EdOperation, a as EdReadArgs, {
+            ...context,
+            client: c,
+          });
       } else if (this.platform === "moodle") {
+        const c = await this.api("moodle");
         if (name === "get_user") return { user: await c.getSiteInfo() };
         if (name === "list_courses") return await c.getCourses();
-        if (name === "thread") {
-          const t = await c.getForumDiscussion(a.discussion_id);
-          await this.enrolled(t.course_id);
-          return {
-            thread: {
-              ...t,
-              unit_id: t.course_id,
-              name: t.subject,
-              posts_total: t.posts.length,
-              posts: t.posts.map((p: any) => ({
-                ...p,
-                message_text: p.message_text ?? p.message,
-                time_created: p.time_created,
-              })),
-            },
-          };
-        }
-        const course = Number(a.unit ?? a.courseId);
-        await this.enrolled(course);
-        if (name === "unit") {
-          const contents = await c.getCourseContents(course);
-          const enrolled = rows(await c.getCourses(), "courses").find(
-            (v) => v.id === course,
+        if (platformOperations.moodle.has(name))
+          return await moodleRead(
+            name as MoodleOperation,
+            a as MoodleReadArgs,
+            { ...context, client: c },
           );
-          return {
-            unit: enrolled,
-            sections:
-              a.section === undefined
-                ? contents
-                : contents.filter((s: any) => s.section === a.section),
-          };
-        }
-        if (name === "due")
-          return {
-            due: (await c.getTodo(100, Number(a.days), course)).map(
-              (v: any) => ({ ...v, unit_id: v.course_id }),
-            ),
-          };
-        if (name === "grades") {
-          const v = await c.getCourseGrades(course);
-          return { ...v, grades: [{ ...v, unit_id: v.course_id }] };
-        }
-        if (name === "search_forums")
-          return {
-            results: (
-              await c.searchForumContent({
-                query: a.query,
-                courseId: course,
-                includePostText: true,
-                limit: 30,
-                maxForums: 10,
-                maxDiscussionsPerForum: 20,
-                sortBy: "recent",
-              })
-            ).map((v: any) => ({
-              ...v,
-              unit_id: v.course_id,
-              name: v.discussion_subject,
-            })),
-          };
       } else {
+        const c = await this.api("ontrack");
         if (name === "list_courses") return await c.getProjects(false);
-        if (name === "get_unit") {
-          const bound = this.config.units.find(
-            (u) => u.ontrack_unit_id === a.unit_id,
+        if (platformOperations.ontrack.has(name))
+          return ontrackJson(
+            await ontrackRead(name as OnTrackOperation, a as OnTrackReadArgs, {
+              ...context,
+              client: c,
+            }),
           );
-          if (!bound)
-            throw new SuiteError(
-              "UNIT_NOT_ALLOWED",
-              "Bind this OnTrack unit first.",
-              403,
-            );
-          await this.enrolled(bound.ontrack_project_id!);
-          const project = object(await c.getProject(bound.ontrack_project_id));
-          if (object(project.unit).id !== bound.ontrack_unit_id)
-            throw new SuiteError(
-              "ENTITY_NOT_ALLOWED",
-              "This OnTrack project no longer belongs to the bound unit. Discover courses again and review its association.",
-              403,
-            );
-          return { unit: await c.getUnit(a.unit_id) };
-        }
-        const project = Number(a.project_id);
-        await this.enrolled(project);
-        const p = object(await c.getProject(project));
-        if (name === "list_tasks") {
-          const tasks = rows(p, "tasks");
-          if (tasks.length) return { project_id: project, tasks };
-          const u = object(await c.getUnit(object(p.unit).id));
-          return {
-            project_id: project,
-            tasks: rows(u, "task_definitions").map((t) => ({
-              ...t,
-              task_definition_id: t.id,
-            })),
-          };
-        }
-        if (name === "get_task") {
-          const u = object(await c.getUnit(object(p.unit).id));
-          const task = rows(u, "task_definitions").find(
-            (t) => t.id === a.task_definition_id,
-          );
-          if (!task)
-            throw new SuiteError(
-              "ENTITY_NOT_ALLOWED",
-              "Task is outside this project.",
-              403,
-            );
-          return {
-            project_id: project,
-            unit_id: object(p.unit).id,
-            task,
-            progress:
-              rows(p, "tasks").find(
-                (t) => t.task_definition_id === a.task_definition_id,
-              ) ?? null,
-          };
-        }
       }
       throw new SuiteError(
         "TOOL_NOT_ALLOWED",
@@ -462,11 +414,12 @@ export class DirectBackend implements Backend {
     }
   }
   private async enrolled(id: number) {
-    const c = await this.api();
-    let enrolled: any[];
-    if (this.platform === "ed") enrolled = (await c.fetchUser()).courses;
-    else if (this.platform === "moodle") enrolled = await c.getCourses();
-    else enrolled = await c.getProjects(false);
+    let enrolled: readonly { id: number }[];
+    if (this.platform === "ed")
+      enrolled = (await (await this.api("ed")).fetchUser()).courses;
+    else if (this.platform === "moodle")
+      enrolled = await (await this.api("moodle")).getCourses();
+    else enrolled = await (await this.api("ontrack")).getProjects(false);
     if (
       !enrolled.some((v) => v.id === id) ||
       (this.platform === "ed" && this.edInstitution.get(id) !== true)

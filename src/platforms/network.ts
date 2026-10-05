@@ -45,6 +45,7 @@ export function platformFetch(
   origin: string,
   fetchImpl: typeof fetch = globalThis.fetch,
   allowSameOriginRedirects = false,
+  maxBytes = 4 * 1024 * 1024,
 ): typeof fetch {
   const trusted = new URL(origin).origin;
   return async (input, init) => {
@@ -89,14 +90,30 @@ export function platformFetch(
       }
     }
     if (!response.body) return response;
+    const rangeTotal = Number(
+      response.headers.get("content-range")?.split("/")[1],
+    );
+    if (
+      Number(response.headers.get("content-length")) > maxBytes ||
+      rangeTotal > maxBytes
+    ) {
+      await response.body.cancel();
+      throw new SuiteError(
+        "FILE_TOO_LARGE",
+        "Platform response exceeds its remote size limit.",
+      );
+    }
     let size = 0;
     const bounded = new Response(
       response.body.pipeThrough(
         new TransformStream<Uint8Array, Uint8Array>({
           transform(c, controller) {
             size += c.length;
-            if (size > 4 * 1024 * 1024)
-              throw new Error("Platform response too large");
+            if (size > maxBytes)
+              throw new SuiteError(
+                "FILE_TOO_LARGE",
+                "Platform response exceeds its remote size limit.",
+              );
             controller.enqueue(c);
           },
         }),

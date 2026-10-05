@@ -12,8 +12,11 @@ export class OnTrackAdapter {
       );
     return unit.ontrack_project_id;
   }
-  async tasks(unit: Unit) {
-    return this.backend.call("list_tasks", { project_id: this.project(unit) });
+  async tasks(unit: Unit, options: Record<string, unknown> = {}) {
+    return this.backend.call("list_tasks", {
+      ...options,
+      project_id: this.project(unit),
+    });
   }
   async unit(unit: Unit) {
     this.project(unit);
@@ -29,7 +32,22 @@ export class OnTrackAdapter {
       );
     return result;
   }
-  async task(unit: Unit, taskDefinitionId: number) {
+  async read(
+    name: string,
+    unit: Unit | undefined,
+    options: Record<string, unknown> = {},
+  ) {
+    return this.backend.call(name, {
+      ...options,
+      ...(unit
+        ? { project_id: this.project(unit), unit_id: unit.ontrack_unit_id }
+        : {}),
+    });
+  }
+
+  async task(unit: Unit, taskDefinitionId: number | string) {
+    if (typeof taskDefinitionId === "string")
+      return this.read("get_task", unit, { task: taskDefinitionId });
     const list = rows(await this.tasks(unit), "tasks");
     if (
       !list.some(

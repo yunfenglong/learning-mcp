@@ -47,6 +47,23 @@ describe("generic deployment scope", () => {
         }),
       ).toThrow();
   });
+  it("allows only exact public resource origins configured by the operator", () => {
+    expect(
+      loadConfig({
+        ...env(),
+        RESOURCE_ORIGINS: '["https://files.edusercontent.com/"]',
+      }).resourceOrigins,
+    ).toEqual(["https://files.edusercontent.com"]);
+    for (const origin of [
+      "https://127.0.0.1",
+      "https://files.internal",
+      "https://files.example/path",
+      "https://user:secret@files.example",
+    ])
+      expect(() =>
+        loadConfig({ ...env(), RESOURCE_ORIGINS: JSON.stringify([origin]) }),
+      ).toThrow();
+  });
   it("rejects insecure origins, credentials and non-origin URL components", () => {
     for (const site of [
       "http://courses.example",
