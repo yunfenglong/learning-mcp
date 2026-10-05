@@ -1,3 +1,4 @@
+import { noticeDisclosure } from "../http/ui.ts";
 import { z } from "zod";
 import { EdClient } from "../../vendor/ed/client.js";
 import type { Config, Env } from "../config.ts";
@@ -16,12 +17,7 @@ import { cookie, html, escapeHtml as e } from "../http/common.ts";
 import { brokerCall } from "../platforms/broker.ts";
 import { platformFetch } from "../platforms/network.ts";
 import { mfaChallengeSchema, MFA_TTL_MS, type MfaChallenge } from "./mfa.ts";
-import {
-  USAGE_VERSION,
-  usageNotice,
-  usageLabel,
-  termsApproval,
-} from "../domain/usage.ts";
+import { USAGE_VERSION, usageLabel, termsApproval } from "../domain/usage.ts";
 
 export const SESSION_COOKIE = "__Host-learning-session";
 export interface BrowserSession {
@@ -74,7 +70,7 @@ export async function startLogin(request: Request, env: Env, config: Config) {
     : "";
   return html(
     page(
-      `<div class="auth-layout"><section class="auth-intro"><span class="eyebrow">Your learning workspace</span><h1>Start with your account.</h1><p>Sign in, complete verification, then connect the platforms your courses use.</p>${signInJourney(1)}<p class="small">Coming back? Use the same SSO account or Ed account each time. Different sign-in accounts have separate connections.</p></section><section class="auth-panel" aria-label="Sign-in options">${providerForm}${edForm}</section></div><div class="auth-notice">${usageNotice}</div>`,
+      `<div class="auth-layout"><section class="auth-intro"><span class="eyebrow">Your learning workspace</span><h1>Start with your account.</h1><p>Sign in, complete verification, then connect the platforms your courses use.</p>${signInJourney(1)}<p class="small">Coming back? Use the same SSO account or Ed account each time. Different sign-in accounts have separate connections.</p></section><section class="auth-panel" aria-label="Sign-in options">${noticeDisclosure()}${providerForm}${edForm}</section></div>`,
       "Sign in",
     ),
     200,

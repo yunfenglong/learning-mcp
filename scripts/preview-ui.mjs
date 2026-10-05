@@ -52,6 +52,75 @@ const config = {
   platforms: { ed: { site_url: "https://edstem.org" } },
 };
 const profile = { id: "a".repeat(64), name: "Demo student" };
+// Isolated sample records: never fetched from a platform or saved to an account.
+const sampleUnits = [
+  {
+    key: "algorithms",
+    code: "CSC204",
+    name: "Algorithms & data structures",
+    campus: "Online",
+    year: 2026,
+    teaching_period: "S2",
+    timezone: "UTC",
+    ed_course_id: 204,
+    moodle_course_id: 5204,
+  },
+  {
+    key: "interaction",
+    code: "DES112",
+    name: "Interaction design",
+    campus: "Online",
+    year: 2026,
+    teaching_period: "S2",
+    timezone: "UTC",
+    moodle_course_id: 5112,
+  },
+];
+const sampleDiscovery = {
+  courses: sampleUnits.flatMap((unit) => [
+    ...(unit.ed_course_id
+      ? [
+          {
+            platform: "ed",
+            id: unit.ed_course_id,
+            name: unit.name,
+            code: unit.code,
+            year: unit.year,
+            teaching_period: unit.teaching_period,
+            campus: unit.campus,
+            accessible: true,
+            institution_basis: "Preview fixture: sample enrollment",
+          },
+        ]
+      : []),
+    {
+      platform: "moodle",
+      id: unit.moodle_course_id,
+      name: unit.name,
+      code: unit.code,
+      year: unit.year,
+      teaching_period: unit.teaching_period,
+      campus: unit.campus,
+      accessible: true,
+      institution_basis: "Preview fixture: sample enrollment",
+    },
+  ]),
+  coverage: [],
+  suggestions: [],
+  expires_at: Date.now() + 600_000,
+};
+const sampleGrants = [
+  {
+    id: "preview-grant",
+    client_name: "Sample MCP client",
+    client_id: "preview-client-01",
+    redirect_uri: "https://client.preview.example/oauth/callback",
+    scopes: ["learning:read", "learning:bindings", "offline_access"],
+    authorized_at: Date.now() - 2 * 86_400_000,
+    revoked: false,
+    expires_at: Date.now() + 86_400_000,
+  },
+];
 const platformStatus = {
   auth_modes: ["session", "sso"],
   has_sso: true,
@@ -66,7 +135,13 @@ const env = {
   BROKER_SERVICE_TOKEN: "preview-only".padEnd(64, "x"),
   SSO_BROKER: {
     fetch: async (request) => {
-      if (new URL(request.url).pathname !== "/v1/status")
+      const path = new URL(request.url).pathname;
+      if (path === "/v1/sign-in-metadata")
+        return Response.json({
+          username: "demo.student",
+          base_link: "https://sso.preview.example",
+        });
+      if (path !== "/v1/status")
         throw new Error(
           "No real broker operations are available in this UI preview.",
         );
@@ -93,11 +168,11 @@ const env = {
               terms_version: USAGE_VERSION,
             });
           case "/units":
-            return Response.json({ units: [] });
+            return Response.json({ units: sampleUnits });
           case "/discovery/get":
-            return Response.json(null);
+            return Response.json(sampleDiscovery);
           case "/grants":
-            return Response.json({ grants: [] });
+            return Response.json({ grants: sampleGrants });
           case "/connection/get":
             return Response.json({ display_name: "Demo student" });
           default:
@@ -125,6 +200,7 @@ const routes = [
   ["/preview/mfa-error", "MFA error"],
   ["/preview/error", "Stopped"],
   ["/preview/connections", "Connections"],
+  ["/preview/empty", "Empty workspace"],
   ["/preview/permissions", "Client access"],
 ];
 function previewDocument(source, current) {
@@ -201,13 +277,31 @@ const server = createServer(async (request, response) => {
       source = await (
         await landing(new Request(`${issuer}/landing`), env, config)
       ).text();
-    else if (path === "/preview/connections")
+    else if (["/preview/connections", "/preview/empty"].includes(path))
       source = await (
         await landing(
           new Request(`${issuer}/landing`, {
             headers: { cookie: `__Host-learning-session=${sessionToken}` },
           }),
-          env,
+          path === "/preview/empty"
+            ? {
+                ...env,
+                AUTH_STATE: {
+                  ...env.AUTH_STATE,
+                  get: () => ({
+                    fetch: async (request) => {
+                      const path = new URL(request.url).pathname;
+                      if (path === "/units")
+                        return Response.json({ units: [] });
+                      if (path === "/discovery/get") return Response.json(null);
+                      if (path === "/grants")
+                        return Response.json({ grants: [] });
+                      return env.AUTH_STATE.get().fetch(request);
+                    },
+                  }),
+                },
+              }
+            : env,
           config,
         )
       ).text();

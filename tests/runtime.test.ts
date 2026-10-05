@@ -1,4 +1,5 @@
 import { runInNewContext } from "node:vm";
+import { parse } from "node-html-parser";
 import { readCapabilities } from "../src/capabilities/index.ts";
 import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -520,18 +521,36 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       const body = await page.text();
       expect(body).not.toContain(new URL(moodle).hostname);
       expect(body).not.toContain(new URL(ontrack).hostname);
-      expect(body).toContain("Cloudflare");
       expect(body).not.toContain("ChatGPT");
       expect(body).not.toContain("tenant.okta.example");
-      expect(body).toContain("infrastructure providers used by its operator");
       bodies.push(body);
+    }
+    for (const body of bodies.slice(0, 2)) {
+      expect(body).toContain("Cloudflare");
+      expect(body).toContain("infrastructure providers used by its operator");
     }
     expect(bodies[0]).toContain('name="provider"');
     expect(bodies[0]).toContain('name="platform" value="sso"');
     const connections = bodies[2]!;
     expect(connections).toContain("Each course can use any combination.");
-    for (const name of ["Ed Discussion", "Moodle", "OnTrack"])
-      expect(connections).toContain(`<h3>${name}</h3>`);
+    const document = parse(connections);
+    expect(document.querySelector("#data-notice")).toBeNull();
+    expect(
+      document.querySelector('#sign-in form[action="/account/logout"]'),
+    ).not.toBeNull();
+    for (const [platform, name] of [
+      ["ed", "Ed Discussion"],
+      ["moodle", "Moodle"],
+      ["ontrack", "OnTrack"],
+    ]) {
+      expect(document.querySelector(`#title-${platform}`)?.text).toBe(name);
+      expect(
+        document.querySelector(`label[for="choose-${platform}"]`)?.text,
+      ).toContain(name);
+    }
+    expect(
+      document.querySelectorAll('input[name="workspace-platform"][checked]'),
+    ).toHaveLength(1);
     expect(connections).toContain('action="/account/ed"');
     for (const platform of ["moodle", "ontrack"])
       expect(connections).toContain(`name="platform" value="${platform}"`);

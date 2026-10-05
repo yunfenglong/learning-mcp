@@ -15,7 +15,7 @@ vi.mock("../broker/sso.ts", async (original) => ({
   browserLogin: login,
 }));
 import entrypoint, { BrokerState } from "../broker/worker.ts";
-import { decrypt } from "../src/auth/crypto.ts";
+import { decrypt, encrypt } from "../src/auth/crypto.ts";
 import { MemoryStore, key } from "./support.ts";
 const account = "a".repeat(64),
   seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
@@ -82,6 +82,54 @@ beforeEach(() => {
   });
 });
 describe("private credential vault", () => {
+  it("returns only account-bound saved sign-in details and removes them when forgotten", async () => {
+    const f = fixture();
+    expect(await (await f.call("/v1/sign-in-metadata")).json()).toBeNull();
+    await f.storage.put(
+      "sso",
+      await encrypt(key, `${account}:sso`, {
+        username: "student.name",
+        provider: "https://tenant.okta.example",
+        subject: "private-subject",
+        cookies: [{ name: "sid", value: "cookie-secret" }],
+        input: {
+          username: "student.name",
+          password: "password-secret",
+          totp: { secret: seed },
+        },
+      }),
+    );
+    const metadata = await f.call("/v1/sign-in-metadata");
+    expect(metadata.headers.get("cache-control")).toBe("no-store");
+    expect(await metadata.json()).toEqual({
+      username: "student.name",
+      base_link: "https://tenant.okta.example",
+    });
+    const wrongAccount = await f.call(
+      "/v1/sign-in-metadata",
+      {},
+      "b".repeat(64),
+    );
+    expect(wrongAccount.ok).toBe(false);
+    expect(await wrongAccount.text()).not.toContain("student.name");
+    const status = JSON.stringify(await (await f.call("/v1/status")).json());
+    expect(status).not.toContain("student.name");
+    expect(status).not.toContain("tenant.okta.example");
+    await f.call("/v1/forget-login");
+    expect(await (await f.call("/v1/sign-in-metadata")).json()).toBeNull();
+    await f.storage.put(
+      "sso",
+      await encrypt(key, `${account}:sso`, {
+        username: "legacy.user",
+        cookies: [],
+      }),
+    );
+    expect(await (await f.call("/v1/sign-in-metadata")).json()).toEqual({
+      username: "legacy.user",
+      base_link: null,
+    });
+  });
+
   it("does not expose retired address migration operations", async () => {
     const f = fixture(false);
     for (const path of [

@@ -76,6 +76,12 @@ async function fixture() {
             case "/revoke":
               result = await state.revoke(v.grant_id);
               break;
+            case "/units":
+              result = { units: [] };
+              break;
+            case "/discovery/get":
+              result = null;
+              break;
             case "/grants":
               result = await state.grants();
               break;
@@ -123,6 +129,56 @@ const post = (
     }),
   });
 describe("OAuth client consent", () => {
+  it("shows saved SSO username and origin only on the authenticated workbench, escaped and account-scoped", async () => {
+    const f = await fixture();
+    await f.account.acceptUsage(USAGE_VERSION);
+    f.env.BROKER_SERVICE_TOKEN = "b".repeat(64);
+    let metadata: unknown = {
+      username: '<img src=x onerror="bad">',
+      base_link: "https://sso.account.example",
+    };
+    const broker = vi.fn(async (request: Request) => {
+      expect(request.headers.get("x-suite-account")).toBe(id);
+      return Response.json(
+        new URL(request.url).pathname === "/v1/sign-in-metadata"
+          ? metadata
+          : {
+              moodle: { status: "not_connected" },
+              ontrack: { status: "not_connected" },
+            },
+      );
+    });
+    f.env.SSO_BROKER = { fetch: broker } as any;
+    const read = async (authenticated: boolean) =>
+      (
+        await landing(
+          new Request(`${f.config.issuer}/landing`, {
+            headers: authenticated
+              ? { cookie: `__Host-learning-session=${sessionToken}` }
+              : {},
+          }),
+          f.env,
+          f.config,
+        )
+      ).text();
+    const anonymous = await read(false);
+    expect(broker).not.toHaveBeenCalled();
+    expect(anonymous).not.toContain("sso.account.example");
+    const page = await read(true);
+    expect(page).toContain("SSO username");
+    expect(page).toContain("SSO base link");
+    expect(page).toContain("&lt;img src=x onerror=&quot;bad&quot;&gt;");
+    expect(page).not.toContain("<img src=x");
+    expect(page).toContain('href="https://sso.account.example"');
+    expect(page).not.toContain('class="avatar"');
+    metadata = null;
+    expect(await read(true)).toContain("No shared sign-in saved.");
+    broker.mockRejectedValue(new Error("Unavailable"));
+    expect(await read(true)).toContain(
+      "Saved sign-in details are currently unavailable.",
+    );
+  });
+
   it("requires terms separately from notice acknowledgement, but cancellation needs neither", async () => {
     const f = await fixture();
     const text = await (await authorize(get(), f.env, f.config)).text();
