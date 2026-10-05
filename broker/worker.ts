@@ -350,6 +350,22 @@ export class BrokerState extends DurableObject<BrokerEnv> {
         }
         return json(sites);
       }
+      // Browser-only account details; intentionally excluded from MCP status.
+      if (path === "/v1/sign-in-metadata") {
+        const saved = await load<SavedLogin>("sso");
+        return json(
+          output.redact(
+            saved
+              ? {
+                  username: saved.username,
+                  base_link: saved.provider
+                    ? platformBaseLink(saved.provider)
+                    : null,
+                }
+              : null,
+          ),
+        );
+      }
       if (path === "/v1/status") {
         await load<SavedLogin>("sso");
         const status: Record<string, unknown> = {
