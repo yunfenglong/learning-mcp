@@ -6,6 +6,7 @@ import {
   rm,
   mkdtemp,
   rename,
+  readdir,
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -17,19 +18,28 @@ const { build } = createRequire(require.resolve("wrangler/package.json"))(
 const entries = {
   ed: {
     repo: "edstem-cli",
-    entries: ["src/ed/client.ts"],
-    exports: 'export { EdClient } from "./src/ed/client.js";',
+    entries: [
+      "src/ed/client.ts",
+      "src/ed/files.ts",
+      "src/ed/operations.ts",
+      "src/ed/projections.ts",
+      "src/markdown.ts",
+      "src/mcp/widgets.ts",
+    ],
+    exports:
+      'export { EdClient } from "./src/ed/client.js"; export { listLessonFiles, listThreadFiles } from "./src/ed/files.js"; export { listThreads, listLessons, parseSinceValue } from "./src/ed/operations.js"; export { projectThreadDetail } from "./src/ed/projections.js"; export { threadToMarkdown, lessonToMarkdown, slideToMarkdown } from "./src/markdown.js"; export { buildForumCatchup, buildThreadActivity, buildLessonProgress, buildLessonGuide } from "./src/mcp/widgets.js";',
   },
   moodle: {
     repo: "moodle-cli",
-    entries: ["src/moodle-client-core.ts"],
-    exports: 'export { MoodleClientCore } from "./src/moodle-client-core.js";',
+    entries: ["src/moodle-client-core.ts", "src/resolve.ts", "src/grades.ts"],
+    exports:
+      'export { MoodleClientCore } from "./src/moodle-client-core.js"; export { resolveSection, withChildSections, searchSections } from "./src/resolve.js"; export { hasGrade, pageGradeReports } from "./src/grades.js"; export { parseSavedDocumentHtml } from "./src/scraper.js";',
   },
   ontrack: {
     repo: "ontrack-cli",
-    entries: ["src/ontrack.ts", "src/http.ts"],
+    entries: ["src/ontrack.ts", "src/http.ts", "src/project-snapshot.ts"],
     exports:
-      'export { OnTrackClient } from "./src/ontrack.js"; export { HttpClient } from "./src/http.js";',
+      'export { OnTrackClient } from "./src/ontrack.js"; export { HttpClient } from "./src/http.js"; export { buildProjectSnapshot } from "./src/project-snapshot.js"; export { CivilDate, Instant } from "./src/time.js";',
   },
 };
 function fetchText(url) {
@@ -45,7 +55,7 @@ const previous = JSON.parse(
 );
 const mode = process.argv[2] ?? "check";
 if (!["check", "sync", "verify"].includes(mode))
-  throw new Error("Usage: pnpm upstreams check | sync | verify");
+  throw new Error("Usage: pnpm upstreams check | sync [--locked] | verify");
 const manifest = {};
 const staging = mode === "sync" ? await mkdtemp("vendor/.sync-") : undefined;
 try {
@@ -61,14 +71,19 @@ try {
       console.log(`${platform}: verified ${record.sha}`);
       if (mode === "verify") continue;
     }
-    const info = JSON.parse(
-      fetchText(`https://api.github.com/repos/bunizao/${entry.repo}`),
-    );
-    const commit = JSON.parse(
-      fetchText(
-        `https://api.github.com/repos/bunizao/${entry.repo}/commits/${encodeURIComponent(info.default_branch)}`,
-      ),
-    );
+    const locked = mode === "sync" && process.argv.includes("--locked");
+    const info = locked
+      ? { default_branch: previous[platform].branch }
+      : JSON.parse(
+          fetchText(`https://api.github.com/repos/bunizao/${entry.repo}`),
+        );
+    const commit = locked
+      ? { sha: previous[platform].sha }
+      : JSON.parse(
+          fetchText(
+            `https://api.github.com/repos/bunizao/${entry.repo}/commits/${encodeURIComponent(info.default_branch)}`,
+          ),
+        );
     const sha = commit.sha;
     if (mode === "check") {
       if (previous[platform]?.sha !== sha)
@@ -124,14 +139,41 @@ try {
     files["client.js"] = createHash("sha256")
       .update(await readFile(`${root}/client.js`))
       .digest("hex");
+    // Generate declarations from the pinned source rather than inventing an any-typed client.
+    execFileSync(
+      process.execPath,
+      [
+        resolve(
+          dirname(require.resolve("typescript/package.json")),
+          "lib/tsc.js",
+        ),
+        "--ignoreConfig",
+        "--declaration",
+        "--emitDeclarationOnly",
+        "--noCheck",
+        "--outDir",
+        "types",
+        "--target",
+        "es2023",
+        "--module",
+        "esnext",
+        "--moduleResolution",
+        "bundler",
+        "entry.ts",
+      ],
+      { cwd: resolve(root), stdio: "pipe" },
+    );
     await writeFile(
       `${root}/client.d.ts`,
-      platform === "ed"
-        ? "export declare class EdClient { constructor(options: any); [key: string]: any; }\n"
-        : platform === "moodle"
-          ? "export declare class MoodleClientCore { constructor(baseUrl: string, options: any); [key: string]: any; }\n"
-          : "export declare class HttpClient { constructor(options: any); [key: string]: any; }\nexport declare class OnTrackClient { constructor(http: HttpClient); [key: string]: any; }\n",
+      'export * from "./types/entry.js";\n',
     );
+    for (const path of await readdir(`${root}/types`, { recursive: true })) {
+      if (!path.endsWith(".d.ts")) continue;
+      const relative = `types/${path}`;
+      files[relative] = createHash("sha256")
+        .update(await readFile(`${root}/${relative}`))
+        .digest("hex");
+    }
     for (const path of ["entry.ts", "client.d.ts"])
       files[path] = createHash("sha256")
         .update(await readFile(`${root}/${path}`))

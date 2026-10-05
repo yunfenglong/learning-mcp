@@ -1,1 +1,1 @@
-export declare class EdClient { constructor(options: any); [key: string]: any; }
+export * from "./types/entry.js";

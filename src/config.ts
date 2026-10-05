@@ -2,6 +2,7 @@ import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { z } from "zod";
 import type { Platform, Unit } from "./domain/units.ts";
 import { SuiteError } from "./errors.ts";
+import { platformBaseLink } from "./platforms/base-link.ts";
 export interface Env {
   OAUTH_KV: KVNamespace;
   AUTH_STATE: DurableObjectNamespace;
@@ -11,6 +12,8 @@ export interface Env {
   ADMIN_TOKEN?: string;
   PLATFORM_CONFIG?: string;
   SSO_PROVIDERS?: string;
+  LEGAL_CONFIG?: string;
+  RESOURCE_ORIGINS?: string;
   SSO_BROKER?: Fetcher;
   BROKER_SERVICE_TOKEN?: string;
 }
@@ -46,11 +49,22 @@ export const platformConfigSchema = z
   })
   .strict();
 export type PlatformConfig = z.infer<typeof platformConfigSchema>;
+export const legalConfigSchema = z
+  .object({
+    operator_name: z.string().trim().min(1).max(200).optional(),
+    contact_email: z.string().email().max(254).optional(),
+    retention_details: z.string().trim().min(1).max(2000).optional(),
+    processing_regions: z.string().trim().min(1).max(1000).optional(),
+  })
+  .strict();
+export type LegalConfig = z.infer<typeof legalConfigSchema>;
 export interface Config {
   issuer: string;
   units: Unit[];
   platforms: Partial<Record<Platform, PlatformConfig>>;
   ssoProviders?: SsoProvider[];
+  legal?: LegalConfig;
+  resourceOrigins?: string[];
 }
 export function loadConfig(env: Env): Config {
   try {
@@ -66,6 +80,8 @@ export function loadConfig(env: Env): Config {
     platforms.ed ??= { site_url: "https://edstem.org" };
     return {
       issuer,
+      legal: legalConfigSchema.parse(JSON.parse(env.LEGAL_CONFIG ?? "{}")),
+      resourceOrigins: z.array(httpsOrigin).max(30).parse(JSON.parse(env.RESOURCE_ORIGINS ?? "[]")).map(platformBaseLink),
       units: [],
       platforms,
       ssoProviders: ssoProvidersSchema.parse(

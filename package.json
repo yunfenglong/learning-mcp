@@ -12,21 +12,26 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "errors:catalog": "node scripts/error-catalog.mjs",
     "test": "vitest run",
     "test:runtime": "pnpm build && pnpm build:broker && vitest run --config vitest.runtime.config.ts",
     "build": "node scripts/wrangler.mjs build",
     "dev": "node scripts/wrangler.mjs dev",
+    "preview:ui": "node scripts/preview-ui.mjs",
     "deploy": "node scripts/wrangler.mjs deploy",
     "admin": "node scripts/admin.mjs",
     "upstreams": "node scripts/upstreams.mjs",
-    "build:broker": "node scripts/wrangler.mjs build --config broker/wrangler.jsonc --outdir ../dist-broker",
-    "deploy:broker": "node scripts/wrangler.mjs deploy --config broker/wrangler.jsonc"
+    "build:broker": "node scripts/wrangler.mjs build --config broker/wrangler.jsonc --outdir dist-broker",
+    "deploy:broker": "node scripts/wrangler.mjs deploy --config broker/wrangler.jsonc",
+    "capabilities:docs": "node scripts/capabilities.mjs",
+    "capabilities:check": "node scripts/capabilities.mjs --check"
   },
   "dependencies": {
     "@cloudflare/playwright": "1.3.6",
     "@cloudflare/workers-oauth-provider": "1.2.1",
     "@modelcontextprotocol/sdk": "1.32.0",
     "node-html-parser": "7.1.0",
+    "unpdf": "1.8.1",
     "zod": "4.6.2"
   },
   "devDependencies": {

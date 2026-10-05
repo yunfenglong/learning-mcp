@@ -80,12 +80,20 @@ export class AccountStore {
         "Review the current usage notice.",
         403,
       );
-    const acceptance = { version: USAGE_VERSION, accepted_at: this.now() };
+    const acceptance = {
+      version: USAGE_VERSION,
+      terms_version: USAGE_VERSION,
+      accepted_at: this.now(),
+    };
     await this.store.put("usage", acceptance);
     return acceptance;
   }
   async requireUsage() {
-    if ((await this.usage())?.version !== USAGE_VERSION)
+    const acceptance = await this.usage();
+    if (
+      acceptance?.version !== USAGE_VERSION ||
+      acceptance.terms_version !== USAGE_VERSION
+    )
       throw new SuiteError(
         "USAGE_REQUIRED",
         "Read and accept the usage notice on the account page.",

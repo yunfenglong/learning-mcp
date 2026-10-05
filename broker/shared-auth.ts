@@ -5,6 +5,7 @@ import type { LoginInput } from "./sso.ts";
 import { generateTotp } from "./totp.ts";
 import { safeJsonFetch } from "../src/platforms/network.ts";
 import { SuiteError } from "../src/errors.ts";
+import { mfaError, validateOtp } from "../src/auth/mfa.ts";
 var USERNAME_SELECTORS = [
   "#okta-signin-username",
   'input[name="identifier"]',
@@ -36,7 +37,11 @@ var OTP_SELECTORS = [
   'input[id*="code" i]',
   'input[placeholder*="code" i]',
 ];
-async function fillFirst(page: Page, selectors2: string[], value: string) {
+export async function fillFirst(
+  page: Page,
+  selectors2: string[],
+  value: string,
+) {
   for (const sel of selectors2) {
     try {
       const e = page.locator(sel).first();
@@ -48,7 +53,7 @@ async function fillFirst(page: Page, selectors2: string[], value: string) {
   }
   return false;
 }
-async function clickFirst(page: Page, selectors2: string[]) {
+export async function clickFirst(page: Page, selectors2: string[]) {
   for (const sel of selectors2) {
     try {
       const e = page.locator(sel).first();
@@ -60,7 +65,7 @@ async function clickFirst(page: Page, selectors2: string[]) {
   }
   return false;
 }
-async function safeLoginState(page: Page, label: string) {
+export async function safeLoginState(page: Page, label: string) {
   try {
     return await page.evaluate((label2) => {
       const visible = (el: any) => {
@@ -102,12 +107,19 @@ async function safeLoginState(page: Page, label: string) {
               el.name === "passcode" ||
               el.name === "credentials.otp" ||
               (el.name === "credentials.passcode" && el.type !== "password") ||
+              el.getAttribute("maxlength") === "1" ||
+              /digit/i.test(el.getAttribute("aria-label") ?? "") ||
               el.inputMode === "numeric" ||
               el.type === "tel"),
         ),
         hasSamlResponse: !!(globalThis as any).document.querySelector(
           'input[name="SAMLResponse"]',
         ),
+        hasError: !![
+          ...(globalThis as any).document.querySelectorAll(
+            '[role="alert"], .o-form-error-container, .okta-form-infobox-error',
+          ),
+        ].find((el: any) => visible(el) && String(el.textContent || "").trim()),
       };
     }, label);
   } catch {
@@ -117,6 +129,7 @@ async function safeLoginState(page: Page, label: string) {
       hasPassword: false,
       hasOtp: false,
       hasSamlResponse: false,
+      hasError: false,
     };
   }
 }
@@ -201,6 +214,7 @@ export async function autoLogin(
   page: Page,
   creds: LoginInput | undefined,
   credentialOrigins?: string[],
+  pauseForMfa?: (page: Page) => Promise<boolean>,
 ) {
   const attempts = { username: 0, password: 0, otp: 0, factor: 0 };
   await page.waitForTimeout(1200);
@@ -223,6 +237,23 @@ export async function autoLogin(
         "The saved SSO session has expired. Connect again with your SSO login.",
         409,
       );
+    if (
+      pauseForMfa &&
+      !state.hasUsername &&
+      !state.hasPassword &&
+      (await pauseForMfa(page))
+    )
+      return;
+    if (
+      state.hasError &&
+      (attempts.password > 0 || attempts.username > 0) &&
+      !state.hasOtp
+    )
+      throw mfaError("SSO_CREDENTIALS_REJECTED", 401);
+    if (state.hasPassword && attempts.password >= 2)
+      throw mfaError("SSO_CREDENTIALS_REJECTED", 401);
+    if (state.hasOtp && attempts.otp > 0)
+      throw mfaError(creds?.totp ? "MFA_TOTP_REJECTED" : "MFA_CODE_REJECTED");
     if (state.hasOtp && !creds?.totp && !creds?.mfa_code)
       throw new SuiteError(
         "MFA_REQUIRED",
@@ -264,6 +295,7 @@ export async function autoLogin(
       const code = creds!.totp
         ? await generateTotp(creds!.totp)
         : creds!.mfa_code!;
+      validateOtp(code);
       let filled = await fillFirst(page, OTP_SELECTORS, code);
       if (!filled) {
         try {
@@ -353,7 +385,38 @@ export async function autoLogin(
       break;
     }
   }
+  const finalState = await safeLoginState(page, "final");
+  if (finalState.hasOtp)
+    throw mfaError(creds?.totp ? "MFA_TOTP_REJECTED" : "MFA_CODE_REJECTED");
+  if (finalState.hasPassword || finalState.hasUsername)
+    throw mfaError("SSO_CREDENTIALS_REJECTED", 401);
   return;
+}
+
+/** A user-triggered verification submits once; never replay an OTP. */
+export async function submitVerificationCode(page: Page, code: string) {
+  validateOtp(code);
+  let filled = await fillFirst(page, OTP_SELECTORS, code);
+  if (!filled) {
+    const boxes = page.locator(
+      'input[aria-label*="digit" i], input[maxlength="1"]',
+    );
+    const count = await boxes.count();
+    if (count === code.length) {
+      for (let i = 0; i < count; i++) await boxes.nth(i).fill(code[i]!);
+      filled = true;
+    }
+  }
+  if (!filled) throw mfaError("MFA_FORM_UNSUPPORTED");
+  const clicked = await clickFirst(page, [
+    '[data-se="save"]',
+    'button:has-text("Verify")',
+    'button:has-text("Submit")',
+    'input[type="submit"]',
+    'button[type="submit"]',
+  ]);
+  if (!clicked && !(await pressEnterFirst(page, OTP_SELECTORS)))
+    throw mfaError("MFA_FORM_UNSUPPORTED");
 }
 export async function discoverOnTrackLogin(baseUrl: string) {
   try {

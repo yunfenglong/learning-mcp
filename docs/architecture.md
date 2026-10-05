@@ -11,6 +11,10 @@ flowchart LR
   Broker --> Login[Platform SSO and session renewal]
 ```
 
+## Educational capability contracts
+
+Public read definitions live in `src/capabilities/`, organized by platform. MCP registration, backend allowlists, operation/argument types and the generated reference come from that catalog. Platform handlers use the bundled official clients; shared authentication, enrollment and file/output boundaries remain centralized. See [read semantics and maintenance](read-contract.md) for the contract and upgrade workflow.
+
 ## Authentication flows
 
 | Flow                      | Purpose                                             | Renewal                                                                                                |
@@ -65,3 +69,17 @@ Requested course data passes through the service and its hosting infrastructure 
 An output boundary redacts credential fields, credential-bearing link parameters and known session secrets from MCP text and structured results, including errors. Administration and broker connection metadata receive the same protection. Internal session contracts retain the credentials needed for platform reads and renewal, require broker authentication, and use noncacheable responses. The output boundary is scoped to one account/request and does not retain secrets globally.
 
 Platform destinations are saved per user in the private broker. The suite reads the authenticated account’s sites before constructing clients and adapters; renewal and cookie rotation require the same saved destination. A user cannot replace a connected site without disconnecting it, which clears that platform’s associations and session material. New connections require a user-supplied base link; platform destinations have no deployment default.
+
+## Interactive provider MFA
+
+The landing sign-in uses a staged, private-broker transaction: password submission, live-page MFA discovery, user-selected verification, and active Okta session validation. Only fixed method identifiers and curated errors leave the provider browser; provider text stays untrusted and private. The TOTP setup-key option is always displayed, and SSO OTP and authenticator TOTP are offered only when detected. The transaction reuses the same cloud browser in one serialized Durable Object, bound to an opaque account, suite browser cookie and rotating single-use nonce. It stores no transaction credentials or OTPs in durable storage. The five-minute deadline, cleanup alarm, bounded operations and Browser Run inactivity timeout limit abandoned transactions; eviction requires a new sign-in. This follows Cloudflare’s [Durable Object browser reuse pattern](https://developers.cloudflare.com/browser-run/how-to/browser-run-with-do/) and [Playwright keep-alive behavior](https://developers.cloudflare.com/browser-run/playwright/).
+
+Every code is submitted once. Three validation or verification errors stop the transaction across method changes. Retention opt-in only takes effect after verified identity; a supplied but unused/rejected TOTP key is discarded. Completing the password step never creates a suite session. The current notice is recorded only after authenticated completion.
+
+## Legal pages and consent boundaries
+
+`/privacy`, `/terms` and `/data-controls` are public read-only HTML routes. `LEGAL_CONFIG` provides validated, escaped instance-specific operator, contact, region and retention disclosures. A personal deployment's operator is distinct from the source repository maintainer. The privacy page describes actual application retention and removal limits; configurable disclosures do not implement deletion or residency controls.
+
+Browser sign-in, current-notice acceptance and OAuth approval require separate notice acknowledgement and terms acceptance, bound to the current notice version. Sign-in checks these before broker credential processing, and records acceptance only after verified identity. Current notice and terms versions gate learning reads and new grants. An authenticated browser with outdated acceptance can still revoke clients, disconnect platforms, remove saved sign-in or sign out, including from the notice-update page.
+
+Password retention (`remember`) and additional TOTP retention (`remember_totp`) are default-off. The broker rejects TOTP retention without password retention, stores a supplied TOTP configuration only with both selections, and records the choices and time in the encrypted shared-sign-in record. Interactive MFA additionally requires successful verification of that secret. One-time codes are never stored. A fresh sign-in without retention replaces saved credentials with session-only state; existing platform sessions can still renew independently.

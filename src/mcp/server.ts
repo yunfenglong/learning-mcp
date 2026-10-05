@@ -5,29 +5,22 @@ import type { Config } from "../config.ts";
 import type { EdAdapter } from "../adapters/ed.ts";
 import type { MoodleAdapter } from "../adapters/moodle.ts";
 import type { OnTrackAdapter } from "../adapters/ontrack.ts";
-import { resolveUnit } from "../domain/units.ts";
 import { MANAGE_SCOPE, READ_SCOPE } from "../auth/state.ts";
 import type { AccountService } from "../accounts/service.ts";
 import { unitSchema } from "../domain/units.ts";
 import { SuiteError } from "../errors.ts";
 import { publicError } from "../errors.ts";
-import { findAttendanceCode } from "../workflows/attendance.ts";
 import { OutputBoundary } from "../security/output.ts";
+import { fileContents } from "../platforms/read/files.ts";
+import { registerReadTools } from "../capabilities/index.ts";
+import { registerEdView } from "./views/ed/index.ts";
+import { registerEdPrompts } from "./prompts/ed.ts";
 
 export interface Adapters {
   ed: EdAdapter;
   moodle: MoodleAdapter;
   ontrack: OnTrackAdapter;
 }
-const unit = z
-  .string()
-  .trim()
-  .min(1)
-  .max(100)
-  .describe(
-    "Linked course key, or an unambiguous course code. Use course_units for keys.",
-  );
-const id = z.number().int().positive();
 const readOnly = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -82,9 +75,10 @@ export function createServer(
               "This client has read-only access. Authorize learning:bindings to connect platforms or change course mappings. This is a permission upgrade, not an expired login; reading remains available.",
               403,
             );
-          const value = output.redact(
+          const files = fileContents(
             await run(args as z.infer<z.ZodObject<S>>),
           );
+          const value = output.redact(files.metadata);
           const structuredContent =
             value && typeof value === "object" && !Array.isArray(value)
               ? (value as Record<string, unknown>)
@@ -95,6 +89,7 @@ export function createServer(
                 type: "text" as const,
                 text: JSON.stringify(structuredContent),
               },
+              ...files.resources,
             ],
             structuredContent,
           };
@@ -190,105 +185,9 @@ export function createServer(
       async () => account.versions(),
     );
   }
-  const selected = (reference: string) => resolveUnit(config.units, reference);
-  tool(
-    "course_units",
-    "List linked courses with campus, teaching period, timezone and platform IDs.",
-    {},
-    async () => ({ units: config.units }),
-  );
-  tool(
-    "ed_lessons",
-    "List Ed lessons within one configured course.",
-    { unit },
-    async (args) => ({
-      lessons: await adapters.ed.lessons(selected(args.unit)),
-    }),
-  );
-  tool(
-    "ed_lesson",
-    "Read an Ed lesson after checking its course ownership.",
-    { unit, lesson_id: id },
-    async (args) => adapters.ed.lesson(selected(args.unit), args.lesson_id),
-  );
-  tool(
-    "ed_threads",
-    "Read up to 100 recent Ed thread summaries for a linked course.",
-    { unit },
-    async (args) => ({
-      threads: await adapters.ed.threads(selected(args.unit)),
-      coverage: "bounded",
-    }),
-  );
-  tool(
-    "ed_thread",
-    "Read an Ed thread after checking its course ownership.",
-    { unit, thread_id: id },
-    async (args) => adapters.ed.thread(selected(args.unit), args.thread_id),
-  );
-  tool(
-    "moodle_unit",
-    "Read the Moodle section index, or activities in one section, for a linked course.",
-    { unit, section: id.optional() },
-    async (args) => adapters.moodle.unit(selected(args.unit), args.section),
-  );
-  tool(
-    "moodle_due",
-    "Read a linked course's Moodle deadlines in the next 1–365 days.",
-    { unit, days: z.number().int().min(1).max(365).default(14) },
-    async (args) => ({
-      due: await adapters.moodle.due(selected(args.unit), args.days),
-    }),
-  );
-  tool(
-    "moodle_grades",
-    "Read Moodle grades and feedback for a configured course.",
-    { unit },
-    async (args) => adapters.moodle.grades(selected(args.unit)),
-  );
-  tool(
-    "moodle_search_forums",
-    "Search bounded Moodle forum text within one linked course.",
-    { unit, query: z.string().trim().min(1).max(200) },
-    async (args) => adapters.moodle.search(selected(args.unit), args.query),
-  );
-  tool(
-    "moodle_thread",
-    "Read a Moodle discussion after checking the linked course and site.",
-    { unit, discussion_id: id },
-    async (args) =>
-      adapters.moodle.thread(selected(args.unit), args.discussion_id),
-  );
-  tool(
-    "ontrack_unit",
-    "Read an OnTrack unit and its task definitions from your connected account.",
-    { unit },
-    async (args) => adapters.ontrack.unit(selected(args.unit)),
-  );
-  tool(
-    "ontrack_tasks",
-    "List tasks in a configured OnTrack project.",
-    { unit },
-    async (args) => adapters.ontrack.tasks(selected(args.unit)),
-  );
-  tool(
-    "ontrack_task",
-    "Read a task that appears in the configured OnTrack project.",
-    { unit, task_definition_id: id },
-    async (args) =>
-      adapters.ontrack.task(selected(args.unit), args.task_definition_id),
-  );
-  tool(
-    "find_attendance_code",
-    "Find attendance-code candidates in Ed and Moodle text for a class date, with source links, context and explicit search coverage. Date is in the unit's timezone. Does not check or submit to the attendance portal.",
-    {
-      unit,
-      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      session_type: z.string().trim().min(1).max(50).optional(),
-      group: z.string().trim().min(1).max(50).optional(),
-    },
-    async (args) => findAttendanceCode(selected(args.unit), args, adapters),
-  );
+  registerReadTools(tool, { config, adapters });
+  registerEdView(server);
+  registerEdPrompts(server, config);
   return server;
 }
 

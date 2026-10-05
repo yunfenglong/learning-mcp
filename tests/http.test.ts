@@ -4,6 +4,7 @@ import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Config, Env } from "../src/config.ts";
 import { AccountStore, READ_SCOPE, MANAGE_SCOPE } from "../src/auth/state.ts";
 import { authorize, requestFingerprint } from "../src/http/authorize.ts";
+import { landing, accountAction } from "../src/http/landing.ts";
 import { admin } from "../src/http/admin.ts";
 import { boundedRequest } from "../src/http/common.ts";
 import { digest } from "../src/auth/crypto.ts";
@@ -63,6 +64,9 @@ async function fixture() {
             case "/ephemeral/get":
               result = (await state.ephemeralGet(v.key, v.take)) ?? null;
               break;
+            case "/usage":
+              result = await state.usage();
+              break;
             case "/usage/accept":
               result = await state.acceptUsage(v.version);
               break;
@@ -112,12 +116,97 @@ const post = (
       csrf,
       consent: "allow",
       usage_consent: "accept",
+      terms_consent: "accept",
       usage_version: USAGE_VERSION,
       action: "allow",
       ...extra,
     }),
   });
 describe("OAuth client consent", () => {
+  it("requires terms separately from notice acknowledgement, but cancellation needs neither", async () => {
+    const f = await fixture();
+    const text = await (await authorize(get(), f.env, f.config)).text();
+    const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    for (const extra of [
+      { terms_consent: "" },
+      { usage_version: "2026-10-04.1" },
+    ] as Record<string, string>[]) {
+      await expect(
+        authorize(post(nonce, extra), f.env, f.config),
+      ).rejects.toMatchObject({ code: "CONSENT_REQUIRED" });
+      expect(f.complete).not.toHaveBeenCalled();
+      expect(await f.account.usage()).toBeNull();
+    }
+    expect(
+      (
+        await authorize(
+          post(nonce, { action: "deny", terms_consent: "", usage_consent: "" }),
+          f.env,
+          f.config,
+        )
+      ).status,
+    ).toBe(302);
+    expect(await f.account.usage()).toBeNull();
+  });
+  it("keeps access-removal controls usable when the notice is outdated", async () => {
+    const f = await fixture();
+    await f.account.acceptUsage(USAGE_VERSION);
+    const grant = await f.account.approve(
+      {
+        id: "client-a",
+        name: "Demo client",
+        redirect_uri: "https://client.example/callback",
+      },
+      [READ_SCOPE],
+    );
+    vi.spyOn(f.account, "usage").mockResolvedValue({
+      version: "2026-10-04.1",
+      accepted_at: 1,
+    });
+    const headers = {
+      origin: f.config.issuer,
+      cookie: `__Host-learning-session=${sessionToken}`,
+    };
+    const text = await (
+      await landing(
+        new Request(`${f.config.issuer}/landing`, { headers }),
+        f.env,
+        f.config,
+      )
+    ).text();
+    expect(text).toContain('action="/account/revoke"');
+    expect(text).toContain('action="/account/disconnect"');
+    expect(text).toContain('action="/account/forget-login"');
+    expect(
+      (
+        await accountAction(
+          new Request(`${f.config.issuer}/account/revoke`, {
+            method: "POST",
+            headers,
+            body: new URLSearchParams({ csrf, grant_id: grant.id }),
+          }),
+          f.env,
+          f.config,
+        )
+      ).status,
+    ).toBe(303);
+    expect((await f.account.grants()).grants[0]!.revoked).toBe(true);
+    await expect(
+      accountAction(
+        new Request(`${f.config.issuer}/account/usage`, {
+          method: "POST",
+          headers,
+          body: new URLSearchParams({
+            csrf,
+            confirm: "yes",
+            version: USAGE_VERSION,
+          }),
+        }),
+        f.env,
+        f.config,
+      ),
+    ).rejects.toMatchObject({ code: "USAGE_REQUIRED" });
+  });
   it("explains setup permission while preserving an explicitly read-only consent", async () => {
     const full = await fixture();
     expect(
@@ -188,7 +277,7 @@ describe("OAuth client consent", () => {
     expect(text).toContain("TOTP secret");
     expect(text).toContain("sent to the MCP client you authorize");
     expect(text).toContain("infrastructure providers used by its operator");
-    expect(text).not.toContain("Cloudflare");
+    expect(text).toContain("Cloudflare");
     const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
     await expect(
       authorize(post(nonce, { usage_consent: "" }), f.env, f.config),
@@ -300,7 +389,9 @@ describe("browser and administrator boundaries", () => {
   });
   it("keeps a login form valid when another sign-in page opens in the same browser", async () => {
     const f = await fixture();
-    f.config.platforms.moodle = { site_url: "https://moodle.example.edu" };
+    f.config.ssoProviders = [
+      { type: "okta", origin: "https://tenant.okta.example" },
+    ];
     f.env.SSO_BROKER = {
       fetch: vi.fn(async () => Response.json({ id })),
     } as any;
@@ -328,11 +419,12 @@ describe("browser and administrator boundaries", () => {
         headers: { origin: f.config.issuer, cookie: currentCookie },
         body: new URLSearchParams({
           nonce,
-          platform: "moodle",
-          base_link: "https://moodle.example.edu",
+          platform: "sso",
+          provider: "https://tenant.okta.example",
           username: "u",
           password: "p",
           usage_consent: "accept",
+          terms_consent: "accept",
           usage_version: USAGE_VERSION,
         }),
       }),
@@ -374,6 +466,7 @@ describe("browser and administrator boundaries", () => {
             password: "provider-password",
             usage_version: USAGE_VERSION,
             usage_consent: "accept",
+            terms_consent: "accept",
             ...extra,
           }),
         }),
@@ -381,6 +474,9 @@ describe("browser and administrator boundaries", () => {
         f.config,
       );
     await expect(submit({ usage_consent: "" })).rejects.toMatchObject({
+      code: "USAGE_REQUIRED",
+    });
+    await expect(submit({ terms_consent: "" })).rejects.toMatchObject({
       code: "USAGE_REQUIRED",
     });
     expect(fetch).not.toHaveBeenCalled();
@@ -417,6 +513,7 @@ describe("browser and administrator boundaries", () => {
             password: "provider-password",
             usage_version: USAGE_VERSION,
             usage_consent: "accept",
+            terms_consent: "accept",
           }),
         }),
         f.env,
@@ -425,70 +522,145 @@ describe("browser and administrator boundaries", () => {
     ).rejects.toMatchObject({ code: "SSO_PROVIDER_UNAVAILABLE" });
     expect(fetch).toHaveBeenCalledOnce();
   });
-  it("binds platform sign-in to browser, notice, origin and a single-use nonce", async () => {
+  it("removes platform sign-in in the page and rejects crafted legacy submissions", async () => {
     const f = await fixture();
+    f.config.ssoProviders = [
+      { type: "okta", origin: "https://tenant.okta.example" },
+    ];
     f.config.platforms.moodle = { site_url: "https://moodle.example.edu" };
-    const fetch = vi.fn(async (_request: Request) =>
-      Response.json({ id, name: "Verified account" }),
-    );
-    f.env.SSO_BROKER = { fetch } as any;
-    f.env.BROKER_SERVICE_TOKEN = "b".repeat(64);
+    f.env.SSO_BROKER = { fetch: vi.fn() } as any;
     const start = await startLogin(
       new Request("https://suite.example/login"),
       f.env,
       f.config,
     );
-    const loginHtml = await start.text();
-    expect(loginHtml).not.toContain(f.config.platforms.moodle.site_url);
-    expect(loginHtml).toContain("Then connect Ed, Moodle and OnTrack together");
-    const nonce = loginHtml.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    const text = await start.text();
+    expect(text).not.toContain('name="base_link"');
+    expect(text).not.toContain("platform-based account");
+    const nonce = text.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    await expect(
+      finishLogin(
+        new Request("https://suite.example/login", {
+          method: "POST",
+          headers: {
+            origin: f.config.issuer,
+            cookie: start.headers.get("set-cookie")!.split(";")[0]!,
+          },
+          body: new URLSearchParams({ nonce, platform: "moodle" }),
+        }),
+        f.env,
+        f.config,
+      ),
+    ).rejects.toMatchObject({ code: "LOGIN_METHOD_REMOVED", status: 410 });
+    expect(f.env.SSO_BROKER!.fetch).not.toHaveBeenCalled();
+  });
+  it("shows only discovered MFA alternatives, rotates browser-bound nonces and preserves the OAuth return", async () => {
+    const f = await fixture();
+    f.config.ssoProviders = [
+      { type: "okta", origin: "https://tenant.okta.example" },
+    ];
+    const challenge = {
+      status: "mfa_required",
+      methods: ["sso_otp"],
+      attempts_remaining: 3,
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(challenge))
+      .mockResolvedValueOnce(
+        Response.json({
+          ...challenge,
+          attempts_remaining: 2,
+          error: { code: "MFA_CODE_REJECTED", message: "Enter a fresh code." },
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ id }));
+    f.env.SSO_BROKER = { fetch } as any;
+    f.env.BROKER_SERVICE_TOKEN = "b".repeat(64);
+    const target = "/authorize?client_id=client-a&state=state-a";
+    const start = await startLogin(
+      new Request(
+        `https://suite.example/login?return_to=${encodeURIComponent(target)}`,
+      ),
+      f.env,
+      f.config,
+    );
+    const nonce = (await start.text()).match(
+      /name="nonce" value="([a-f0-9]+)"/,
+    )![1]!;
     const browser = start.headers.get("set-cookie")!.split(";")[0]!;
-    const submit = (extra = {}, origin = f.config.issuer, cookie = browser) =>
+    const submit = (
+      nonce: string,
+      fields: Record<string, string>,
+      cookie = browser,
+      origin = f.config.issuer,
+    ) =>
       finishLogin(
         new Request("https://suite.example/login", {
           method: "POST",
           headers: { origin, cookie },
-          body: new URLSearchParams({
-            nonce,
-            platform: "moodle",
-            base_link: "https://moodle.example.edu",
-            username: "claimed-user",
-            password: "password-canary",
-            usage_version: USAGE_VERSION,
-            usage_consent: "accept",
-            ...extra,
-          }),
+          body: new URLSearchParams({ nonce, ...fields }),
         }),
         f.env,
         f.config,
       );
-    for (const origin of ["https://evil.example", "null", ""])
-      await expect(submit({}, origin)).rejects.toMatchObject({
-        code: "INVALID_ORIGIN",
-      });
-    await expect(submit({}, f.config.issuer, "")).rejects.toMatchObject({
+    const first = await submit(nonce, {
+      platform: "sso",
+      provider: "https://tenant.okta.example",
+      username: "u",
+      password: "password-canary",
+      usage_consent: "accept",
+      terms_consent: "accept",
+      usage_version: USAGE_VERSION,
+    });
+    expect(first.headers.get("set-cookie")).toBeNull();
+    const page = await first.text();
+    expect(page).toContain("SSO OTP");
+    expect(page).not.toContain("SSO Push Notification");
+    expect(page).not.toContain("TOTP (authenticator code)");
+    expect(page).toContain("TOTP secret");
+    expect(page).not.toContain("password-canary");
+    expect(await f.account.usage()).toBeNull();
+    const nextNonce = page.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    expect(nextNonce).not.toBe(nonce);
+    await expect(submit(nonce, {})).rejects.toMatchObject({
       code: "LOGIN_FAILED",
     });
-    await expect(submit({ usage_consent: "" })).rejects.toMatchObject({
-      code: "USAGE_REQUIRED",
+    await expect(
+      submit(nextNonce, { mfa_method: "sso_otp" }, ""),
+    ).rejects.toMatchObject({ code: "LOGIN_FAILED" });
+    await expect(
+      submit(
+        nextNonce,
+        { mfa_method: "sso_otp" },
+        browser,
+        "https://evil.example",
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_ORIGIN" });
+    const retry = await submit(nextNonce, {
+      mfa_method: "sso_otp",
+      mfa_code: "123456",
     });
-    expect(fetch).not.toHaveBeenCalled();
-    const signed = await submit();
-    expect(signed.status).toBe(303);
-    expect(signed.headers.get("set-cookie")).toContain(
-      "__Host-learning-session=",
+    const retryPage = await retry.text();
+    expect(retryPage).toContain("MFA_CODE_REJECTED");
+    expect(retryPage).not.toContain("123456");
+    expect(fetch.mock.calls[1]![0].headers.get("x-suite-account")).toBe(
+      fetch.mock.calls[0]![0].headers.get("x-suite-account"),
     );
-    expect(JSON.stringify(await f.account.profile())).not.toContain(
-      "claimed-user",
+    await expect(
+      submit(nextNonce, { mfa_method: "sso_otp", mfa_code: "123456" }),
+    ).rejects.toMatchObject({ code: "LOGIN_FAILED" });
+    const lastNonce = retryPage.match(/name="nonce" value="([a-f0-9]+)"/)![1]!;
+    const signed = await submit(lastNonce, {
+      mfa_method: "sso_otp",
+      mfa_code: "654321",
+    });
+    expect(signed.status).toBe(303);
+    expect(signed.headers.get("location")).toBe(target);
+    expect(signed.headers.get("set-cookie")).toContain(
+      "__Host-learning-session",
     );
     expect(await f.account.usage()).toMatchObject({ version: USAGE_VERSION });
-    const forwarded = fetch.mock.calls[0]![0] as Request;
-    expect(new URL(forwarded.url).pathname).toBe("/v1/authenticate");
-    expect(await forwarded.json()).toMatchObject({
-      input: { password: "password-canary", remember: false },
-    });
-    await expect(submit()).rejects.toMatchObject({ code: "LOGIN_FAILED" });
-    expect(fetch).toHaveBeenCalledOnce();
   });
   it("rejects arbitrary return URLs and browser CSRF", () => {
     expect(safeReturn("/landing?ticket=abc", "https://suite.example")).toBe(

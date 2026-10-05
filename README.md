@@ -75,7 +75,7 @@ https://YOUR_SUITE_HOST/mcp
 
 See [client setup](docs/clients.md) for ChatGPT plugin setup and OAuth discovery details.
 
-1. Connect an OAuth-capable MCP client. Sign in with your supported SSO provider base link, username, password and optional TOTP, or with an Ed API token. Use the same provider account or Ed account for future sign-ins. Existing platform-based accounts can use their original sign-in entry.
+1. Connect an OAuth-capable MCP client. Sign in with your supported SSO provider base link, username, password and optional TOTP secret, or with an Ed API token. After password verification, choose from the current provider page’s available SSO OTP and TOTP methods. Use the same provider account or Ed account for future sign-ins. Platform-based sign-in is no longer offered; use provider sign-in or an Ed token. Existing platform-anchored data is not automatically merged into a provider account.
 2. Read and accept the data handling notice before entering credentials, then approve the client's requested access.
 3. Open `https://YOUR_SUITE_HOST/landing`, or ask the client to connect a platform using `start_connection`.
 4. Connect only the platforms you need; Moodle alone is supported. Ed uses an API token; Moodle and OnTrack use their own saved base links with SSO or an existing platform session. Enter the base link on first Connect; later sign-in and renewal reuse it. Additional platforms can be connected to the same account later. Moodle and OnTrack can reuse your saved SSO when available, with your approval. Enter credentials on the connection page.
@@ -93,15 +93,9 @@ Users can remove course associations, disconnect platforms, forget saved sign-in
 
 ## Available tools
 
-| Category    | Tools                                                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Account     | `get_profile`, `connection_status`, `start_connection`, `disconnect_platform`                                            |
-| Courses     | `discover_courses`, `preview_course_bindings`, `confirm_course_bindings`, `bind_course`, `unbind_course`, `course_units` |
-| Ed          | `ed_lessons`, `ed_lesson`, `ed_threads`, `ed_thread`                                                                     |
-| Moodle      | `moodle_unit`, `moodle_due`, `moodle_grades`, `moodle_search_forums`, `moodle_thread`                                    |
-| OnTrack     | `ontrack_unit`, `ontrack_tasks`, `ontrack_task`                                                                          |
-| Attendance  | `find_attendance_code`                                                                                                   |
-| Diagnostics | `upstream_versions`                                                                                                      |
+The complete tool and parameter reference is generated from the [capability catalog](docs/capabilities.md); `capability_catalog` returns the same inventory through MCP. Reads cover platform identities and enrollment, Ed lessons/threads/files/slides/views, Moodle materials/files/sync/forums/quiz reviews, OnTrack projects/task sheets/resources/unread counts, and attendance-code discovery.
+
+Account tools preserve connection status, sign-in links, fresh discovery and user-confirmed course associations. [Read semantics and maintenance](docs/read-contract.md) explains scope, pagination and file limits. Platform writes awaiting approval are listed in the catalog; chat history is withheld because the upstream OnTrack read marks comments read. Attendance submission and learning-progress updates remain prohibited.
 
 OAuth scopes are `learning:read`, `learning:bindings` and `offline_access`. Platform reads check enrollment and object ownership; course associations require user confirmation.
 
@@ -109,11 +103,11 @@ OAuth scopes are `learning:read`, `learning:bindings` and `offline_access`. Plat
 
 Suite sign-in establishes your identity. Moodle and OnTrack also need their own platform sessions; signing in to the suite does not automatically grant access to them.
 
-The broker renews platform sessions over HTTP before using the cloud browser: Moodle session touch and cookie rotation, and OnTrack refresh-cookie exchange with access-token expiry checks. With explicit opt-in, it can store an encrypted password and optional TOTP secret and generate fresh verification codes during sign-in. Push approvals, passkeys, device verification or changed provider policies may require user interaction. One-time MFA codes are not retained.
+The broker renews platform sessions over HTTP before using the cloud browser: Moodle session touch and cookie rotation, and OnTrack refresh-cookie exchange with access-token expiry checks. With explicit password opt-in and a separate additional TOTP opt-in, it can store an encrypted password and optional TOTP secret and generate fresh verification codes during sign-in. Push approvals, passkeys, device verification or changed provider policies may require user interaction. One-time MFA codes are not retained.
 
 Credentials and platform sessions are encrypted in per-user Durable Object storage; OAuth records use KV. An operator holding the encryption keys can access stored credentials. **Forget saved sign-in** removes the saved password, TOTP secret and shared SSO cookies while retaining platform sessions, including OnTrack refresh cookies. Disconnect a platform to remove its session and renewal material. Disconnecting both broker platforms also removes the shared sign-in.
 
-The service and the infrastructure providers used by its operator process credentials and course data, and requested content is sent to the authorized MCP client. Users see a versioned notice before connecting platforms or granting client access. Users and operators must have the necessary permissions for automated access, credential delegation and content transfer. Accepting the notice does not establish platform approval or waive operator obligations.
+The service and the infrastructure providers used by its operator process credentials and course data, and requested content is sent to the authorized MCP client. Public privacy, terms and data-control pages explain each personal deployment. Users separately acknowledge a versioned notice and accept terms before connecting platforms or granting client access. Instance operator/contact details are configurable through `LEGAL_CONFIG`; repository publication does not make its maintainer the operator of other deployments. Users and operators must have the necessary permissions for automated access, credential delegation and content transfer. Accepting the notice does not establish platform approval or waive operator obligations.
 
 This is an independent project. Platform origins are configurable and there are no institution-specific defaults. Attendance search covers Ed and Moodle text; it may miss images, attachments or codes shown only in class.
 
@@ -147,3 +141,5 @@ Pinned versions, commit hashes and file hashes are recorded in [`vendor/upstream
 The project's original code and documentation are available under the [PolyForm Noncommercial License 1.0.0](LICENSE). This is a source-available license that permits noncommercial use, modification and redistribution under its terms. It also expressly permits use by specified organizations, including educational institutions and charities, regardless of funding. Commercial use outside the license's permitted purposes is not authorized.
 
 Third-party clients and dependencies retain their own licenses. The bundled bunizao clients remain MIT-licensed; see [NOTICE](NOTICE) and the license files in `vendor/`.
+
+See the [error code and message catalog](docs/error-codes.md) for actionable sign-in, MFA, connection and read errors.

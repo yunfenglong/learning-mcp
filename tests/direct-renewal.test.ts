@@ -103,7 +103,7 @@ describe("bundled-client renewal errors", () => {
       },
       network,
     );
-    const client = await backend.api();
+    const client = await backend.api("moodle");
     expect(await client.getSiteInfo()).toMatchObject({
       userid: 12,
       fullname: "Student",

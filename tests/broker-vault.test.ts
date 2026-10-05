@@ -1,3 +1,4 @@
+import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@cloudflare/playwright", () => ({ launch: vi.fn() }));
 const login = vi.hoisted(() => vi.fn());
@@ -161,73 +162,30 @@ describe("private credential vault", () => {
     await f.call("/v1/disconnect", { platform: "moodle" });
     expect(await (await f.call("/v1/sites")).json()).toEqual({});
   });
-  it("authenticates SSO before deriving the account and saving credentials", async () => {
-    const stores = new Map<string, ReturnType<typeof fixture>>();
-    const env = {
-      ...fixture().env,
-      BROKER_SERVICE_TOKEN: "b".repeat(64),
-      BROKER_STATE: {
-        idFromName: (id: string) => id,
-        get: (id: string) => ({
-          fetch: (request: Request) => {
-            let f = stores.get(id);
-            if (!f) {
-              f = fixture();
-              stores.set(id, f);
-            }
-            return new BrokerState(
-              { storage: f.storage } as any,
-              env as any,
-            ).fetch(request);
-          },
+  it("rejects the removed platform login broker route before browser or storage access", async () => {
+    const f = fixture();
+    const env = { ...f.env, BROKER_SERVICE_TOKEN: "b".repeat(64) };
+    const response = await entrypoint.fetch(
+      new Request("https://broker/v1/authenticate", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.BROKER_SERVICE_TOKEN}`,
+          "x-suite-account": account,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          platform: "moodle",
+          input: { username: "u", password: "secret" },
         }),
-      },
-    };
-    const authenticate = (extra: any = {}) =>
-      entrypoint.fetch(
-        new Request("https://broker/v1/authenticate", {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${env.BROKER_SERVICE_TOKEN}`,
-            "x-suite-account": "c".repeat(64),
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            platform: "moodle",
-            base_link: "https://moodle.example.edu",
-            input: {
-              username: "user",
-              password: "password-secret",
-              totp_secret: seed,
-              remember: true,
-            },
-            ...extra,
-          }),
-        }),
-        env as any,
-      );
-    const first = await authenticate();
-    expect(first.status).toBe(200);
-    const profile = (await first.json()) as any;
-    expect(profile.id).toMatch(/^[a-f0-9]{64}$/);
-    expect(profile.id).not.toBe("c".repeat(64));
-    expect(JSON.stringify(profile)).not.toContain("password-secret");
-    expect(JSON.stringify(profile)).not.toContain(seed);
-    expect(stores.size).toBe(1);
-    expect(await stores.get(profile.id)!.storage.get("sso")).toHaveProperty(
-      "ciphertext",
+      }),
+      env as any,
     );
-    expect(((await (await authenticate()).json()) as any).id).toBe(profile.id);
-    const calls = login.mock.calls.length;
-    expect(
-      (await authenticate({ base_link: "https://localhost" })).status,
-    ).toBe(400);
-    expect(login.mock.calls).toHaveLength(calls);
-    login.mockRejectedValueOnce(new Error("password-secret"));
-    const failed = await authenticate();
-    expect(failed.status).not.toBe(200);
-    expect(await failed.text()).not.toContain("password-secret");
-    expect(stores.size).toBe(1);
+    expect(response.status).toBe(410);
+    expect(await response.json()).toMatchObject({
+      code: "LOGIN_METHOD_REMOVED",
+    });
+    expect(login).not.toHaveBeenCalled();
+    expect(f.storage.data.size).toBe(0);
   });
   it("anchors provider accounts to verified subjects and saves only scoped, opted-in secrets", async () => {
     const stores = new Map<string, ReturnType<typeof fixture>>();
@@ -293,6 +251,7 @@ describe("private credential vault", () => {
               totp_secret: seed,
               mfa_code: "123456",
               remember: true,
+              remember_totp: true,
               ...extra,
             },
           }),
@@ -317,6 +276,7 @@ describe("private credential vault", () => {
           await authenticate("https://tenant.okta.example", {
             username: "alias",
             remember: false,
+            remember_totp: false,
           })
         ).json()) as any
       ).id,
@@ -348,6 +308,7 @@ describe("private credential vault", () => {
           username: "user",
           password: "password-secret",
           remember: true,
+          remember_totp: true,
         },
         result: {
           session: { ...identity, userId: "00uDifferent" },
@@ -418,7 +379,7 @@ describe("private credential vault", () => {
       const connected = await f.call("/v1/connect", {
         platform: "moodle",
         mode: "sso",
-        input: { ...credentials, remember: true },
+        input: { ...credentials, remember: true, remember_totp: true },
       });
       expect(connected.status).toBe(200);
       const metadata = await connected.text();
@@ -609,7 +570,7 @@ describe("private credential vault", () => {
           await f.call("/v1/connect", {
             platform: "ontrack",
             mode: "sso",
-            input: { ...credentials, remember: true },
+            input: { ...credentials, remember: true, remember_totp: true },
           })
         ).status,
       ).toBe(200);
@@ -680,7 +641,7 @@ describe("private credential vault", () => {
       await f.call("/v1/connect", {
         platform: "ontrack",
         mode: "sso",
-        input: { ...credentials, remember: true },
+        input: { ...credentials, remember: true, remember_totp: true },
       });
       const fallback = network.getMockImplementation()!;
       network.mockImplementation(async (input, init) =>
@@ -822,7 +783,7 @@ describe("private credential vault", () => {
         await f.call("/v1/connect", {
           platform: "moodle",
           mode: "sso",
-          input: { ...credentials, remember: true },
+          input: { ...credentials, remember: true, remember_totp: true },
         })
       ).status,
     ).toBe(200);
@@ -855,12 +816,52 @@ describe("private credential vault", () => {
         .status,
     ).not.toBe(200);
   });
+  it("does not retain a supplied TOTP secret without its separate opt-in", async () => {
+    const f = fixture();
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "moodle",
+          mode: "sso",
+          input: { ...credentials, remember: true },
+        })
+      ).status,
+    ).toBe(200);
+    const stored = await decrypt<any>(
+      key,
+      `${account}:sso`,
+      await f.storage.get<any>("sso"),
+    );
+    expect(stored.input.password).toBe(credentials.password);
+    expect(stored.input).not.toHaveProperty("totp");
+    expect(stored.retention).toMatchObject({
+      password: true,
+      totp: false,
+      notice_version: USAGE_VERSION,
+      accepted_at: expect.any(Number),
+    });
+    expect((await f.call("/v1/renew", { platform: "moodle" })).status).toBe(
+      200,
+    );
+    expect(login.mock.calls[1]![0].input).not.toHaveProperty("totp");
+    const saved = await f.storage.get("sso");
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "moodle",
+          mode: "sso",
+          input: { ...credentials, remember: false, remember_totp: true },
+        })
+      ).status,
+    ).not.toBe(200);
+    expect(await f.storage.get("sso")).toEqual(saved);
+  });
   it("keeps only cookies without retention, removes credentials when retention is unchecked, and supports forgetting", async () => {
     const f = fixture();
     await f.call("/v1/connect", {
       platform: "moodle",
       mode: "sso",
-      input: { ...credentials, remember: true },
+      input: { ...credentials, remember: true, remember_totp: true },
     });
     await f.call("/v1/connect", {
       platform: "moodle",
@@ -886,7 +887,7 @@ describe("private credential vault", () => {
     await f.call("/v1/connect", {
       platform: "moodle",
       mode: "sso",
-      input: { ...credentials, remember: true },
+      input: { ...credentials, remember: true, remember_totp: true },
     });
     login.mockResolvedValueOnce({
       session: { cookie_name: "MoodleSession", cookie_value: "changed" },

@@ -1,9 +1,11 @@
+import { runInNewContext } from "node:vm";
+import { readCapabilities } from "../src/capabilities/index.ts";
 import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { key, unit } from "./support.ts";
+import { key, unit, taskSheetPdf } from "./support.ts";
 const origin = "https://suite.example",
   moodle = "https://moodle.example.edu",
   ontrack = "https://ontrack.example.edu",
@@ -196,6 +198,13 @@ async function platformFixture(req: Request): Promise<Response> {
           { id: 501, abbreviation: "1.1P", name: "Programming basics" },
         ],
       });
+    if (url.pathname === "/api/units/303/task_definitions/501/task_pdf")
+      return new Response(taskSheetPdf(), {
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": "attachment; filename=task.pdf",
+        },
+      });
   }
   return new Response(null, { status: 404 });
 }
@@ -275,6 +284,7 @@ async function login(subject: string, invalid = false) {
           ? "ed-user-b"
           : "ed-user-a",
       usage_consent: "accept",
+      terms_consent: "accept",
       usage_version: USAGE_VERSION,
     }).toString(),
   });
@@ -348,6 +358,7 @@ async function connect(
       csrf: browser.csrf,
       consent: "allow",
       usage_consent: "accept",
+      terms_consent: "accept",
       usage_version: USAGE_VERSION,
       action: "allow",
     }).toString(),
@@ -433,6 +444,18 @@ async function action(
   });
 }
 describe("real workerd: client OAuth, user binding and in-Worker clients", () => {
+  it("serves legal pages without sign-in and rejects writes to them", async () => {
+    for (const path of ["/privacy", "/terms", "/data-controls"]) {
+      const response = await request(path);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+      expect(response.headers.get("set-cookie")).toBeNull();
+      const text = await response.text();
+      expect(text).toContain("Version " + USAGE_VERSION);
+      expect(text).toContain("source repository");
+      expect((await request(path, { method: "POST" })).status).toBe(405);
+    }
+  });
   it("requires OAuth and rejects unverified platform sign-in", async () => {
     expect(
       (
@@ -469,6 +492,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
           provider: "https://unsupported.example",
           usage_version: USAGE_VERSION,
           usage_consent: "accept",
+          terms_consent: "accept",
         }).toString(),
       });
       expect(response.status).toBe(403);
@@ -496,7 +520,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       const body = await page.text();
       expect(body).not.toContain(new URL(moodle).hostname);
       expect(body).not.toContain(new URL(ontrack).hostname);
-      expect(body).not.toContain("Cloudflare");
+      expect(body).toContain("Cloudflare");
       expect(body).not.toContain("ChatGPT");
       expect(body).not.toContain("tenant.okta.example");
       expect(body).toContain("infrastructure providers used by its operator");
@@ -505,9 +529,9 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     expect(bodies[0]).toContain('name="provider"');
     expect(bodies[0]).toContain('name="platform" value="sso"');
     const connections = bodies[2]!;
-    expect(connections).toContain(
-      "You can connect Ed, Moodle and OnTrack together in this account",
-    );
+    expect(connections).toContain("Each course can use any combination.");
+    for (const name of ["Ed Discussion", "Moodle", "OnTrack"])
+      expect(connections).toContain(`<h3>${name}</h3>`);
     expect(connections).toContain('action="/account/ed"');
     for (const platform of ["moodle", "ontrack"])
       expect(connections).toContain(`name="platform" value="${platform}"`);
@@ -541,7 +565,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     expect(
       (await call(a, "ed_thread", { unit: unit.key, thread_id: 999 })).result
         .structuredContent.code,
-    ).toBe("COURSE_NOT_ACCESSIBLE");
+    ).toBe("ENTITY_NOT_ALLOWED");
     const bUnits = await call(b, "course_units");
     expect(bUnits.result.structuredContent.units).toEqual([]);
     expect(JSON.stringify(await call(a, "connection_status"))).not.toContain(
@@ -722,6 +746,30 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     ).result;
     expect(denied.structuredContent.code).toBe("ENTITY_NOT_ALLOWED");
   });
+  it("extracts task-sheet text and delivers real file resources in the Worker runtime", async () => {
+    const read = (
+      await call(a, "ontrack_task_read", { unit: unit.code, task: "1.1P" })
+    ).result;
+    expect(read.isError, JSON.stringify(read)).not.toBe(true);
+    expect(read.structuredContent.markdown).toContain(
+      "Read-only task instructions",
+    );
+    expect(read.structuredContent.next_page).toBeNull();
+    const download = (
+      await call(a, "ontrack_task_file", {
+        unit: unit.code,
+        task_definition_id: 501,
+      })
+    ).result;
+    expect(download.isError, JSON.stringify(download)).not.toBe(true);
+    const resource = download.content.find(
+      (v: any) => v.type === "resource",
+    ).resource;
+    expect(resource.mimeType).toBe("application/pdf");
+    expect(atob(resource.blob).startsWith("%PDF-")).toBe(true);
+    expect(download.structuredContent.file.blob).toBeUndefined();
+    expect(JSON.stringify(download)).not.toContain("ontrack-a");
+  });
   it("rejects a Moodle session whose authenticated profile changes", async () => {
     moodleAccountChanged = true;
     try {
@@ -830,8 +878,47 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
+    const viewResponse = await request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${a.token}`,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-protocol-version": "2025-11-25",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "resources/read",
+        params: { uri: "ui://learning/ed-view.html" },
+      }),
+    });
+    const view = ((await viewResponse.json()) as any).result.contents[0];
+    expect(view._meta.ui.csp).toEqual({
+      connectDomains: [],
+      resourceDomains: [],
+    });
+    const messages: unknown[] = [];
+    const script = view.text.match(/<script>([\s\S]*?)<\/script>/)[1];
+    // Execute the actual production resource in an isolated browser-shaped context.
+    // This catches bundler helper references escaping into embedded browser code.
+    runInNewContext(script, {
+      document: { getElementById: () => ({}) },
+      window: {
+        parent: { postMessage: (message: unknown) => messages.push(message) },
+        addEventListener: () => {},
+      },
+    });
+    expect(messages).toEqual([
+      expect.objectContaining({
+        method: "ui/initialize",
+        params: expect.objectContaining({
+          appInfo: { name: "Learning read view", version: "1.0.0" },
+        }),
+      }),
+    ]);
     const tools = ((await response.json()) as any).result.tools;
-    expect(tools).toHaveLength(24);
+    expect(tools).toHaveLength(readCapabilities.length + 10);
     expect(tools.find((t: any) => t.name === "get_profile")).toMatchObject({
       _meta: { "openai/profile": true },
       outputSchema: { required: ["id"] },

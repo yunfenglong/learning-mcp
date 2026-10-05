@@ -5,6 +5,7 @@ import type { Config } from "../src/config.ts";
 import { EdAdapter } from "../src/adapters/ed.ts";
 import { MoodleAdapter } from "../src/adapters/moodle.ts";
 import { OnTrackAdapter } from "../src/adapters/ontrack.ts";
+import { readCapabilities } from "../src/capabilities/index.ts";
 import { createServer, handleMcp } from "../src/mcp/server.ts";
 import { FakeBackend, unit } from "./support.ts";
 
@@ -28,7 +29,37 @@ describe("MCP contract", () => {
     await client.connect(right);
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(14);
+      expect(tools).toHaveLength(readCapabilities.length);
+      expect(tools.map((t) => t.name).sort()).toEqual(
+        readCapabilities.map((c) => c.name).sort(),
+      );
+      expect(new Set(readCapabilities.map((c) => c.name)).size).toBe(
+        readCapabilities.length,
+      );
+      for (const capability of readCapabilities) {
+        const advertised = tools.find((t) => t.name === capability.name)!;
+        expect(
+          Object.keys(advertised.inputSchema.properties ?? {}).sort(),
+        ).toEqual(Object.keys(capability.input.shape).sort());
+      }
+      const catalog = await client.callTool({
+        name: "capability_catalog",
+        arguments: {},
+      });
+      expect(catalog.structuredContent).toMatchObject({
+        read_tools: readCapabilities.map((c) => c.name),
+      });
+
+      expect(tools.map((t) => t.name)).toEqual(
+        expect.arrayContaining([
+          "moodle_attempt",
+          "moodle_sync",
+          "ed_slide_responses",
+          "ed_show_lesson_guide",
+          "ontrack_task_read",
+          "capability_catalog",
+        ]),
+      );
       expect(
         tools.every((tool) => tool.annotations?.readOnlyHint === true),
       ).toBe(true);
@@ -48,6 +79,69 @@ describe("MCP contract", () => {
         arguments: {},
       });
       expect(unknown.isError).toBe(true);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+  it("maps pagination and filters to verified platform IDs through the catalog", async () => {
+    const backend = new FakeBackend({
+      get_user: { user: { siteurl: "https://moodle.example.edu" } },
+      search_forums: { results: [] },
+    });
+    const server = createServer(config, {
+      ...adapters(),
+      moodle: new MoodleAdapter(backend, {
+        site_url: "https://moodle.example.edu",
+      }),
+    });
+    const client = new Client({ name: "test", version: "1" });
+    const [left, right] = InMemoryTransport.createLinkedPair();
+    await server.connect(left);
+    await client.connect(right);
+    try {
+      const result = await client.callTool({
+        name: "moodle_search_forums",
+        arguments: {
+          unit: unit.key,
+          query: "deadline",
+          limit: 7,
+          offset: 14,
+          forum_id: 55,
+          titles_only: true,
+          unread_only: true,
+          sort: "relevance",
+          include_post_text: false,
+        },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(backend.calls).toEqual([
+        { name: "get_user", args: {} },
+        {
+          name: "search_forums",
+          args: expect.objectContaining({
+            unit: 202,
+            query: "deadline",
+            limit: 7,
+            offset: 14,
+            forum_id: 55,
+            titles_only: true,
+            unread_only: true,
+            sort: "relevance",
+            include_post_text: false,
+          }),
+        },
+      ]);
+      const rejected = await client.callTool({
+        name: "moodle_search_forums",
+        arguments: {
+          unit: unit.key,
+          query: "deadline",
+          courseId: 999,
+        },
+      });
+      expect(rejected.isError).toBe(true);
+      expect(backend.calls).toHaveLength(2);
     } finally {
       await client.close();
       await server.close();
@@ -83,6 +177,8 @@ describe("MCP contract", () => {
       "learning-mcp-suite",
     );
     const tools = await handleMcp(request("tools/list"), config, adapters());
-    expect(((await tools.json()) as any).result.tools).toHaveLength(14);
+    expect(((await tools.json()) as any).result.tools).toHaveLength(
+      readCapabilities.length,
+    );
   });
 });

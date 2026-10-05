@@ -4,8 +4,14 @@ import { READ_SCOPE, MANAGE_SCOPE, type Grant } from "../auth/state.ts";
 import { stateCall, globalCall } from "../auth/client.ts";
 import { digest, randomToken } from "../auth/crypto.ts";
 import { browserSession, checkCsrf } from "../auth/login.ts";
-import { USAGE_VERSION, usageNotice, usageLabel } from "../domain/usage.ts";
+import {
+  USAGE_VERSION,
+  usageNotice,
+  usageLabel,
+  termsApproval,
+} from "../domain/usage.ts";
 import { SuiteError } from "../errors.ts";
+import { page } from "./ui.ts";
 import { escapeHtml as e, html, oauthFormPolicy } from "./common.ts";
 export async function requestFingerprint(request: AuthRequest) {
   return digest(
@@ -64,7 +70,18 @@ export async function authorize(
       expires_at: Date.now() + 600_000,
     });
     return html(
-      `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Learning</title><style>body{font:16px system-ui;max-width:650px;margin:8vh auto;padding:24px;color:#172f2c;line-height:1.6}button{padding:12px 20px}dd{overflow-wrap:anywhere;margin:0 0 16px}a{color:#056256}</style><h1>Connect Learning to ${e(client.clientName ?? "MCP client")}</h1><p>Signed in as ${e(session.profile.name ?? session.profile.email ?? "Learning MCP account")}</p><dl><dt>Client</dt><dd>${e(auth.clientId)}</dd><dt>Return address</dt><dd>${e(auth.redirectUri)}</dd></dl><p>Read your linked courses, learning materials, deadlines, grades and attendance-code evidence.</p><p>${auth.scope.includes(MANAGE_SCOPE) ? "Manage your platform connections and course mappings in Learning MCP. These permissions cover setup as well as reading; educational platform operations remain read-only." : "This connection has reading permission only. Connecting platforms or changing course mappings will require an additional permission approval."}</p><p><a href="/landing" target="_blank" rel="noopener">Connect or review Ed, Moodle and OnTrack in this account</a></p>${usageNotice}<form method="post"><input type="hidden" name="csrf" value="${e(session.csrf)}"><input type="hidden" name="nonce" value="${nonce}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}"><label><input type="checkbox" name="usage_consent" value="accept" required> ${usageLabel}</label><br><label><input type="checkbox" name="consent" value="allow" required> I approve these permissions.</label><p><button name="action" value="allow">Connect</button><button name="action" value="deny" formnovalidate>Cancel</button></p></form></html>`,
+      renderAuthorizationPage({
+        clientName: client.clientName ?? "MCP client",
+        clientId: auth.clientId,
+        redirectUri: auth.redirectUri,
+        account:
+          session.profile.name ??
+          session.profile.email ??
+          "Learning MCP account",
+        manage: auth.scope.includes(MANAGE_SCOPE),
+        csrf: session.csrf,
+        nonce,
+      }),
       200,
       callbackHeaders,
     );
@@ -102,6 +119,7 @@ export async function authorize(
     (form.get("action") !== "allow" ||
       form.get("consent") !== "allow" ||
       form.get("usage_consent") !== "accept" ||
+      form.get("terms_consent") !== "accept" ||
       form.get("usage_version") !== USAGE_VERSION)
   )
     throw new SuiteError(
@@ -156,4 +174,20 @@ export async function authorize(
       503,
     );
   }
+}
+
+/** Shared with the local design preview; all client metadata is escaped. */
+export function renderAuthorizationPage(input: {
+  clientName: string;
+  clientId: string;
+  redirectUri: string;
+  account: string;
+  manage: boolean;
+  csrf: string;
+  nonce: string;
+}) {
+  return page(
+    `<section class="authorization"><span class="eyebrow">Review client access</span><h1>Connect Learning to ${e(input.clientName)}</h1><p class="muted">Signed in as ${e(input.account)}</p><div class="auth-panel"><h2>What this client can access</h2><p>Requested data leaves this service and is received by this client. Review its privacy and AI data-use policies; revoking access cannot recall copies already received. The displayed client name is client-supplied metadata, not an endorsement.</p><p>Read your linked courses, learning materials, deadlines, grades and attendance-code evidence.</p><p>${input.manage ? "Manage your platform connections and course mappings in Learning MCP. These permissions cover setup as well as reading; educational platform operations remain read-only." : "This connection has reading permission only. Connecting platforms or changing course mappings will require an additional permission approval."}</p><p><a href="/landing" target="_blank" rel="noopener">Review your platform connections ↗</a></p><details><summary>Client and return address</summary><dl><dt>Client ID</dt><dd>${e(input.clientId)}</dd><dt>Return address</dt><dd>${e(input.redirectUri)}</dd></dl></details><form method="post"><input type="hidden" name="csrf" value="${e(input.csrf)}"><input type="hidden" name="nonce" value="${e(input.nonce)}"><input type="hidden" name="usage_version" value="${USAGE_VERSION}"><label><input type="checkbox" name="usage_consent" value="accept" required><span>${usageLabel} <a href="#data-notice">Read the notice</a>.</span></label>${termsApproval}<label><input type="checkbox" name="consent" value="allow" required> I approve these permissions for ${e(input.clientName)}.</label><div class="actions"><button name="action" value="allow">Allow access</button><button class="secondary" name="action" value="deny" formnovalidate>Cancel</button></div></form></div>${usageNotice}</section>`,
+    "Review client access",
+  );
 }

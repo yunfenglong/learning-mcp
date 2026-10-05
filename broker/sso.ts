@@ -47,7 +47,10 @@ export const oktaIdentitySchema = z
   }));
 
 const SIGN_IN_MS = 90000;
-async function bounded<T>(work: Promise<T>, milliseconds: number): Promise<T> {
+export async function bounded<T>(
+  work: Promise<T>,
+  milliseconds: number,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -309,29 +312,7 @@ export async function browserLogin(
       SIGN_IN_MS,
     );
   } catch (error) {
-    if (error instanceof SuiteError) throw error;
-    const message = error instanceof Error ? error.message : "";
-    if (
-      /browser time limit exceeded for today|time limit exceeded for today/i.test(
-        message,
-      )
-    )
-      throw new SuiteError(
-        "BROWSER_DAILY_LIMIT",
-        "The service's daily cloud browser allowance has been used. Try again after it resets.",
-        503,
-      );
-    if (/429|rate limit/i.test(message))
-      throw new SuiteError(
-        "BROWSER_BUSY",
-        "The cloud browser is busy. Try signing in again shortly.",
-        503,
-      );
-    throw new SuiteError(
-      "SSO_UNAVAILABLE",
-      "The cloud sign-in could not complete. Open the sign-in page and try again.",
-      503,
-    );
+    throw browserSignInError(error);
   } finally {
     abandoned = true;
     await bounded(
@@ -343,4 +324,30 @@ export async function browserLogin(
       3000,
     ).catch(() => {});
   }
+}
+
+export function browserSignInError(error: unknown): SuiteError | z.ZodError {
+  if (error instanceof SuiteError || error instanceof z.ZodError) return error;
+  const message = error instanceof Error ? error.message : "";
+  if (
+    /browser time limit exceeded for today|time limit exceeded for today/i.test(
+      message,
+    )
+  )
+    return new SuiteError(
+      "BROWSER_DAILY_LIMIT",
+      "The service's daily cloud browser allowance has been used. Try again after it resets.",
+      503,
+    );
+  if (/429|rate limit/i.test(message))
+    return new SuiteError(
+      "BROWSER_BUSY",
+      "The cloud browser is busy. Try signing in again shortly.",
+      503,
+    );
+  return new SuiteError(
+    "SSO_UNAVAILABLE",
+    "The cloud sign-in could not complete. Open the sign-in page and try again.",
+    503,
+  );
 }

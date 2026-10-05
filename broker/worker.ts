@@ -20,7 +20,10 @@ import {
 } from "../src/platforms/broker.ts";
 import { browserLogin, oktaIdentitySchema, type LoginInput } from "./sso.ts";
 import { ssoProvidersSchema } from "../src/config.ts";
+import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { parseTotp } from "./totp.ts";
+import { InteractiveSignIn } from "./interactive-sso.ts";
+import { MFA_TTL_MS, mfaError, validateOtp } from "../src/auth/mfa.ts";
 import {
   cookieFetch,
   cookiesSchema,
@@ -54,17 +57,32 @@ const inputSchema = z
   .object({
     username: z.string().min(1).max(200),
     password: z.string().min(1).max(1000),
-    mfa_code: z.string().max(20).optional(),
+    mfa_code: z
+      .string()
+      .max(20)
+      .transform((v) => (v ? validateOtp(v) : v))
+      .optional(),
     totp_secret: z.string().min(1).max(2048).optional(),
     remember: z.boolean().optional(),
+    remember_totp: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (v) => !v.remember_totp || v.remember === true,
+    "TOTP retention requires password retention.",
+  );
 interface SavedLogin {
   cookies: any[];
   username: string;
   provider?: string;
   subject?: string;
   input?: LoginInput;
+  retention?: {
+    password: boolean;
+    totp: boolean;
+    notice_version: string;
+    accepted_at: number;
+  };
 }
 export async function validateSession(
   site: string,
@@ -208,6 +226,13 @@ export async function validateSession(
 }
 export class BrokerState extends DurableObject<BrokerEnv> {
   private queue: Promise<unknown> = Promise.resolve();
+  private signIn?: InteractiveSignIn;
+  private signInAccount?: string;
+  async alarm() {
+    await this.signIn?.close();
+    this.signIn = undefined;
+    this.signInAccount = undefined;
+  }
   async fetch(request: Request) {
     const operation = this.queue.then(() => this.route(request));
     this.queue = operation.catch(() => {});
@@ -247,6 +272,71 @@ export class BrokerState extends DurableObject<BrokerEnv> {
             value,
           ),
         );
+      if (
+        [
+          "/v1/sign-in/start",
+          "/v1/sign-in/continue",
+          "/v1/sign-in/cancel",
+        ].includes(path)
+      ) {
+        if (this.signInAccount && this.signInAccount !== account)
+          throw mfaError("MFA_SESSION_EXPIRED");
+        if (path === "/v1/sign-in/cancel") {
+          await this.alarm();
+          return json({ ok: true });
+        }
+        if (!this.env.BROWSER)
+          throw new SuiteError(
+            "SSO_NOT_CONFIGURED",
+            "Configure cloud browser SSO.",
+            503,
+          );
+        let result;
+        if (path === "/v1/sign-in/start") {
+          if (this.signIn) throw mfaError("MFA_SESSION_EXPIRED");
+          const provider = configuredProvider(this.env, data.provider);
+          const input = inputSchema.parse(data.input);
+          output.remember(input.password, input.mfa_code, input.totp_secret);
+          const origins = z
+            .array(z.string().refine(platformOrigin))
+            .max(30)
+            .parse(JSON.parse(this.env.LOGIN_ORIGINS));
+          this.signIn = new InteractiveSignIn();
+          this.signInAccount = account;
+          await this.ctx.storage.setAlarm(Date.now() + MFA_TTL_MS);
+          result = await this.signIn.start(
+            this.env.BROWSER,
+            provider.origin,
+            origins,
+            input,
+          );
+        } else {
+          if (!this.signIn) throw mfaError("MFA_SESSION_EXPIRED");
+          output.remember(data.mfa_code, data.totp_secret);
+          result = await this.signIn.next(data);
+        }
+        if ("status" in result) return json(result);
+        output.remember(result.input.password, result.input.totp_secret);
+        output.rememberSession(result.result);
+        const id = await digest(
+          `provider-sso\0okta\0${result.provider}\0${result.result.session.userId}`,
+        );
+        const saved = await this.env.BROKER_STATE.get(
+          this.env.BROKER_STATE.idFromName(id),
+        ).fetch(
+          new Request("https://broker/v1/bootstrap-sso", {
+            method: "POST",
+            headers: {
+              "x-suite-account": id,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(result),
+          }),
+        );
+        if (!saved.ok) return saved;
+        await saved.body?.cancel();
+        return json({ id, name: "SSO account" });
+      }
       const readSite = async (p: "moodle" | "ontrack") => {
         const saved = await load<string>(`site:${p}`);
         if (saved) return platformBaseLink(saved);
@@ -317,7 +407,13 @@ export class BrokerState extends DurableObject<BrokerEnv> {
                 input: {
                   username: fresh.username,
                   password: fresh.password,
-                  ...(totp ? { totp } : {}),
+                  ...(fresh.remember_totp && totp ? { totp } : {}),
+                },
+                retention: {
+                  password: true,
+                  totp: Boolean(fresh.remember_totp && totp),
+                  notice_version: USAGE_VERSION,
+                  accepted_at: Date.now(),
                 },
               }
             : {}),
@@ -612,11 +708,20 @@ export class BrokerState extends DurableObject<BrokerEnv> {
                 input: {
                   username: fresh.username,
                   password: fresh.password,
-                  ...(totp ? { totp } : {}),
+                  ...(fresh.remember_totp && totp ? { totp } : {}),
+                },
+                retention: {
+                  password: true,
+                  totp: Boolean(fresh.remember_totp && totp),
+                  notice_version: USAGE_VERSION,
+                  accepted_at: Date.now(),
                 },
               }
             : !fresh && stored?.input
-              ? { input: stored.input }
+              ? {
+                  input: stored.input,
+                  ...(stored.retention ? { retention: stored.retention } : {}),
+                }
               : {}),
         };
       }
@@ -733,8 +838,30 @@ export default {
       if (original.method !== "POST")
         throw new SuiteError("METHOD_NOT_ALLOWED", "Use POST.", 405);
       const request = await boundedRequest(original);
+      if (new URL(request.url).pathname === "/v1/authenticate")
+        throw new SuiteError(
+          "LOGIN_METHOD_REMOVED",
+          "Platform sign-in has been removed. Sign in with your SSO provider or Ed API token.",
+          410,
+        );
       if (new URL(request.url).pathname === "/v1/authenticate-sso") {
         const data = (await request.json()) as any;
+        if (data.interactive === true)
+          return env.BROKER_STATE.get(
+            env.BROKER_STATE.idFromName(account),
+          ).fetch(
+            new Request("https://broker/v1/sign-in/start", {
+              method: "POST",
+              headers: {
+                "x-suite-account": account,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({
+                provider: data.provider,
+                input: data.input,
+              }),
+            }),
+          );
         const provider = configuredProvider(env, data.provider);
         const input = inputSchema.parse(data.input);
         output.remember(input.password, input.mfa_code, input.totp_secret);
@@ -783,78 +910,6 @@ export default {
         if (!saved.ok) return saved;
         await saved.body?.cancel();
         return json({ id, name: "SSO account" });
-      }
-      if (new URL(request.url).pathname === "/v1/authenticate") {
-        const data = (await request.json()) as any;
-        const p = platform.parse(data.platform);
-        const input = inputSchema.parse(data.input);
-        output.remember(input.password, input.mfa_code, input.totp_secret);
-        const site = platformBaseLink(data.base_link);
-        if (!env.BROWSER)
-          throw new SuiteError(
-            "SSO_NOT_CONFIGURED",
-            "Configure cloud browser SSO.",
-            503,
-          );
-        const totp = input.totp_secret
-          ? parseTotp(input.totp_secret)
-          : undefined;
-        if (totp) output.remember(totp.secret);
-        // A fresh browser proves the login before any credential record is written.
-        const result = await browserLogin({
-          binding: env.BROWSER,
-          site: new URL(site).origin,
-          platform: p,
-          credentialOrigins: ssoProvidersSchema
-            .parse(JSON.parse(env.SSO_PROVIDERS ?? "[]"))
-            .map((v) => v.origin),
-          loginOrigins: z
-            .array(z.string().url())
-            .max(30)
-            .parse(JSON.parse(env.LOGIN_ORIGINS)),
-          input: {
-            username: input.username,
-            password: input.password,
-            ...(input.mfa_code ? { mfa_code: input.mfa_code } : {}),
-            ...(totp ? { totp } : {}),
-          },
-        });
-        output.rememberSession(result.session);
-        output.rememberSession({ cookies: result.cookies });
-        const verified = await validateSession(
-          new URL(site).origin,
-          p,
-          result.session,
-        );
-        output.rememberSession(verified);
-        const id = await digest(
-          `platform-sso\0${p}\0${new URL(site).origin}\0${verified.profile_id}`,
-        );
-        const saved = await env.BROKER_STATE.get(
-          env.BROKER_STATE.idFromName(id),
-        ).fetch(
-          new Request("https://broker/v1/bootstrap", {
-            method: "POST",
-            headers: {
-              "x-suite-account": id,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              platform: p,
-              base_link: site,
-              input,
-              result,
-            }),
-          }),
-        );
-        if (!saved.ok) return saved;
-        await saved.body?.cancel();
-        return json(
-          output.redact({
-            id,
-            name: verified.display_name ?? "Learning account",
-          }),
-        );
       }
       return env.BROKER_STATE.get(env.BROKER_STATE.idFromName(account)).fetch(
         request,

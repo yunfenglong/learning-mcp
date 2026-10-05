@@ -33,6 +33,11 @@ function readGradeDefinitions(value) {
     return { id: data.id, value: data.value, name, abbreviation: data.abbreviation };
   });
 }
+function gradeLabel(value, definitions) {
+  if (value === null) return "-";
+  const match = definitions.find((definition) => definition.value === value) ?? (definitions.length === 0 ? fallback.get(value) : void 0);
+  return match ? `${match.abbreviation} (${match.name})` : String(value);
+}
 
 // src/time.ts
 var CivilDate = class _CivilDate {
@@ -136,19 +141,19 @@ function nullableBoolean(value, name) {
   return value;
 }
 function civilDate(value, name) {
-  const text = nullableString(value, name);
-  if (text === null) return null;
+  const text2 = nullableString(value, name);
+  if (text2 === null) return null;
   try {
-    return CivilDate.parse(text);
+    return CivilDate.parse(text2);
   } catch {
     return contract(`${name} must be a civil date`);
   }
 }
 function instant(value, name) {
-  const text = nullableString(value, name);
-  if (text === null) return null;
+  const text2 = nullableString(value, name);
+  if (text2 === null) return null;
   try {
-    return Instant.parse(text);
+    return Instant.parse(text2);
   } catch {
     return contract(`${name} must be an instant`);
   }
@@ -643,11 +648,11 @@ var HttpClient = class {
     const headers = new Headers(options.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/octet-stream");
     const first = await this.#response(path, { ...options, headers }, maxDownloadBytes);
-    const metadata = {
+    const metadata2 = {
       contentType: first.headers.get("Content-Type")?.split(";", 1)[0]?.trim() || null,
       filename: responseFilename(first.headers.get("Content-Disposition"))
     };
-    if (first.status !== 206) return { bytes: first.bytes, ...metadata };
+    if (first.status !== 206) return { bytes: first.bytes, ...metadata2 };
     const initialRange = requireContentRange(first, 0);
     if (initialRange.total > maxDownloadBytes) throw archiveTooLarge();
     const bytes = new Uint8Array(initialRange.total);
@@ -661,7 +666,7 @@ var HttpClient = class {
       bytes.set(response.bytes, offset);
       offset = range.end + 1;
     }
-    return { bytes, ...metadata };
+    return { bytes, ...metadata2 };
   }
   async #response(path, options, responseLimit) {
     const url = new URL(path.replace(/^\//, ""), this.#baseUrl);
@@ -740,7 +745,140 @@ var HttpClient = class {
     }
   }
 };
+
+// src/status.ts
+var statuses = {
+  ready_for_feedback: { label: "Ready for Feedback", final: false, submitted: true },
+  not_started: { label: "Not Started", final: false, submitted: false },
+  working_on_it: { label: "Working On It", final: false, submitted: false },
+  need_help: { label: "Need Help", final: false, submitted: false },
+  redo: { label: "Redo", final: false, submitted: false },
+  feedback_exceeded: { label: "Feedback Exceeded", final: true, submitted: true },
+  fix_and_resubmit: { label: "Resubmit", final: false, submitted: false },
+  discuss: { label: "Discuss", final: false, submitted: true },
+  demonstrate: { label: "Demonstrate", final: false, submitted: true },
+  complete: { label: "Complete", final: true, submitted: true },
+  fail: { label: "Fail", final: true, submitted: true },
+  time_exceeded: { label: "Time Exceeded", final: true, submitted: true },
+  assess_in_portfolio: { label: "Assess in Portfolio", final: true, submitted: true },
+  attention_required: { label: "Attention Required", final: false, submitted: true },
+  rediscuss: { label: "Rediscuss", final: false, submitted: true }
+};
+function metadata(key) {
+  return statuses[key];
+}
+function statusLabel(key) {
+  return metadata(key)?.label ?? key;
+}
+function isFinalStatus(key) {
+  return metadata(key)?.final ?? false;
+}
+var STATUS_TONES = {
+  "Ready for Feedback": "success",
+  "Not Started": "muted",
+  "Working On It": "warning",
+  "Need Help": "danger",
+  "Redo": "danger",
+  "Feedback Exceeded": "danger",
+  "Resubmit": "danger",
+  "Discuss": "warning",
+  "Demonstrate": "warning",
+  "Complete": "success",
+  "Fail": "danger",
+  "Time Exceeded": "danger",
+  "Assess in Portfolio": "info",
+  "Attention Required": "danger",
+  "Rediscuss": "warning",
+  ...Object.fromEntries(Object.entries({
+    ready_for_feedback: "success",
+    not_started: "muted",
+    working_on_it: "warning",
+    need_help: "danger",
+    redo: "danger",
+    feedback_exceeded: "danger",
+    fix_and_resubmit: "danger",
+    discuss: "warning",
+    demonstrate: "warning",
+    complete: "success",
+    fail: "danger",
+    time_exceeded: "danger",
+    assess_in_portfolio: "info",
+    attention_required: "danger",
+    rediscuss: "warning"
+  }))
+};
+
+// src/project-snapshot.ts
+function effectiveDue(project, task, definition) {
+  if (project.flexible_dates) {
+    if (task.target_due_date) return task.target_due_date;
+    const gradeDate = definition?.grade_due_dates[String(project.target_grade)];
+    if (gradeDate) return gradeDate;
+  }
+  return task.due_date ?? definition?.target_date ?? null;
+}
+function effectiveStart(project, task, definition) {
+  if (project.flexible_dates) {
+    if (task.target_start_date) return task.target_start_date;
+    const gradeStart = definition?.grade_start_dates[String(project.target_grade)];
+    if (gradeStart) return gradeStart;
+  }
+  const base = definition?.start_date ?? null;
+  if (base && task.extensions !== null && task.extensions < 0) {
+    return base.addDays(task.extensions * 7);
+  }
+  return base;
+}
+function text(value) {
+  return value?.toString() ?? null;
+}
+function buildProjectSnapshot(project, unit, clock) {
+  const definitions = new Map(unit.task_definitions.map((definition) => [definition.id, definition]));
+  const scheduled = project.tasks.map((task) => {
+    const definition = definitions.get(task.task_definition_id);
+    const due = effectiveDue(project, task, definition);
+    const start = effectiveStart(project, task, definition);
+    const deadline = due?.addDays(project.special_consideration_days) ?? null;
+    return { due, row: {
+      id: task.id,
+      task_definition_id: task.task_definition_id,
+      abbreviation: definition?.abbreviation ?? `TD-${task.task_definition_id}`,
+      name: definition?.name ?? "Unknown task",
+      status: task.status,
+      status_label: statusLabel(task.status),
+      target_grade: definition?.target_grade ?? null,
+      target_grade_label: gradeLabel(definition?.target_grade ?? null, unit.grade_definitions),
+      start_date: text(start),
+      target_date: text(definition?.target_date),
+      target_start_date: text(task.target_start_date),
+      target_due_date: text(task.target_due_date),
+      due_date: text(due),
+      deadline: text(deadline),
+      submission_date: text(task.submission_date),
+      completion_date: text(task.completion_date),
+      moved_to_discuss_at: text(task.moved_to_discuss_at),
+      discuss_timeout_expiry_at: text(task.discuss_timeout_expiry_at),
+      extensions: task.extensions,
+      grade: task.grade,
+      grade_label: gradeLabel(task.grade, unit.grade_definitions),
+      quality_pts: task.quality_pts,
+      include_in_portfolio: task.include_in_portfolio,
+      is_overdue: Boolean(deadline && deadline.compare(clock.today) < 0 && !isFinalStatus(task.status)),
+      is_discuss_overdue: Boolean(task.discuss_timeout_expiry_at && task.discuss_timeout_expiry_at.compare(clock.now) < 0)
+    } };
+  });
+  scheduled.sort((left, right) => {
+    const dueOrder = left.due === null ? right.due === null ? 0 : 1 : right.due === null ? -1 : left.due.compare(right.due);
+    if (dueOrder !== 0) return dueOrder;
+    const abbreviationOrder = left.row.abbreviation < right.row.abbreviation ? -1 : left.row.abbreviation > right.row.abbreviation ? 1 : 0;
+    return abbreviationOrder || left.row.id - right.row.id;
+  });
+  return { project, unit, tasks: scheduled.map(({ row }) => row) };
+}
 export {
+  CivilDate,
   HttpClient,
-  OnTrackClient
+  Instant,
+  OnTrackClient,
+  buildProjectSnapshot
 };

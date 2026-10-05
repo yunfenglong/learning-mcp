@@ -4,14 +4,18 @@ Configure the suite in [`wrangler.jsonc`](../wrangler.jsonc) and the broker in [
 
 ## Variables
 
-| Variable          | Worker | Value                                                                                                   |
-| ----------------- | ------ | ------------------------------------------------------------------------------------------------------- |
-| `ISSUER`          | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
-| `PLATFORM_CONFIG` | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                 |
-| `SSO_PROVIDERS`   | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
-| `LOGIN_ORIGINS`   | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed. |
+| Variable           | Worker | Value                                                                                                   |
+| ------------------ | ------ | ------------------------------------------------------------------------------------------------------- |
+| `LEGAL_CONFIG`     | Suite  | Optional JSON object with instance operator and privacy contact disclosures; see below.                 |
+| `ISSUER`           | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
+| `PLATFORM_CONFIG`  | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                 |
+| `SSO_PROVIDERS`    | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
+| `RESOURCE_ORIGINS` | Suite  | Optional JSON array of exact public HTTPS origins for fresh Ed attachment downloads; default `[]`.      |
+| `LOGIN_ORIGINS`    | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed. |
 
 Users enter Moodle and OnTrack base links when connecting a platform on their authenticated account page. The broker validates and saves the exact public HTTPS origin in that user's encrypted connection storage. It uses the saved address for platform reads, sign-in and renewal. Worker variables do not need Moodle or OnTrack addresses. To use a different address, disconnect that platform and connect it again; course associations must be confirmed again.
+
+Ed file downloads also require each attachment host's exact HTTPS origin in `RESOURCE_ORIGINS`, for example `["https://files.example.edu"]` when verified metadata uses that host. The upstream Ed client additionally restricts supported attachment URL forms. Requests carry no Ed credentials, follow no redirects, and cannot be directed to a caller-supplied URL. This setting is independent of the broker's SSO browser origins. A missing origin prevents that file download; API reading remains available.
 
 Ed uses `https://edstem.org` automatically. Optional Ed scope can be supplied through the suite's `PLATFORM_CONFIG`:
 
@@ -55,3 +59,22 @@ Set deployed secrets interactively with Wrangler as described in the [deployment
 Changing an encryption key without re-encrypting existing records makes them unreadable. Keep keys stable across redeployments. Changing issuer, platform identity anchors, namespaces or grant storage can require clients and users to reconnect.
 
 Provider sign-in uses the verified provider type, origin and stable user ID as the account anchor; no independent OIDC application is needed. Keep that provider and account stable. Ed sign-in keeps its verified Ed identity anchor. Existing platform-based accounts keep their platform identity anchors and original login flow; provider sign-in creates a separate account rather than automatically merging identities.
+
+## Personal deployments and legal pages
+
+The public routes `/privacy`, `/terms` and `/data-controls` describe this instance, not all instances of the public repository. The person who controls a deployment is its operator; the repository author or maintainer is not automatically the operator of someone else's instance.
+
+Set `LEGAL_CONFIG` on the suite Worker to a JSON string. All fields are optional; missing details are disclosed as unpublished rather than filled with fictional information:
+
+```json
+{
+  "operator_name": "Your instance operator",
+  "contact_email": "privacy@example.com",
+  "processing_regions": "Describe your actual Cloudflare configuration and processing regions.",
+  "retention_details": "Describe your actual infrastructure log/backup retention and account deletion process."
+}
+```
+
+These are illustrative public disclosures, not secrets. Use a privacy contact appropriate for your own instance. Values are validated and escaped as text, never executed as HTML. `retention_details` and `processing_regions` describe actual operations; they do not configure deletion jobs or Cloudflare residency controls. Do not promise a region or deletion deadline that your deployment cannot meet. Application-held platform access and opted-in credentials have no automatic age-based deletion; account controls remove the specified records, while full account deletion is not a self-service feature.
+
+The bundled privacy notice and terms use the version in `src/domain/usage.ts`. Bump that version for material changes, including material changes to deployment disclosures. Deploy matching suite and broker versions. Authenticated confirmation records the notice version, terms version and timestamp. Users can always remove access without accepting new terms. Password retention and additional TOTP retention use separate default-off choices; TOTP retention requires password retention. Saved broker records include the retention choices, notice version and time without recording one-time codes. Existing saved credentials are not silently deleted on update; users can remove them explicitly.
