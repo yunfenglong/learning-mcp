@@ -39,6 +39,11 @@ describe("account authorization and isolation", () => {
   it("issues grants for the authenticated profile and enforces account, client and scope", async () => {
     const f = await fixture(),
       g = await f.account.approve(client, [READ_SCOPE, MANAGE_SCOPE]);
+    expect(g.authorized_at).toBe(f.tick(0));
+    expect(g.expires_at).toBe(g.authorized_at! + 30 * 86400_000);
+    expect((await f.account.grants()).grants[0]?.authorized_at).toBe(
+      g.authorized_at,
+    );
     await expect(
       f.account.authorize(a, g.id, client.id, [READ_SCOPE]),
     ).resolves.toMatchObject({ account_id: a });

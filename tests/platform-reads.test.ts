@@ -91,6 +91,46 @@ const moodle = () => ({
 });
 
 describe("Ed read coverage and boundaries", () => {
+  it("applies course ownership checks inside upstream interactive builders", async () => {
+    for (const operation of [
+      "show_thread_activity",
+      "show_forum_catchup",
+      "show_lesson_progress",
+    ] as const) {
+      const client = {
+        fetchUser: async () => ({
+          courses: [{ id: 101, code: "CSC1001", name: "Algorithms" }],
+        }),
+        fetchThreads: async () => [{ courseId: 999 }],
+        fetchLessons: async () => ({
+          modules: [{ id: 4, courseId: 999 }],
+          lessons: [],
+        }),
+      };
+      await expect(
+        edRead(
+          operation,
+          { courseId: 101, weeks: 12, days: 14 },
+          context(client),
+        ),
+      ).rejects.toMatchObject({ code: "ENTITY_NOT_ALLOWED" });
+    }
+  });
+  it("rejects foreign lesson and module rows in module listings", async () => {
+    for (const foreign of ["modules", "lessons"]) {
+      const client = {
+        fetchLessons: async () => ({
+          modules: [{ id: 4, courseId: foreign === "modules" ? 999 : 101 }],
+          lessons: [
+            { id: 5, moduleId: 4, courseId: foreign === "lessons" ? 999 : 101 },
+          ],
+        }),
+      };
+      await expect(
+        edRead("list_modules", { courseId: 101 }, context(client)),
+      ).rejects.toMatchObject({ code: "ENTITY_NOT_ALLOWED" });
+    }
+  });
   it("passes paging/sort, filters bodies and returns truthful search coverage", async () => {
     const network = vi.fn(async (input: any) => {
       const url = new URL(input);
@@ -195,6 +235,35 @@ describe("Ed read coverage and boundaries", () => {
       edRead("file", { courseId: 101, threadId: 7 }, context(c)),
     ).rejects.toMatchObject({ code: "ENTITY_NOT_ALLOWED" });
     expect(c.fetchFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("Moodle forum ownership", () => {
+  it("rejects a foreign forum returned by the course endpoint", async () => {
+    const c = moodle();
+    c.getForums.mockResolvedValue([{ id: 55, course_id: 999 }]);
+    await expect(
+      moodleRead("forums", { courseId: 202 }, context(c) as any),
+    ).rejects.toMatchObject({ code: "ENTITY_NOT_ALLOWED" });
+  });
+  it("checks forum ownership before following title-search or news references", async () => {
+    for (const operation of ["find", "news"] as const) {
+      const references = vi.fn(async () => []);
+      const client = {
+        ...moodle(),
+        getForums: async () => [{ id: 55, course_id: 999 }],
+        getNewsForums: async () => [{ id: 55, course_id: 999 }],
+        getForumDiscussionRefs: references,
+      };
+      await expect(
+        moodleRead(
+          operation,
+          { courseId: 202, query: "announcement" },
+          context(client) as any,
+        ),
+      ).rejects.toMatchObject({ code: "ENTITY_NOT_ALLOWED" });
+      expect(references).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -610,6 +679,24 @@ describe("Binary MCP files", () => {
 });
 
 describe("Direct backend operation allowlist", () => {
+  it("uses the username established while connecting for the first identity read", async () => {
+    const backend = new DirectBackend(
+      {} as any,
+      "a".repeat(64),
+      "ontrack",
+      context({}).config,
+    );
+    vi.spyOn(backend, "api").mockImplementation(async () => {
+      Reflect.set(backend, "platformUsername", "student");
+      return {
+        getProjects: async () => [{ user_id: 7 }],
+        getAuthMethod: async () => ({ method: "token" }),
+      } as any;
+    });
+    expect(await backend.call("get_user", {})).toMatchObject({
+      user: { username: "student", id: 7 },
+    });
+  });
   it("refuses write and runtime operations without invoking any platform method", async () => {
     const backend = new DirectBackend(
       {} as any,

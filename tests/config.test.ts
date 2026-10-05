@@ -47,7 +47,7 @@ describe("generic deployment scope", () => {
         }),
       ).toThrow();
   });
-  it("allows only exact public resource origins configured by the operator", () => {
+  it("supports exact public resource origins and rejects private or malformed origins", () => {
     expect(
       loadConfig({
         ...env(),

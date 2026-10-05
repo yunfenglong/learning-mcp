@@ -151,7 +151,7 @@ export const edCapabilities = [
   ),
   definePlatformRead(
     "ed_file",
-    "Return a real file as an embedded MCP binary resource from a freshly verified lesson or thread attachment; 16 MiB maximum. Exact resource origins must be operator-configured.",
+    "Return a real file as an embedded MCP binary resource from a freshly verified lesson or thread attachment; 16 MiB maximum. Resource destinations must match the configured HTTPS origin rules.",
     {
       unit,
       lesson_id: id.optional(),

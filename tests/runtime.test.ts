@@ -1,4 +1,5 @@
 import { runInNewContext } from "node:vm";
+import { parse } from "node-html-parser";
 import { readCapabilities } from "../src/capabilities/index.ts";
 import { USAGE_VERSION } from "../src/domain/usage.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -21,6 +22,16 @@ interface Connection {
   grant: string;
 }
 let a: Connection, b: Connection;
+const moodleAttachments = ["starter.zip", "specification.docx", "rubric.docx"];
+const moodleFileBytes = new Uint8Array([80, 75, 3, 4, 255, 0, 17, 99]);
+let moodleFileMode:
+  | "binary"
+  | "external"
+  | "allowed"
+  | "allowed_other"
+  | "denied"
+  | "missing"
+  | "large" = "binary";
 let edCourseCode = "CSC1001";
 let ontrackDiscoveryUnavailable = false;
 let moodleAccountChanged = false,
@@ -51,7 +62,44 @@ async function platformFixture(req: Request): Promise<Response> {
           ? "b"
           : null;
     if (!who) return new Response(null, { status: 401 });
+    expect(req.method).toBe("GET");
     const course = who === "a" ? 101 : 102;
+    const slide = {
+      id: 8,
+      lesson_id: 5,
+      course_id: course,
+      type: "pdf",
+      title: "Slides",
+      file_url: "https://files.edusercontent.com/slides.pdf",
+      content: "<p>Slide body</p>",
+    };
+    const lesson = {
+      id: 5,
+      course_id: course,
+      module_id: 4,
+      title: `Lesson ${who}`,
+      outline:
+        '<p>Lesson body</p><file url="https://files.edusercontent.com/notes.pdf" filename="notes.pdf"></file>',
+      slides: [slide],
+      type: "lesson",
+      state: "published",
+      status: "not_started",
+      available_at: "2026-01-01T00:00:00Z",
+    };
+    const thread = {
+      id: 11,
+      number: 42,
+      course_id: course,
+      user_id: who === "a" ? 1 : 2,
+      title: "Read-only discussion",
+      content:
+        '<p>Thread body</p><file url="https://files.edusercontent.com/thread.pdf" filename="thread.pdf"></file>',
+      document: "Thread body",
+      created_at: new Date().toISOString(),
+      type: "question",
+      category: "General",
+      is_seen: false,
+    };
     if (url.pathname === "/api/user")
       return Response.json({
         user: {
@@ -77,22 +125,50 @@ async function platformFixture(req: Request): Promise<Response> {
       });
     if (url.pathname === `/api/courses/${course}/lessons`)
       return Response.json({
-        lessons: [{ id: 5, course_id: course, title: `Lesson ${who}` }],
-        modules: [],
+        lessons: [lesson],
+        modules: [{ id: 4, course_id: course, name: "Module 1" }],
       });
     if (url.pathname === `/api/courses/${course}/threads`)
-      return Response.json({ threads: [] });
+      return Response.json({
+        threads:
+          Number(url.searchParams.get("offset") ?? 0) === 0 ? [thread] : [],
+      });
+    if (
+      url.pathname === "/api/threads/11" ||
+      url.pathname === `/api/courses/${course}/threads/42`
+    )
+      return Response.json({ thread });
+    if (url.pathname === `/api/users/${who === "a" ? 1 : 2}/profile/activity`) {
+      expect(url.searchParams.get("course_id")).toBe(String(course));
+      return Response.json({ items: [{ thread }] });
+    }
     if (url.pathname === "/api/lessons/5") {
       expect(url.searchParams.has("view")).toBe(false);
       return Response.json({
-        lesson: {
-          id: 5,
-          course_id: course,
-          title: `Lesson ${who}`,
-          slides: [],
-        },
+        lesson,
       });
     }
+    if (url.pathname === "/api/lessons/slides/8") {
+      expect(url.searchParams.has("view")).toBe(false);
+      return Response.json({ slide });
+    }
+    if (url.pathname === "/api/lessons/slides/8/questions")
+      return Response.json({
+        questions: [
+          {
+            id: 33,
+            lesson_slide_id: 8,
+            data: { content: "Question", answers: ["A", "B"] },
+          },
+        ],
+      });
+    if (url.pathname === "/api/lessons/slides/8/questions/responses")
+      return Response.json({
+        responses: [
+          { question_id: 33, user_id: who === "a" ? 1 : 2, data: [0] },
+          { question_id: 33, user_id: 99, data: [1] },
+        ],
+      });
     if (url.pathname === "/api/threads/999")
       return Response.json({
         thread: {
@@ -121,8 +197,81 @@ async function platformFixture(req: Request): Promise<Response> {
         `<html><script>M.cfg = {"wwwroot":"${moodle}","sesskey":"session-${who}","userId":${userid}};</script><span class="usertext">Student ${who}</span></html>`,
         { headers: { "content-type": "text/html" } },
       );
+    if (url.pathname === "/course/view.php")
+      return new Response(
+        '<a href="/grade/report/user/index.php?id=202">Grades</a>',
+        { headers: { "content-type": "text/html" } },
+      );
+    if (url.pathname === "/grade/report/user/index.php")
+      return new Response(
+        '<h1>Algorithms</h1><table class="user-grade"><tr><th class="rowtitle"><a href="/mod/assign/view.php?id=10">Assignment 2</a></th><td class="column-grade">80</td><td class="column-feedback">Feedback</td></tr></table>',
+        { headers: { "content-type": "text/html" } },
+      );
+    if (url.pathname === "/mod/forum/view.php")
+      return new Response(
+        `<body class="forumtype-news course-202"><a href="${moodle}/mod/forum/discuss.php?d=77">Announcement</a></body>`,
+        { headers: { "content-type": "text/html" } },
+      );
+    if (url.pathname === "/mod/forum/discuss.php")
+      return new Response('<body class="course-202">Discussion</body>', {
+        headers: { "content-type": "text/html" },
+      });
+    if (url.pathname === "/mod/quiz/view.php")
+      return new Response(
+        `<body id="page-mod-quiz-view" class="course-202"><h1>Quiz 1</h1><div class="card"><h2 class="card-title">Attempt 1</h2><table class="quizreviewsummary"><tr><th>Status</th><td>Finished</td></tr></table><a href="${moodle}/mod/quiz/review.php?attempt=500">Review</a></div></body>`,
+        { headers: { "content-type": "text/html" } },
+      );
+    if (url.pathname === "/mod/quiz/review.php")
+      return new Response(
+        '<body class="course-202"><a href="/course/view.php?id=202">Algorithms</a><h1>Quiz 1</h1><form class="questionflagsaveform" action="/mod/quiz/review.php?cmid=20"><div class="que"><div class="qtext">Question</div></div></form></body>',
+        { headers: { "content-type": "text/html" } },
+      );
+    if (url.pathname === "/mod/assign/view.php")
+      return new Response(
+        `<html><body id="page-mod-assign-view" class="course-202"><h1>Assignment 2</h1>${moodleAttachments.map((name) => `<a href="${moodle}/pluginfile.php/202/mod_assign/introattachment/0/${name}?forcedownload=1">${name}</a>`).join("")}</body></html>`,
+        { headers: { "content-type": "text/html" } },
+      );
+    if (url.pathname.startsWith("/pluginfile.php/202/")) {
+      if (["external", "allowed", "allowed_other"].includes(moodleFileMode))
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: `https://${moodleFileMode === "external" ? "blocked-files.example.edu" : `${moodleFileMode === "allowed" ? "first" : "second"}-distribution.cloudfront.net`}/attachment.docx?signature=private-file-canary`,
+          },
+        });
+      else if (moodleFileMode === "denied")
+        return new Response("Permission denied: upstream-credential-canary", {
+          status: 403,
+        });
+      else if (moodleFileMode === "missing")
+        return new Response("Not found: upstream-credential-canary", {
+          status: 404,
+        });
+      else
+        return new Response(
+          moodleFileMode === "large"
+            ? new Uint8Array(16 * 1024 * 1024)
+            : moodleFileBytes,
+          {
+            headers: {
+              "content-type":
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "content-length": String(
+                moodleFileMode === "large"
+                  ? 16 * 1024 * 1024
+                  : moodleFileBytes.length,
+              ),
+              "content-disposition": "attachment; filename=specification.docx",
+            },
+          },
+        );
+    }
     if (url.pathname === "/lib/ajax/service.php") {
       const calls = (await req.json()) as any[];
+      for (const call of calls)
+        expect(call.methodname).not.toMatch(
+          /(?:^|_)(?:set|update|submit|create|delete|mark)_/,
+        );
       return Response.json(
         calls.map((c, i) => ({
           index: i,
@@ -146,29 +295,106 @@ async function platformFixture(req: Request): Promise<Response> {
                         ? `Cookie moodle-${who}; key session-${who}; signed link ${moodle}/course/view.php?id=202&sesskey=session-${who}&access%5ftoken=upstream-credential-canary`
                         : "",
                       visible: 1,
-                      modules: [],
+                      modules: [
+                        {
+                          id: 10,
+                          name: "Assignment 2",
+                          modname: "assign",
+                          visible: 1,
+                          url: `${moodle}/mod/assign/view.php?id=10`,
+                        },
+                        {
+                          id: 55,
+                          name: "Announcements",
+                          modname: "forum",
+                          visible: 1,
+                          url: `${moodle}/mod/forum/view.php?id=55`,
+                        },
+                        {
+                          id: 20,
+                          name: "Quiz 1",
+                          modname: "quiz",
+                          visible: 1,
+                          url: `${moodle}/mod/quiz/view.php?id=20`,
+                        },
+                      ],
                     },
                   ]
-                : c.methodname.includes("courses")
-                  ? [
-                      {
-                        id: who === "a" ? 202 : 203,
-                        shortname: "CSC1001_S2_2026",
-                        fullname: "Algorithms",
-                        visible: 1,
-                        startdate: 0,
+                : c.methodname === "core_course_get_course_module"
+                  ? {
+                      cm: {
+                        id: c.args.cmid,
+                        modname: c.args.cmid === 20 ? "quiz" : "assign",
+                        course: 202,
                       },
-                    ]
-                  : [],
+                    }
+                  : c.methodname === "mod_forum_get_discussion_posts"
+                    ? {
+                        courseid: 202,
+                        forumid: 55,
+                        groupid: 1,
+                        posts: [
+                          {
+                            id: 78,
+                            subject: "Announcement",
+                            message: "Read-only announcement",
+                            timecreated: 1,
+                          },
+                        ],
+                      }
+                    : c.methodname === "mod_forum_get_forums_by_courses"
+                      ? [
+                          {
+                            cmid: 55,
+                            type: "news",
+                            course: 202,
+                            name: "Announcements",
+                          },
+                        ]
+                      : c.methodname.includes("courses")
+                        ? [
+                            {
+                              id: who === "a" ? 202 : 203,
+                              shortname: "CSC1001_S2_2026",
+                              fullname: "Algorithms",
+                              visible: 1,
+                              startdate: 0,
+                            },
+                          ]
+                        : [],
         })),
       );
     }
+  }
+  if (
+    url.origin === "https://first-distribution.cloudfront.net" ||
+    url.origin === "https://second-distribution.cloudfront.net" ||
+    url.origin === "https://files.edusercontent.com"
+  ) {
+    expect(req.headers.has("cookie")).toBe(false);
+    expect(req.headers.has("authorization")).toBe(false);
+    expect(req.headers.has("Auth-Token")).toBe(false);
+    return new Response(moodleFileBytes, {
+      headers: { "content-type": "application/octet-stream" },
+    });
   }
   if (url.origin === ontrack) {
     const username = req.headers.get("Username"),
       token = req.headers.get("Auth-Token");
     if (token !== `ontrack-${username}` || !["a", "b"].includes(username ?? ""))
       return new Response(null, { status: 401 });
+    expect(req.method).toBe("GET");
+    if (url.pathname === "/api/auth/method")
+      return Response.json({ method: "token" });
+    if (url.pathname === "/api/unit_roles") return Response.json([]);
+    if (
+      url.pathname === "/api/units/303/all_resources" ||
+      url.pathname === "/api/units/303/task_definitions/501/task_resources"
+    )
+      return new Response(
+        new Uint8Array([80, 75, 5, 6, ...Array(18).fill(0)]),
+        { headers: { "content-type": "application/zip" } },
+      );
     if (url.pathname === "/api/projects")
       if (ontrackDiscoveryUnavailable)
         return Response.json(
@@ -520,18 +746,36 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       const body = await page.text();
       expect(body).not.toContain(new URL(moodle).hostname);
       expect(body).not.toContain(new URL(ontrack).hostname);
-      expect(body).toContain("Cloudflare");
       expect(body).not.toContain("ChatGPT");
       expect(body).not.toContain("tenant.okta.example");
-      expect(body).toContain("infrastructure providers used by its operator");
       bodies.push(body);
+    }
+    for (const body of bodies.slice(0, 2)) {
+      expect(body).toContain("Cloudflare");
+      expect(body).toContain("infrastructure providers used by its operator");
     }
     expect(bodies[0]).toContain('name="provider"');
     expect(bodies[0]).toContain('name="platform" value="sso"');
     const connections = bodies[2]!;
     expect(connections).toContain("Each course can use any combination.");
-    for (const name of ["Ed Discussion", "Moodle", "OnTrack"])
-      expect(connections).toContain(`<h3>${name}</h3>`);
+    const document = parse(connections);
+    expect(document.querySelector("#data-notice")).toBeNull();
+    expect(
+      document.querySelector('#sign-in form[action="/account/logout"]'),
+    ).not.toBeNull();
+    for (const [platform, name] of [
+      ["ed", "Ed Discussion"],
+      ["moodle", "Moodle"],
+      ["ontrack", "OnTrack"],
+    ]) {
+      expect(document.querySelector(`#title-${platform}`)?.text).toBe(name);
+      expect(
+        document.querySelector(`label[for="choose-${platform}"]`)?.text,
+      ).toContain(name);
+    }
+    expect(
+      document.querySelectorAll('input[name="workspace-platform"][checked]'),
+    ).toHaveLength(1);
     expect(connections).toContain('action="/account/ed"');
     for (const platform of ["moodle", "ontrack"])
       expect(connections).toContain(`name="platform" value="${platform}"`);
@@ -769,6 +1013,318 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
     expect(atob(resource.blob).startsWith("%PDF-")).toBe(true);
     expect(download.structuredContent.file.blob).toBeUndefined();
     expect(JSON.stringify(download)).not.toContain("ontrack-a");
+  });
+  it("returns the OnTrack username on the first identity read", async () => {
+    const result = (await call(a, "ontrack_user")).result;
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(result.structuredContent.user).toEqual({ username: "a", id: 7 });
+    expect(result.structuredContent.authentication.method).toBe("token");
+  });
+  it("exercises every Ed read tool with real vendor payloads and no platform writes", async () => {
+    const inputs: Record<string, Record<string, unknown>> = {
+      ed_user: {},
+      ed_courses: {},
+      ed_course: { unit: unit.key },
+      ed_lessons: { unit: unit.key },
+      ed_lesson: { unit: unit.key, lesson_id: 5 },
+      ed_threads: { unit: unit.key },
+      ed_thread: { unit: unit.key, thread_id: 11 },
+      ed_search_threads: { unit: unit.key, query: "body" },
+      ed_course_thread: { unit: unit.key, number: 42 },
+      ed_activity: { unit: unit.key },
+      ed_modules: { unit: unit.key },
+      ed_lesson_files: { unit: unit.key, lesson_id: 5 },
+      ed_thread_files: { unit: unit.key, thread_id: 11 },
+      ed_file: { unit: unit.key, lesson_id: 5 },
+      ed_read_thread: { unit: unit.key, number: 42 },
+      ed_read_lesson: { unit: unit.key, lesson_id: 5 },
+      ed_slide: { unit: unit.key, lesson_id: 5, slide_id: 8 },
+      ed_read_slide: { unit: unit.key, lesson_id: 5, slide_id: 8 },
+      ed_slide_questions: { unit: unit.key, lesson_id: 5, slide_id: 8 },
+      ed_slide_responses: { unit: unit.key, lesson_id: 5, slide_id: 8 },
+      ed_show_forum_catchup: { unit: unit.key },
+      ed_show_thread_activity: { unit: unit.key },
+      ed_show_lesson_progress: { unit: unit.key },
+      ed_show_lesson_guide: {
+        unit: unit.key,
+        lesson_id: 5,
+        sections: [{ title: "Overview", points: ["Read the lesson"] }],
+      },
+    };
+    expect(Object.keys(inputs).sort()).toEqual(
+      readCapabilities
+        .filter((c) => c.platform === "ed")
+        .map((c) => c.name)
+        .sort(),
+    );
+    const results: Record<string, any> = {};
+    for (const [name, args] of Object.entries(inputs)) {
+      const result = (await call(a, name, args)).result;
+      expect(
+        result.isError,
+        `${name}: ${JSON.stringify(result.structuredContent)}`,
+      ).not.toBe(true);
+      results[name] = result;
+    }
+    expect(results.ed_modules.structuredContent.modules[0].lesson_count).toBe(
+      1,
+    );
+    expect(results.ed_search_threads.structuredContent.threads[0].id).toBe(11);
+    expect(results.ed_lesson_files.structuredContent.files).toHaveLength(2);
+    expect(results.ed_thread_files.structuredContent.files).toHaveLength(1);
+    expect(
+      results.ed_slide_questions.structuredContent.questions[0].answers,
+    ).toEqual(["A", "B"]);
+    expect(
+      results.ed_slide_responses.structuredContent.responses.map(
+        (v: any) => v.userId,
+      ),
+    ).toEqual([1]);
+    expect(results.ed_read_lesson.structuredContent.markdown).toContain(
+      "Lesson body",
+    );
+    expect(results.ed_read_thread.structuredContent.markdown).toContain(
+      "Thread body",
+    );
+    expect(
+      results.ed_file.content.filter((v: any) => v.type === "resource"),
+    ).toHaveLength(1);
+    for (const kind of [
+      "forum_catchup",
+      "thread_activity",
+      "lesson_progress",
+      "lesson_guide",
+    ])
+      expect(results[`ed_show_${kind}`].structuredContent.view.kind).toBe(kind);
+  });
+  it("exercises the remaining OnTrack snapshot, discovery and archive reads without chat side effects", async () => {
+    for (const [name, args] of Object.entries({
+      ontrack_courses: { include_inactive: true },
+      ontrack_roles: {},
+      ontrack_unit: { unit: unit.key },
+      ontrack_tasks: { unit: unit.key, status: ["not_started"] },
+      ontrack_unread: { unit: unit.key },
+      ontrack_unit_file: { unit: unit.key },
+      ontrack_task_file: { unit: unit.key, task: "1.1P", resources: true },
+    })) {
+      const result = (await call(a, name, args)).result;
+      expect(
+        result.isError,
+        `${name}: ${JSON.stringify(result.structuredContent)}`,
+      ).not.toBe(true);
+    }
+  });
+  it("downloads authenticated Moodle assignment attachments through the actual client and Worker transport", async () => {
+    const listing = (
+      await call(a, "moodle_item", { unit: unit.key, activity_id: 10 })
+    ).result;
+    expect(listing.isError, JSON.stringify(listing)).not.toBe(true);
+    expect(
+      listing.structuredContent.item.file_entries.map((f: any) => f.name),
+    ).toEqual(moodleAttachments);
+    const single = (
+      await call(a, "moodle_file", {
+        unit: unit.key,
+        activity_id: 10,
+        file_index: 1,
+      })
+    ).result;
+    expect(single.isError, JSON.stringify(single)).not.toBe(true);
+    const resources = single.content.filter((v: any) => v.type === "resource");
+    expect(resources).toHaveLength(1);
+    expect(Buffer.from(resources[0].resource.blob, "base64")).toEqual(
+      Buffer.from(moodleFileBytes),
+    );
+    expect(single.structuredContent.file.sha256).toBe(
+      createHash("sha256").update(moodleFileBytes).digest("hex"),
+    );
+    const batch = (
+      await call(a, "moodle_download", { unit: unit.key, activity_id: 10 })
+    ).result;
+    expect(batch.isError, JSON.stringify(batch)).not.toBe(true);
+    expect(batch.structuredContent.errors).toEqual([]);
+    expect(
+      batch.content.filter((v: any) => v.type === "resource"),
+    ).toHaveLength(3);
+  });
+  it("exercises every Moodle read tool with the real parser and read-only AJAX", async () => {
+    const inputs: Record<string, Record<string, unknown>> = {
+      moodle_user: {},
+      moodle_courses: {},
+      moodle_unit: { unit: unit.key },
+      moodle_due: { unit: unit.key },
+      moodle_grades: { unit: unit.key },
+      moodle_search_forums: { unit: unit.key, query: "announcement" },
+      moodle_thread: { unit: unit.key, discussion_id: 77 },
+      moodle_home: { unit: unit.key },
+      moodle_alerts: {},
+      moodle_find: { unit: unit.key, query: "Assignment", types: ["assign"] },
+      moodle_item: { unit: unit.key, activity_id: 10 },
+      moodle_file: { unit: unit.key, activity_id: 10 },
+      moodle_download: { unit: unit.key, activity_id: 10 },
+      moodle_sync: { unit: unit.key, activity_id: 10 },
+      moodle_news: { unit: unit.key },
+      moodle_forums: { unit: unit.key },
+      moodle_forum: { unit: unit.key, forum_id: 55 },
+      moodle_attempt: { unit: unit.key, activity_id: 20, attempt_id: 500 },
+    };
+    expect(Object.keys(inputs).sort()).toEqual(
+      readCapabilities
+        .filter((c) => c.platform === "moodle")
+        .map((c) => c.name)
+        .sort(),
+    );
+    const results: Record<string, any> = {};
+    for (const [name, args] of Object.entries(inputs)) {
+      const result = (await call(a, name, args)).result;
+      expect(
+        result.isError,
+        `${name}: ${JSON.stringify(result.structuredContent)}`,
+      ).not.toBe(true);
+      results[name] = result.structuredContent;
+    }
+    expect(results.moodle_home.home.errors).toEqual([]);
+    expect(results.moodle_forums.forums[0].id).toBe(55);
+    expect(results.moodle_thread.thread.posts[0].subject).toBe("Announcement");
+    expect(results.moodle_news.results[0].post.subject).toBe("Announcement");
+    expect(results.moodle_grades.grades[0].items[0].grade).toBe("80");
+    expect(results.moodle_attempt.attempt.id).toBe(500);
+    expect(results.moodle_sync.manifest).toHaveLength(3);
+  });
+  it("preserves the file transport failure in individual and batch Moodle downloads", async () => {
+    moodleFileMode = "external";
+    try {
+      const single = (
+        await call(a, "moodle_file", {
+          unit: unit.key,
+          activity_id: 10,
+          file_index: 1,
+        })
+      ).result;
+      const batch = (
+        await call(a, "moodle_download", { unit: unit.key, activity_id: 10 })
+      ).result;
+      expect({
+        single: single.structuredContent,
+        batch: batch.structuredContent.errors,
+      }).toEqual({
+        single: expect.objectContaining({
+          code: "RESOURCE_ORIGIN_NOT_ALLOWED",
+        }),
+        batch: Array.from({ length: 3 }, () =>
+          expect.objectContaining({ code: "RESOURCE_ORIGIN_NOT_ALLOWED" }),
+        ),
+      });
+      expect(JSON.stringify({ single, batch })).not.toContain(
+        "private-file-canary",
+      );
+    } finally {
+      moodleFileMode = "binary";
+    }
+  });
+  it("follows configured Moodle file redirects without forwarding credentials", async () => {
+    moodleFileMode = "allowed";
+    try {
+      const single = (
+        await call(a, "moodle_file", {
+          unit: unit.key,
+          activity_id: 10,
+          file_index: 1,
+        })
+      ).result;
+      expect(single.isError, JSON.stringify(single.structuredContent)).not.toBe(
+        true,
+      );
+      expect(
+        single.content.filter((v: any) => v.type === "resource"),
+      ).toHaveLength(1);
+      expect(JSON.stringify(single)).not.toContain("private-file-canary");
+    } finally {
+      moodleFileMode = "binary";
+    }
+  });
+  it("downloads and syncs attachments across new CDN distributions using the default provider rules", async () => {
+    try {
+      for (const mode of ["allowed", "allowed_other"] as const) {
+        moodleFileMode = mode;
+        for (const name of ["moodle_file", "moodle_download", "moodle_sync"]) {
+          const result = (
+            await call(a, name, { unit: unit.key, activity_id: 10 })
+          ).result;
+          expect(
+            result.isError,
+            `${mode}/${name}: ${JSON.stringify(result.structuredContent)}`,
+          ).not.toBe(true);
+          expect(
+            result.content.filter((v: any) => v.type === "resource"),
+          ).toHaveLength(name === "moodle_file" ? 1 : 3);
+          if (name !== "moodle_file")
+            expect(result.structuredContent.errors).toEqual([]);
+          expect(JSON.stringify(result)).not.toContain("private-file-canary");
+        }
+      }
+    } finally {
+      moodleFileMode = "binary";
+    }
+  });
+  it.each([
+    ["denied", "PLATFORM_REQUEST_REJECTED"],
+    ["missing", "FILE_NOT_FOUND"],
+  ] as const)(
+    "reports the real Moodle %s error without returning upstream bodies",
+    async (mode, code) => {
+      moodleFileMode = mode;
+      try {
+        const single = (
+          await call(a, "moodle_file", {
+            unit: unit.key,
+            activity_id: 10,
+            file_index: 1,
+          })
+        ).result;
+        const batch = (
+          await call(a, "moodle_download", { unit: unit.key, activity_id: 10 })
+        ).result;
+        expect(single.structuredContent.code).toBe(code);
+        expect(batch.structuredContent.errors.map((e: any) => e.code)).toEqual([
+          code,
+          code,
+          code,
+        ]);
+        expect(JSON.stringify({ single, batch })).not.toContain(
+          "upstream-credential-canary",
+        );
+      } finally {
+        moodleFileMode = "binary";
+      }
+    },
+  );
+  it("delivers a full 16 MiB Moodle file with a verifiable digest", async () => {
+    moodleFileMode = "large";
+    try {
+      const single = (
+        await call(a, "moodle_file", {
+          unit: unit.key,
+          activity_id: 10,
+          file_index: 1,
+        })
+      ).result;
+      expect(
+        single?.isError,
+        JSON.stringify(single?.structuredContent),
+      ).not.toBe(true);
+      expect(single.structuredContent.file.bytes).toBe(16 * 1024 * 1024);
+      const resource = single.content.find(
+        (v: any) => v.type === "resource",
+      ).resource;
+      const bytes = Buffer.from(resource.blob, "base64");
+      expect(bytes.length).toBe(16 * 1024 * 1024);
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+        single.structuredContent.file.sha256,
+      );
+    } finally {
+      moodleFileMode = "binary";
+    }
   });
   it("rejects a Moodle session whose authenticated profile changes", async () => {
     moodleAccountChanged = true;

@@ -4,7 +4,7 @@ The capability catalog in `src/capabilities/` is the source of truth for public 
 
 `src/platforms/read/contracts.ts` derives argument and operation types from these definitions; adapters inject verified platform IDs after public arguments. Each platform handler has an exhaustive operation check: adding a catalog operation without implementing it fails `pnpm check`. The platform clients use declarations generated from the pinned source, rather than a permissive index signature. Generated declarations and bundles are hashed in `vendor/upstreams.json`.
 
-The execution files are grouped under `src/platforms/read/`: `ed.ts`, `moodle.ts` and `ontrack.ts` implement platform reads; `contracts.ts`, `shared.ts`, `files.ts`, `error.ts` and `ontrack-json.ts` provide their types and shared output handling. Session construction and transport stay in `src/platforms/direct.ts` and `network.ts`.
+The execution files are grouped under `src/platforms/read/`: `ed.ts`, `moodle.ts` and `ontrack.ts` implement platform reads; `contracts.ts`, `shared.ts`, `files.ts`, `error.ts` and `ontrack-json.ts` provide their types and shared output handling. `moodle-files.ts` handles bounded file redirects. Session construction and transport stay in `src/platforms/direct.ts` and `network.ts`.
 
 MCP display code lives in `src/mcp/views/ed/` with its document registration, browser script and raw-import declaration. Ed prompt registration lives in `src/mcp/prompts/ed.ts`; `src/mcp/server.ts` owns shared tool registration and HTTP transport.
 
@@ -26,7 +26,9 @@ Files are returned as native MCP embedded resources with a name, MIME type, byte
 
 Moodle download/sync returns explicit failures and continuation offsets. Sync exports page/book HTML with executable content removed and same-site images embedded where possible. Its offline CSP permits only data images. The caller stores the manifest and supplies known hashes; unchanged content is fetched to calculate its hash, then its bytes are omitted. This is a stateless transfer protocol, not a server-side filesystem mirror. Batches can be retried with a smaller limit after a size error. Image or file failures retain partial coverage.
 
-Ed attachment requests accept only freshly listed file metadata. Their exact public resource origins must be configured in the suite's `RESOURCE_ORIGINS`; no Ed credentials go to these resource origins and redirects are refused. This does not add browser SSO origins. Moodle attachments stay on the account's saved site origin. See [configuration](configuration.md).
+Ed attachment requests accept only freshly listed file metadata. Resource destinations must match the suite's `RESOURCE_ORIGINS` rules; no Ed credentials go to these origins and redirects are refused. Moodle downloads start at freshly discovered links on the account's saved site. File redirects can reach matching resource origins, with at most five redirects and no platform credentials sent off-site. The default provider rules cover Edusercontent and CloudFront subdomains without publishing instance-specific hosts. Operators can replace the defaults with exact origins or verified CDN suffix rules. Unconfigured destinations fail with `RESOURCE_ORIGIN_NOT_ALLOWED`, without exposing signed query parameters or triggering session renewal. This does not add browser SSO origins. See [configuration](configuration.md).
+
+Ed and Moodle refuse partial range responses and truncated uncompressed bodies instead of delivering corrupt files. OnTrack uses its upstream client's validated range assembly. Vendor transports sometimes wrap fetch errors; a per-read async boundary preserves safe suite failures through those wrappers. Batch failures use the same public classification as individual downloads, without forwarding vendor messages or error bodies.
 
 ## Excluded side effects
 

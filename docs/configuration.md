@@ -4,18 +4,32 @@ Configure the suite in [`wrangler.jsonc`](../wrangler.jsonc) and the broker in [
 
 ## Variables
 
-| Variable           | Worker | Value                                                                                                   |
-| ------------------ | ------ | ------------------------------------------------------------------------------------------------------- |
-| `LEGAL_CONFIG`     | Suite  | Optional JSON object with instance operator and privacy contact disclosures; see below.                 |
-| `ISSUER`           | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                           |
-| `PLATFORM_CONFIG`  | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                 |
-| `SSO_PROVIDERS`    | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                        |
-| `RESOURCE_ORIGINS` | Suite  | Optional JSON array of exact public HTTPS origins for fresh Ed attachment downloads; default `[]`.      |
-| `LOGIN_ORIGINS`    | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed. |
+| Variable           | Worker | Value                                                                                                                                               |
+| ------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LEGAL_CONFIG`     | Suite  | Optional JSON object with instance operator and privacy contact disclosures; see below.                                                             |
+| `ISSUER`           | Suite  | Exact public HTTPS origin, matching the deployed route or workers.dev origin.                                                                       |
+| `PLATFORM_CONFIG`  | Suite  | Optional Ed configuration; Moodle and OnTrack addresses belong to each user connection.                                                             |
+| `SSO_PROVIDERS`    | Both   | JSON array of supported provider types and exact HTTPS origins, described below.                                                                    |
+| `RESOURCE_ORIGINS` | Suite  | Optional JSON array of HTTPS origins or leading subdomain wildcard rules for Ed files and Moodle file redirects; provider defaults described below. |
+| `LOGIN_ORIGINS`    | Broker | JSON array of exact HTTPS origins needed by the platform SSO flow. The platform origin is also allowed.                                             |
 
 Users enter Moodle and OnTrack base links when connecting a platform on their authenticated account page. The broker validates and saves the exact public HTTPS origin in that user's encrypted connection storage. It uses the saved address for platform reads, sign-in and renewal. Worker variables do not need Moodle or OnTrack addresses. To use a different address, disconnect that platform and connect it again; course associations must be confirmed again.
 
-Ed file downloads also require each attachment host's exact HTTPS origin in `RESOURCE_ORIGINS`, for example `["https://files.example.edu"]` when verified metadata uses that host. The upstream Ed client additionally restricts supported attachment URL forms. Requests carry no Ed credentials, follow no redirects, and cannot be directed to a caller-supplied URL. This setting is independent of the broker's SSO browser origins. A missing origin prevents that file download; API reading remains available.
+`RESOURCE_ORIGINS` is a reusable resource-host policy, not a list of deployment-specific CDN distributions. If omitted, it defaults to:
+
+```json
+[
+  "https://edusercontent.com",
+  "https://*.edusercontent.com",
+  "https://*.cloudfront.net"
+]
+```
+
+New hosts within these CDN families work without adding an individual origin. An explicit array replaces the defaults; `[]` disables off-platform file destinations. To support another provider, configure its verified CDN-owned suffix or exact HTTPS origin in the private deployment configuration. Never publish account-specific domains, signed file URLs or live course information in the repository.
+
+Wildcard rules support only a leading `*.` and match complete subdomain labels, including nested subdomains. They do not match the apex domain, lookalike suffixes, a different protocol or a different port. For example `https://*.cdn.example.edu` matches `https://new.cdn.example.edu`, but not `https://cdn.example.edu` or `https://new.cdn.example.edu:8443`. Bare `*`, wildcard top-level names, IP literals, internal hostnames, URL credentials, paths, queries and fragments are rejected. Configure suffixes owned by the resource provider, not public registry or institutional suffixes.
+
+Ed files must still come from freshly verified lesson/thread metadata and meet the official client's supported URL rules. They receive no platform credentials and cannot redirect. Moodle files start at freshly discovered links on the user's saved platform origin; only file redirects can reach a matching resource destination. Cookies and authentication headers stay on the saved Moodle origin. Every redirect is rechecked, with a maximum of five redirects and no HTTP downgrades or URL credentials. MCP callers cannot supply remote URLs. Same-origin Moodle attachments need no additional resource rule. This policy is separate from the broker's SSO browser origins and does not broaden API or identity-provider access.
 
 Ed uses `https://edstem.org` automatically. Optional Ed scope can be supplied through the suite's `PLATFORM_CONFIG`:
 

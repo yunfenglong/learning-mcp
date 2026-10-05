@@ -35,6 +35,7 @@ export interface Grant {
   client_name: string;
   redirect_uri: string;
   scopes: string[];
+  authorized_at?: number;
   expires_at: number;
   revoked: boolean;
 }
@@ -113,6 +114,7 @@ export class AccountStore {
       )
     )
       throw new SuiteError("INVALID_SCOPE", "Unsupported permission.");
+    const authorizedAt = this.now();
     const grant: Grant = {
       id: randomToken(),
       account_id: this.account,
@@ -120,7 +122,8 @@ export class AccountStore {
       client_name: client.name,
       redirect_uri: client.redirect_uri,
       scopes,
-      expires_at: this.now() + 30 * 86400_000,
+      authorized_at: authorizedAt,
+      expires_at: authorizedAt + 30 * 86400_000,
       revoked: false,
     };
     await this.store.put(`grant:${grant.id}`, grant);

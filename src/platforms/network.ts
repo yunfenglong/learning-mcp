@@ -47,6 +47,31 @@ export function platformFetch(
   allowSameOriginRedirects = false,
   maxBytes = 4 * 1024 * 1024,
 ): typeof fetch {
+  return scopedFetch(
+    origin,
+    fetchImpl,
+    maxBytes,
+    allowSameOriginRedirects,
+    false,
+  );
+}
+
+/** Return manual file redirects for the bounded, credential-aware file transfer loop. */
+export function platformFileFetch(
+  origin: string,
+  fetchImpl: typeof fetch,
+  maxBytes: number,
+): typeof fetch {
+  return scopedFetch(origin, fetchImpl, maxBytes, true, true);
+}
+
+function scopedFetch(
+  origin: string,
+  fetchImpl: typeof fetch,
+  maxBytes: number,
+  allowSameOriginRedirects: boolean,
+  allowFileRedirects: boolean,
+): typeof fetch {
   const trusted = new URL(origin).origin;
   return async (input, init) => {
     const url = new URL(
@@ -72,7 +97,11 @@ export function platformFetch(
         ? AbortSignal.any([init.signal, AbortSignal.timeout(15000)])
         : AbortSignal.timeout(15000),
     });
-    if (response.status >= 300 && response.status < 400) {
+    if (
+      !allowFileRedirects &&
+      response.status >= 300 &&
+      response.status < 400
+    ) {
       const target = new URL(response.headers.get("location") ?? url.href, url);
       if (
         !allowSameOriginRedirects ||

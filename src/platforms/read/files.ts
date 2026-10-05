@@ -28,6 +28,14 @@ export async function responseBytes(
       "The platform could not return this file.",
       502,
     );
+  if (response.status === 206 || response.headers.has("content-range")) {
+    await response.body?.cancel();
+    throw new SuiteError(
+      "FILE_INCOMPLETE",
+      "The platform returned only part of this file. Retry the download.",
+      502,
+    );
+  }
   const length = Number(response.headers.get("content-length"));
   if (length > limit) {
     await response.body?.cancel();
@@ -37,6 +45,12 @@ export async function responseBytes(
     );
   }
   const reader = response.body?.getReader();
+  if (!reader && length > 0)
+    throw new SuiteError(
+      "FILE_INCOMPLETE",
+      "The platform returned an incomplete file. Retry the download.",
+      502,
+    );
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -53,6 +67,19 @@ export async function responseBytes(
     }
     chunks.push(chunk.value);
   }
+  const encoding = response.headers.get("content-encoding");
+  if (
+    (!encoding || encoding.toLowerCase() === "identity") &&
+    response.headers.has("content-length") &&
+    Number.isSafeInteger(length) &&
+    length >= 0 &&
+    size !== length
+  )
+    throw new SuiteError(
+      "FILE_INCOMPLETE",
+      "The platform returned an incomplete file. Retry the download.",
+      502,
+    );
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
