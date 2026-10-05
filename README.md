@@ -1,4 +1,4 @@
-# Learning MCP Suite
+# Learning MCP Suite — write beta
 
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm_Noncommercial-6C47FF)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](docs/deployment.md)
@@ -20,7 +20,9 @@ Runs on Cloudflare Workers with a private Okta / SSO broker. Users do not need t
 - **Cloud SSO** — reuse platform sessions and optionally retain encrypted credentials for automatic sign-in.
 - **Per-user access** — separate accounts, configurable platform origins, scoped OAuth grants and revocation controls.
 
-Learning-platform operations are read-only. Connection and course-association tools manage the user's own suite account.
+This beta branch is being extended with educational platform writes, separately authorized through `learning:write` and confirmed from a fresh preview. Existing read-only grants retain reading access. Connection and course-association tools use `learning:bindings`. Attendance submission remains unavailable.
+
+Beta scope: Ed threads/replies, lesson and slide progress and quiz responses; Moodle assignment drafts/final submissions and quiz attempts; OnTrack chat history/read markers, messages, task state and file submissions. Ed posting has only been validated by upstream with mocked responses; Moodle quiz operations are beta. Changes on this branch are committed locally only until explicitly approved for publication or deployment.
 
 ## Project status
 
