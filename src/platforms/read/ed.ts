@@ -56,6 +56,34 @@ export async function edRead(
     return { courses: p.results, ...p, results: undefined };
   }
   await ctx.enrolled(course);
+  // Upstream builders fetch internally; enforce the same ownership checks at that seam.
+  const viewClient = new Proxy(c, {
+    get(target, property) {
+      if (property === "fetchThreads")
+        return async (...args: Parameters<EdClient["fetchThreads"]>) => {
+          requireOwner(args[0], course);
+          const values = await target.fetchThreads(...args);
+          for (const value of values) requireOwner(value.courseId, course);
+          return values;
+        };
+      if (property === "fetchLessons")
+        return async (id: number) => {
+          requireOwner(id, course);
+          const values = await target.fetchLessons(id);
+          for (const value of [...values.modules, ...values.lessons])
+            requireOwner(value.courseId, course);
+          return values;
+        };
+      if (property === "fetchLesson")
+        return async (id: number) => {
+          const value = await target.fetchLesson(id, { view: false });
+          requireOwner(value.courseId, course);
+          return value;
+        };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
   const lesson = async () => {
     const v = await c.fetchLesson(required(a.lessonId, "lesson_id"), {
       view: false,
@@ -104,6 +132,8 @@ export async function edRead(
     }
     case "list_modules": {
       const v = await c.fetchLessons(course);
+      for (const value of [...v.modules, ...v.lessons])
+        requireOwner(value.courseId, course);
       return {
         modules: v.modules.map((m) => ({
           ...m,
@@ -203,7 +233,9 @@ export async function edRead(
           "FILE_NOT_FOUND",
           "Choose a file index from the fresh file listing.",
         );
-      const response = await c.fetchFile(file.url);
+      const response = await (ctx.read
+        ? ctx.read(() => c.fetchFile(file.url))
+        : c.fetchFile(file.url));
       return {
         file: await learningFile(
           await responseBytes(response),
@@ -217,22 +249,22 @@ export async function edRead(
     }
     case "show_forum_catchup":
       return {
-        ...(await buildForumCatchup(c, course, a.days ?? 14)),
+        ...(await buildForumCatchup(viewClient, course, a.days ?? 14)),
         coverage: "bounded",
         page_cap: 10,
       };
     case "show_thread_activity":
       return {
-        ...(await buildThreadActivity(c, course, a.weeks ?? 12)),
+        ...(await buildThreadActivity(viewClient, course, a.weeks ?? 12)),
         coverage: "bounded",
         page_cap: 10,
       };
     case "show_lesson_progress":
-      return buildLessonProgress(c, course);
+      return buildLessonProgress(viewClient, course);
     case "show_lesson_guide": {
       await lesson();
       // The upstream builder fetches the lesson without view=true and writes no progress.
-      return buildLessonGuide(c, {
+      return buildLessonGuide(viewClient, {
         lessonId: required(a.lessonId, "lesson_id"),
         sections: required(a.sections, "sections"),
         quiz: a.quiz ?? [],

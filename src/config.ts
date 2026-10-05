@@ -2,7 +2,10 @@ import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { z } from "zod";
 import type { Platform, Unit } from "./domain/units.ts";
 import { SuiteError } from "./errors.ts";
-import { platformBaseLink } from "./platforms/base-link.ts";
+import {
+  DEFAULT_RESOURCE_ORIGINS,
+  parseResourceOrigins,
+} from "./platforms/resource-origins.ts";
 export interface Env {
   OAUTH_KV: KVNamespace;
   AUTH_STATE: DurableObjectNamespace;
@@ -81,7 +84,11 @@ export function loadConfig(env: Env): Config {
     return {
       issuer,
       legal: legalConfigSchema.parse(JSON.parse(env.LEGAL_CONFIG ?? "{}")),
-      resourceOrigins: z.array(httpsOrigin).max(30).parse(JSON.parse(env.RESOURCE_ORIGINS ?? "[]")).map(platformBaseLink),
+      resourceOrigins: parseResourceOrigins(
+        JSON.parse(
+          env.RESOURCE_ORIGINS ?? JSON.stringify(DEFAULT_RESOURCE_ORIGINS),
+        ),
+      ),
       units: [],
       platforms,
       ssoProviders: ssoProvidersSchema.parse(

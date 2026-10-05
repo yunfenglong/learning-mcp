@@ -24,6 +24,7 @@ import {
 } from "../../../vendor/moodle/client.js";
 import { SuiteError } from "../../errors.ts";
 import { publicError } from "../../errors.ts";
+import { platformReadError } from "./error.ts";
 import {
   base64,
   learningFile,
@@ -52,6 +53,10 @@ export async function moodleRead(
   ctx: ReadContext<MoodleClientCore>,
 ) {
   const c = ctx.client;
+  const read =
+    ctx.read ?? (async <T>(operation: () => Promise<T>) => operation());
+  const failure = (error: unknown) =>
+    publicError(platformReadError("moodle", error));
   if (name === "get_user") return { user: await c.getSiteInfo() };
   const allCourses = await c.getCourses();
   if (name === "courses") {
@@ -154,7 +159,9 @@ export async function moodleRead(
     return url.href;
   };
   const fetchFile = async (entry: FileEntry) => {
-    const response = await c.requestAbsolute(safeFileUrl(entry.url));
+    const response = await read(() =>
+      c.requestAbsolute(safeFileUrl(entry.url)),
+    );
     const type =
       response.headers.get("content-type") ?? "application/octet-stream";
     const bytes = await responseBytes(response);
@@ -263,20 +270,20 @@ export async function moodleRead(
             ),
           });
         } catch (error) {
-          home.errors.push({ course_id: course.id, ...publicError(error) });
+          home.errors.push({ course_id: course.id, ...failure(error) });
         }
         try {
           const todo = await c.getTodo(a.limit ?? 20, a.days ?? 14, course.id);
           for (const row of todo) requireOwner(row.course_id, course.id);
           home.due.push(...todo);
         } catch (error) {
-          home.errors.push({ course_id: course.id, ...publicError(error) });
+          home.errors.push({ course_id: course.id, ...failure(error) });
         }
       }
       try {
         home.alerts = await c.getAlerts(a.alerts_limit ?? 5);
       } catch (error) {
-        home.errors.push(publicError(error));
+        home.errors.push(failure(error));
       }
       return { home, coverage: home.errors.length ? "partial" : "bounded" };
     }
@@ -338,7 +345,8 @@ export async function moodleRead(
       for (const course of courses) {
         found.push(...searchSections(course, await sections(course.id), query));
         if (!a.types?.length || a.types.includes("thread")) {
-          for (const f of await c.getForums(course.id))
+          for (const f of await c.getForums(course.id)) {
+            requireOwner(f.course_id, course.id);
             for (const t of await c.getForumDiscussionRefs(f.id))
               if (
                 String(query)
@@ -355,6 +363,7 @@ export async function moodleRead(
                   unit_id: course.id,
                   score: 50,
                 });
+          }
         }
       }
       const p = page(
@@ -388,8 +397,11 @@ export async function moodleRead(
       requireOwner(review.id, a.attempt_id);
       return { attempt: review };
     }
-    case "forums":
-      return { forums: await c.getForums(first.id) };
+    case "forums": {
+      const forums = await c.getForums(first.id);
+      for (const value of forums) requireOwner(value.course_id, first.id);
+      return { forums };
+    }
     case "forum": {
       const selected = await forum(required(a.forum_id, "forum_id"));
       return {
@@ -462,9 +474,11 @@ export async function moodleRead(
         ForumDiscussionRef & { course_id: number; forum_id: number }
       > = [];
       for (const course of courses)
-        for (const f of await c.getNewsForums(course.id))
+        for (const f of await c.getNewsForums(course.id)) {
+          requireOwner(f.course_id, course.id);
           for (const t of await c.getForumDiscussionRefs(f.id))
             refs.push({ ...t, course_id: course.id, forum_id: f.id });
+        }
       const news: Array<
         (typeof refs)[number] & { name: string; post?: ForumPost }
       > = [];
@@ -551,7 +565,7 @@ export async function moodleRead(
               });
           }
         } catch (error) {
-          errors.push({ activity_id: found.id, ...publicError(error) });
+          errors.push({ activity_id: found.id, ...failure(error) });
         }
       }
       const offset = a.offset ?? 0,
@@ -567,7 +581,9 @@ export async function moodleRead(
               found.modname === "book"
                 ? `/mod/book/tool/print/index.php?id=${found.id}`
                 : `/mod/page/view.php?id=${found.id}`;
-            const response = await c.requestAbsolute(`${c.baseUrl}${path}`);
+            const response = await read(() =>
+              c.requestAbsolute(`${c.baseUrl}${path}`),
+            );
             const raw = new TextDecoder().decode(await responseBytes(response));
             const content = parseSavedDocumentHtml(raw, c.baseUrl);
             if (!content)
@@ -591,7 +607,9 @@ export async function moodleRead(
               )
                 continue;
               try {
-                const img = await c.requestAbsolute(safeFileUrl(url.href));
+                const img = await read(() =>
+                  c.requestAbsolute(safeFileUrl(url.href)),
+                );
                 const type =
                   img.headers.get("content-type")?.split(";")[0] ?? "";
                 if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) {
@@ -620,7 +638,7 @@ export async function moodleRead(
                 errors.push({
                   activity_id: found.id,
                   part: "image",
-                  ...publicError(error),
+                  ...failure(error),
                 });
               }
             }
@@ -652,7 +670,7 @@ export async function moodleRead(
             files.push(file);
           }
         } catch (error) {
-          errors.push({ source, activity_id: found.id, ...publicError(error) });
+          errors.push({ source, activity_id: found.id, ...failure(error) });
         }
       }
       const next = offset + chosen.length;

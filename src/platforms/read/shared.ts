@@ -8,6 +8,7 @@ export interface ReadContext<C = unknown> {
   output: OutputBoundary;
   enrolled: (id: number) => Promise<void>;
   username?: string;
+  read?: <T>(operation: () => Promise<T>) => Promise<T>;
 }
 export function required<T>(value: T | undefined, label: string): T {
   if (value === undefined)
