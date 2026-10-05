@@ -34,6 +34,7 @@ export function moodleContext(html: string, site: string) {
   return {
     sesskey,
     user_info: {
+      sitename: "",
       userid,
       siteurl: site,
       fullname:

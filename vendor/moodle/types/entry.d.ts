@@ -1,0 +1,4 @@
+export { MoodleClientCore } from "./src/moodle-client-core.js";
+export { resolveSection, withChildSections, searchSections } from "./src/resolve.js";
+export { hasGrade, pageGradeReports } from "./src/grades.js";
+export { parseSavedDocumentHtml } from "./src/scraper.js";

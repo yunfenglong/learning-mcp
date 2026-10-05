@@ -114,6 +114,7 @@ export class DirectBackend implements Backend {
         user_info: {
           userid: value.userid,
           siteurl: site,
+          sitename: "",
           fullname: value.display_name || `Moodle user ${value.userid}`,
           username: "",
           firstname: "",

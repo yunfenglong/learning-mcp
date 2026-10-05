@@ -11,6 +11,14 @@ var ReferenceError = class extends Error {
   hint = "Run `moodle units` to see this site's names, or refine the reference.";
 };
 var normalize = (value) => value.normalize("NFKC").toLocaleLowerCase().trim().replace(/\s+/gu, " ");
+var words = (value) => normalize(value).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+var tokensMatch = (text, query) => normalize(query).split(" ").every((token) => tokenMatches(normalize(text), token));
+function tokenMatches(text, token) {
+  if (/^\d+$/u.test(token)) return (text.match(/\b\d+\b/gu) ?? []).some((n) => Number(n) === Number(token));
+  if (text.includes(token)) return true;
+  const short = /^(\p{L}+)(\d+)$/u.exec(token);
+  return short !== null && new RegExp(`(?:^|[^\\p{L}])${short[1]}\\p{L}*[\\s:.#-]*0*${Number(short[2])}(?!\\d)`, "u").test(text);
+}
 var named = (course, raw) => [course.shortname, course.fullname].some((name) => normalize(name) === raw);
 function resolveUnit(value, courses) {
   if (typeof value === "number") {
@@ -37,6 +45,79 @@ function resolveUnit(value, courses) {
 function unitError(code, ref, courses) {
   const candidates = courses.map((c) => ({ id: c.id, name: c.fullname || c.shortname, code: c.shortname || void 0 }));
   return new ReferenceError(code, `${code === "ambiguous" ? "Several units match" : "No unit matches"} '${ref}'. Your units: ${courses.map((c) => c.shortname || c.fullname).join(", ")}.`, candidates);
+}
+function resolveSection(ref, sections) {
+  const raw = normalize(String(ref));
+  const labels = sectionLabels(sections);
+  const label = (s) => labels.get(s.id) ?? s.name;
+  const numbers = raw.match(/\b\d+\b/gu) ?? [];
+  let matches = sections.filter((s) => numbers.length === 1 ? (label(s).match(/\b\d+\b/gu) ?? []).some((n) => Number(n) === Number(numbers[0])) && (raw === numbers[0] || tokensMatch(label(s), raw)) : normalize(label(s)).includes(raw));
+  const named2 = matches.filter((s) => tokensMatch(s.name, raw));
+  if (matches.length > 1 && named2.length) matches = named2;
+  if (matches.length === 1) return { section: matches[0] };
+  if (matches.length > 1) throw new ReferenceError("ambiguous", `Several sections match '${ref}'.`, matches.map((s) => ({ id: s.id, name: label(s) })));
+  if (/^\d+$/u.test(raw)) {
+    const positional = sections.filter((s) => s.section === Number(raw));
+    if (positional.length === 1) return { section: positional[0], positional: true };
+  }
+  throw new ReferenceError("not_found", `No section matches '${ref}'.`, sections.map((s) => ({ id: s.id, name: s.name })));
+}
+function searchSections(course, sections, query) {
+  const rows = [];
+  const labels = sectionLabels(sections);
+  for (const s of sections) {
+    const label = labels.get(s.id) ?? s.name;
+    const context = { unit_id: course.id, unit_code: course.shortname || course.fullname, section_id: s.id, section: label };
+    if (tokensMatch(s.name, query)) rows.push({ ...context, id: s.id, name: s.name, type: "section", score: words(s.name) === words(query) ? 100 : 70 });
+    for (const a of s.activities) {
+      if (!tokensMatch(`${a.name} ${label}`, query)) continue;
+      const chrome = ["label", "cms"].includes(a.modname);
+      const score = chrome ? 1 : words(a.name) === words(query) ? 100 : tokensMatch(a.name, query) ? 80 : 60;
+      rows.push({ ...context, id: a.id, name: a.name, type: a.modname, score, activity: a });
+    }
+  }
+  const useful = rows.filter((r) => r.score > 1);
+  return (useful.length ? useful : rows).sort((a, b) => b.score - a.score || a.id - b.id);
+}
+function parentsOf(sections) {
+  const byId = new Map(sections.map((s) => [s.id, s]));
+  const parents = /* @__PURE__ */ new Map();
+  if (sections.some((s) => s.parent !== void 0)) {
+    const holders = new Set(sections.map((s) => s.parent));
+    const headings = new Set(sections.filter((s) => holders.has(s.id)).map((s) => s.parent));
+    for (const s of sections) {
+      const parent = s.parent === void 0 || headings.has(s.parent) ? void 0 : byId.get(s.parent);
+      if (parent) parents.set(s.id, parent);
+    }
+    return parents;
+  }
+  const counts = /* @__PURE__ */ new Map();
+  for (const s of sections) counts.set(s.name, (counts.get(s.name) ?? 0) + 1);
+  let last;
+  for (const s of sections) {
+    if ((counts.get(s.name) ?? 0) < 2) last = s;
+    else if (last) parents.set(s.id, last);
+  }
+  return parents;
+}
+function sectionLabels(sections) {
+  const parents = parentsOf(sections);
+  const name = (s) => s.name || `Section ${s.section}`;
+  return new Map(sections.map((s) => {
+    const parent = parents.get(s.id);
+    return [s.id, parent ? `${name(parent)} \u203A ${name(s)}` : name(s)];
+  }));
+}
+function sectionTree(sections) {
+  const parents = parentsOf(sections);
+  const tree = sections.filter((s) => !parents.has(s.id)).map((section) => ({ section, children: [] }));
+  const nodes = new Map(tree.map((node) => [node.section.id, node]));
+  for (const s of sections) nodes.get(parents.get(s.id)?.id ?? NaN)?.children.push(s);
+  return tree;
+}
+function withChildSections(section, sections) {
+  const node = sectionTree(sections).find((n) => n.section.id === section.id);
+  return node ? [node.section, ...node.children] : [section];
 }
 
 // src/session-fetch.ts
@@ -1028,6 +1109,22 @@ function parsePageHtml(html, pageId, baseUrl) {
     content_text: content ? htmlToStructuredContent(content.innerHTML, baseUrl).text : "",
     url: `${baseUrl.replace(/\/$/, "")}/mod/page/view.php?id=${pageId}`
   };
+}
+function parseSavedDocumentHtml(html, baseUrl) {
+  const root = parse2(html);
+  const content = first(root, [".book", "[role='main']", "#region-main"]);
+  if (!content || !cleanNodeText(content)) return void 0;
+  for (const node of content.querySelectorAll(".book_info, .hidden-print, script, meta, link, noscript")) node.remove();
+  for (const node of content.querySelectorAll("*")) {
+    for (const name of Object.keys(node.attributes)) {
+      if (/^on/iu.test(name)) node.removeAttribute(name);
+    }
+    for (const name of ["href", "src"]) {
+      const value = node.getAttribute(name);
+      if (value && !value.startsWith("#") && !value.startsWith("data:")) node.setAttribute(name, resolveUrl(baseUrl, value));
+    }
+  }
+  return content;
 }
 function parseFolderHtml(html, folderId, baseUrl) {
   const root = parse2(html);
@@ -3390,6 +3487,28 @@ function safeUrl(value) {
     return "the requested Moodle URL";
   }
 }
+
+// src/grades.ts
+function hasGrade(grade) {
+  return Boolean(grade.trim() && !/^[\s–—−-]+$/u.test(grade));
+}
+function pageGradeReports(reports, limit, offset) {
+  let matched = 0, returned = 0;
+  const pages = reports.map((report) => {
+    const start = Math.max(0, offset - matched);
+    matched += report.items.length;
+    const items = report.items.slice(start, start + limit - returned);
+    returned += items.length;
+    return { ...report, items };
+  });
+  return { pages, matched, returned, offset, has_more: offset + returned < matched };
+}
 export {
-  MoodleClientCore
+  MoodleClientCore,
+  hasGrade,
+  pageGradeReports,
+  parseSavedDocumentHtml,
+  resolveSection,
+  searchSections,
+  withChildSections
 };

@@ -1,0 +1,35 @@
+import type { Activity, AlertNotification, AlertSummary, Course, ForumDiscussion, ForumPost, ForumPostAuthor, GradeItem, Section, TodoItem, UserInfo } from "./models.js";
+type AnyRecord = Record<string, unknown>;
+export interface ParserSchema<T> {
+    parse(value: unknown): T;
+}
+export declare const UserInfoSchema: ParserSchema<UserInfo>;
+export declare const CourseSchema: ParserSchema<Course>;
+export declare const CoursesSchema: ParserSchema<Course[]>;
+export declare const ActivitySchema: ParserSchema<Activity>;
+export declare const SectionSchema: ParserSchema<Section>;
+export declare const CourseContentsSchema: ParserSchema<Section[]>;
+export declare const TodoItemSchema: ParserSchema<TodoItem>;
+export declare function normalizeGradeType(type: string): string;
+export declare function parseGradeItem(value: unknown): GradeItem;
+export declare function parseUserInfo(value: unknown): UserInfo;
+export declare function parseCourse(value: unknown, nowSeconds?: number): Course;
+export declare function parseCourses(value: unknown): Course[];
+export declare function parseActivity(value: unknown): Activity;
+export declare function parseSection(value: unknown): Section;
+export declare function parseCourseContents(value: unknown): Section[];
+export declare function parseCourseFormatState(value: unknown, baseUrl: string): Section[];
+export declare function flattenActivities(sections: Section[]): Activity[];
+export declare function parseTodoItem(value: unknown): TodoItem;
+export declare function parseTodoItems(value: unknown): TodoItem[];
+export declare function parseAlertNotification(value: unknown): AlertNotification;
+export declare function parseAlertSummary(notificationsData: unknown, countsData: unknown, unreadCountsData: unknown): AlertSummary;
+export declare function parseForumPostAuthor(value: unknown): ForumPostAuthor;
+export declare function parseForumPost(value: unknown, baseUrl?: string): ForumPost;
+export declare function parseForumDiscussion(value: unknown, discussionId: number, baseUrl?: string): ForumDiscussion;
+export declare function asRecord(value: unknown): AnyRecord;
+export declare function asArray(value: unknown): unknown[];
+export declare function stringValue(value: unknown): string;
+export declare function numberValue(value: unknown): number;
+export declare function booleanValue(value: unknown, defaultValue?: boolean): boolean;
+export {};
