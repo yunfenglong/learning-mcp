@@ -15,8 +15,14 @@ import {
   buildLessonProgress,
   buildLessonGuide,
 } from "../../../vendor/ed/client.js";
-import { SuiteError } from "../../errors.ts";
-import { learningFile, responseBytes } from "./files.ts";
+import { platformReadError } from "./error.ts";
+import { publicError, SuiteError } from "../../errors.ts";
+import {
+  learningFile,
+  responseBytes,
+  MAX_FILE_BYTES,
+  type LearningFile,
+} from "./files.ts";
 import {
   requireOwner,
   page,
@@ -55,7 +61,44 @@ export async function edRead(
     const p = page(allowed, a);
     return { courses: p.results, ...p, results: undefined };
   }
+  if (name === "list_activity") {
+    const user = (await c.fetchUser()).user;
+    const allowed = new Set(
+      a.courseId === undefined
+        ? ctx.config.units.flatMap((u) =>
+            u.ed_course_id ? [u.ed_course_id] : [],
+          )
+        : [course],
+    );
+    for (const id of allowed) await ctx.enrolled(id);
+    const raw = await c.fetchUserActivity(user.id, {
+      courseId: a.courseId,
+      filterType: a.filter_type ?? "all",
+      limit: a.limit ?? 30,
+      offset: a.offset ?? 0,
+    });
+    const activity = raw.filter((entry) => {
+      const value = (entry as { value?: { course_id?: number } })?.value;
+      return value?.course_id !== undefined
+        ? allowed.has(value.course_id)
+        : a.courseId !== undefined;
+    });
+    return {
+      activity,
+      offset: a.offset ?? 0,
+      next_offset:
+        raw.length === (a.limit ?? 30) ? (a.offset ?? 0) + raw.length : null,
+      has_more: raw.length === (a.limit ?? 30),
+      filtered: raw.length - activity.length,
+      scope: "linked_enrollments",
+    };
+  }
   await ctx.enrolled(course);
+  const view = (value: object) => ({
+    ...value,
+    unit: ctx.config.units.find((u) => u.ed_course_id === course)?.key,
+    course_id: course,
+  });
   // Upstream builders fetch internally; enforce the same ownership checks at that seam.
   const viewClient = new Proxy(c, {
     get(target, property) {
@@ -200,17 +243,6 @@ export async function edRead(
           "Filtered searches scan at most ten upstream pages; offset refers to the unfiltered Ed stream.",
       };
     }
-    case "list_activity": {
-      const user = (await c.fetchUser()).user;
-      return {
-        activity: await c.fetchUserActivity(user.id, {
-          courseId: course,
-          filterType: a.filter_type ?? "all",
-          limit: a.limit ?? 30,
-          offset: a.offset ?? 0,
-        }),
-      };
-    }
     case "list_lesson_files":
       return {
         files: listLessonFiles(await lesson()).filter(
@@ -219,56 +251,100 @@ export async function edRead(
       };
     case "list_thread_files":
       return { files: listThreadFiles(await thread()) };
+    case "download":
     case "file": {
-      const files =
+      const entries =
         a.lessonId !== undefined
           ? listLessonFiles(await lesson())
           : listThreadFiles(await thread());
-      const selected = files.filter(
+      const selected = entries.filter(
         (v) => a.slideId === undefined || v.slideId === a.slideId,
       );
-      const file = selected[Number(a.file_index ?? 0)];
-      if (!file)
-        throw new SuiteError(
-          "FILE_NOT_FOUND",
-          "Choose a file index from the fresh file listing.",
-        );
-      const response = await (ctx.read
-        ? ctx.read(() => c.fetchFile(file.url))
-        : c.fetchFile(file.url));
-      return {
-        file: await learningFile(
+      const fetchFile = async (file: (typeof selected)[number]) => {
+        const response = await (ctx.read
+          ? ctx.read(() => c.fetchFile(file.url))
+          : c.fetchFile(file.url));
+        return learningFile(
           await responseBytes(response),
           file.filename,
           response.headers.get("content-type") ??
             file.mediaType ??
             "application/octet-stream",
           ctx.output,
-        ),
+        );
+      };
+      if (name === "file") {
+        const file = selected[a.file_index ?? 0];
+        if (!file)
+          throw new SuiteError(
+            "FILE_NOT_FOUND",
+            "Choose a file index from the fresh file listing.",
+          );
+        return { file: await fetchFile(file) };
+      }
+      const offset = a.offset ?? 0,
+        limit = a.limit ?? 20;
+      const files: LearningFile[] = [],
+        manifest: object[] = [],
+        errors: object[] = [];
+      let used = 0,
+        next = offset;
+      for (const entry of selected.slice(offset, offset + limit)) {
+        try {
+          const file = await fetchFile(entry);
+          if (used + file.bytes > MAX_FILE_BYTES) break;
+          used += file.bytes;
+          files.push(file);
+          manifest.push({
+            file_index: next,
+            name: file.name,
+            sha256: file.sha256,
+            bytes: file.bytes,
+          });
+        } catch (error) {
+          errors.push({
+            file_index: next,
+            ...publicError(platformReadError("ed", error)),
+          });
+        }
+        next++;
+      }
+      return {
+        files,
+        manifest,
+        errors,
+        total: selected.length,
+        offset,
+        next_offset: next < selected.length ? next : null,
+        has_more: next < selected.length,
+        coverage:
+          errors.length || next < selected.length ? "partial" : "complete",
       };
     }
     case "show_forum_catchup":
-      return {
+      return view({
         ...(await buildForumCatchup(viewClient, course, a.days ?? 14)),
         coverage: "bounded",
         page_cap: 10,
-      };
+      });
     case "show_thread_activity":
-      return {
+      return view({
         ...(await buildThreadActivity(viewClient, course, a.weeks ?? 12)),
         coverage: "bounded",
         page_cap: 10,
-      };
+      });
     case "show_lesson_progress":
-      return buildLessonProgress(viewClient, course);
+      return view(await buildLessonProgress(viewClient, course));
     case "show_lesson_guide": {
       await lesson();
       // The upstream builder fetches the lesson without view=true and writes no progress.
-      return buildLessonGuide(viewClient, {
-        lessonId: required(a.lessonId, "lesson_id"),
-        sections: required(a.sections, "sections"),
-        quiz: a.quiz ?? [],
-      });
+      return view(
+        await buildLessonGuide(viewClient, {
+          lessonId: required(a.lessonId, "lesson_id"),
+          sections: required(a.sections, "sections"),
+          quiz: a.quiz ?? [],
+        }),
+      );
     }
   }
   return unhandledRead(name);

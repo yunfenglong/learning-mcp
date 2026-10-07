@@ -12,7 +12,7 @@ const bundle = await build({
   absWorkingDir: root,
   stdin: {
     contents:
-      'export { readCapabilities, writeCapabilities, pendingWrites } from "./src/capabilities/index.ts"; export { z } from "zod";',
+      'export { readCapabilities, writeCapabilities, pendingWrites } from "./src/capabilities/index.ts"; export { upstreamMappings, reviewedUpstreams } from "./src/capabilities/coverage.ts"; export { z } from "zod";',
     resolveDir: root,
   },
   bundle: true,
@@ -21,7 +21,14 @@ const bundle = await build({
   target: "es2023",
   write: false,
 });
-const { readCapabilities, writeCapabilities, pendingWrites, z } = await import(
+const {
+  readCapabilities,
+  writeCapabilities,
+  pendingWrites,
+  upstreamMappings,
+  reviewedUpstreams,
+  z,
+} = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`
 );
 const lines = [
@@ -86,6 +93,27 @@ lines.push(
   "See [read semantics and maintenance](read-contract.md) for scope, pagination, file delivery and side-effect boundaries.",
   "",
 );
+lines.push(
+  "## Audited upstream entry points",
+  "",
+  "This is an explicit source-review baseline, not proof of full behavioral equivalence. See [coverage findings and remaining limits](upstream-coverage.md).",
+  "",
+);
+for (const [platform, mappings] of Object.entries(upstreamMappings)) {
+  lines.push(
+    `### ${platform}`,
+    "",
+    `Reviewed commit: \`${reviewedUpstreams[platform]}\`.`,
+    "",
+    "| Upstream operation | Suite tools |",
+    "| --- | --- |",
+  );
+  for (const [operation, names] of Object.entries(mappings))
+    lines.push(
+      `| ${operation} | ${names.map((name) => `\`${name}\``).join(", ")} |`,
+    );
+  lines.push("");
+}
 const document = lines.join("\n");
 const destination = resolve(root, "docs/capabilities.md");
 if (process.argv.includes("--check")) {

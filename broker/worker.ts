@@ -17,6 +17,7 @@ import { platformBaseLink } from "../src/platforms/base-link.ts";
 import {
   moodleSessionSchema,
   ontrackSessionSchema,
+  ontrackProfileSchema,
 } from "../src/platforms/broker.ts";
 import { browserLogin, oktaIdentitySchema, type LoginInput } from "./sso.ts";
 import { ssoProvidersSchema } from "../src/config.ts";
@@ -191,6 +192,7 @@ export async function validateSession(
     .object({
       username: secret,
       token: secret,
+      user: ontrackProfileSchema.optional(),
       expires_at: z.string().datetime().optional(),
     })
     .strict()
@@ -216,6 +218,19 @@ export async function validateSession(
     throw new SuiteError(
       "SESSION_INVALID",
       "OnTrack did not validate this account.",
+      409,
+    );
+  if (
+    candidate.user &&
+    (candidate.user.username !== candidate.username ||
+      projects.some(
+        (p) =>
+          p.user_id && candidate.user!.id && p.user_id !== candidate.user!.id,
+      ))
+  )
+    throw new SuiteError(
+      "ACCOUNT_CHANGED",
+      "OnTrack profile did not match the authenticated projects.",
       409,
     );
   return ontrackSessionSchema.parse({

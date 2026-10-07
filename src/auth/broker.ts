@@ -64,7 +64,7 @@ export class AccountState extends DurableObject<Env> {
             result = (
               await writes.files(
                 owner,
-                z.array(z.string()).max(16).parse(v.ids),
+                z.array(z.string()).max(20).parse(v.ids),
               )
             ).map((f) => ({ ...f, bytes: base64(f.bytes) }));
             break;

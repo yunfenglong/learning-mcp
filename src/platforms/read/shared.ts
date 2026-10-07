@@ -7,7 +7,9 @@ export interface ReadContext<C = unknown> {
   config: Config;
   output: OutputBoundary;
   enrolled: (id: number) => Promise<void>;
+  maxBatchBytes?: number;
   username?: string;
+  profile?: import("../broker.ts").OnTrackSession["user"];
   read?: <T>(operation: () => Promise<T>) => Promise<T>;
 }
 export function required<T>(value: T | undefined, label: string): T {

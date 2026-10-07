@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { capability, ref, unit, upload, body } from "./shared.ts";
+import { capability, ref, unit, upload } from "./shared.ts";
+const comment = z
+  .string()
+  .max(8190)
+  .refine(
+    (value) => Array.from(value).length <= 4095,
+    "OnTrack permits at most 4095 characters.",
+  );
 export const ontrackWriteCapabilities = [
   capability(
     "ontrack",
@@ -17,7 +24,7 @@ export const ontrackWriteCapabilities = [
     "ontrack",
     "send_chat",
     "Send a task chat message under the connected account.",
-    { unit, task: ref, message: body },
+    { unit, task: ref, message: comment.min(1) },
   ),
   capability("ontrack", "set_task_state", "Change this task’s working state.", {
     unit,
@@ -31,11 +38,11 @@ export const ontrackWriteCapabilities = [
     {
       unit,
       task: ref,
-      upload_ids: z.array(upload).max(16),
+      upload_ids: z.array(upload).max(20),
       type: z
         .enum(["ready_for_feedback", "need_help", "assess_in_portfolio"])
         .default("ready_for_feedback"),
-      comment: z.string().max(10000).optional(),
+      comment: comment.optional(),
       accept_tii_eula: z.boolean().default(false),
     },
   ),

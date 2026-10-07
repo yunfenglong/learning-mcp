@@ -63,7 +63,15 @@ export async function fetchMoodleFile(
         MAX_FILE_BYTES,
       )(url, {
         method: "GET",
-        headers: { accept: "*/*" },
+        headers: {
+          accept: "*/*",
+          ...Object.fromEntries(
+            ["if-none-match", "if-modified-since"].flatMap((name) => {
+              const value = new Headers(init?.headers).get(name);
+              return value ? [[name, value]] : [];
+            }),
+          ),
+        },
         signal: init?.signal,
       });
     }

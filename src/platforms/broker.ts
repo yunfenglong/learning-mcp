@@ -21,10 +21,30 @@ export const moodleSessionSchema = z
     site_url: site,
   })
   .strict();
+export const ontrackProfileSchema = z.object({
+  id: z.number().int().positive().nullable(),
+  username: z.string().max(200).nullable(),
+  first_name: z.string().max(500).nullable(),
+  last_name: z.string().max(500).nullable(),
+  email: z.string().max(500).nullable(),
+  nickname: z.string().max(500).nullable(),
+});
+export function ontrackProfile(data: Record<string, unknown>) {
+  const text = (v: unknown) => (typeof v === "string" ? v : null);
+  return ontrackProfileSchema.parse({
+    id: typeof data.id === "number" ? data.id : null,
+    username: text(data.username),
+    first_name: text(data.first_name ?? data.firstName),
+    last_name: text(data.last_name ?? data.lastName),
+    email: text(data.email),
+    nickname: text(data.nickname),
+  });
+}
 export const ontrackSessionSchema = z
   .object({
     username: secret,
     token: secret,
+    user: ontrackProfileSchema.optional(),
     expires_at: z.string().datetime().optional(),
     profile_id: z.string().min(1),
     display_name: z.string().optional(),

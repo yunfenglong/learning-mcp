@@ -1,4 +1,8 @@
-import { beta, betaPlatform } from "./fixtures/beta-platforms.ts";
+import {
+  beta,
+  betaPlatform,
+  quizAttemptPage,
+} from "./fixtures/beta-platforms.ts";
 import { writeCapabilities } from "../src/capabilities/write/index.ts";
 import { runInNewContext } from "node:vm";
 import { parse } from "node-html-parser";
@@ -228,6 +232,13 @@ async function platformFixture(req: Request): Promise<Response> {
         `<body id="page-mod-quiz-view" class="course-202"><h1>Quiz 1</h1><div class="card"><h2 class="card-title">Attempt 1</h2><table class="quizreviewsummary"><tr><th>Status</th><td>Finished</td></tr></table><a href="${moodle}/mod/quiz/review.php?attempt=500">Review</a></div></body>`,
         { headers: { "content-type": "text/html" } },
       );
+    if (url.pathname === "/mod/quiz/attempt.php") {
+      expect(req.method).toBe("GET");
+      expect(Number(url.searchParams.get("page") ?? 0)).toBe(0);
+      return new Response(quizAttemptPage(0), {
+        headers: { "content-type": "text/html" },
+      });
+    }
     if (url.pathname === "/mod/quiz/review.php")
       return new Response(
         '<body class="course-202"><a href="/course/view.php?id=202">Algorithms</a><h1>Quiz 1</h1><form class="questionflagsaveform" action="/mod/quiz/review.php?cmid=20"><div class="que"><div class="qtext">Question</div></div></form></body>',
@@ -400,7 +411,12 @@ async function platformFixture(req: Request): Promise<Response> {
     )
       return new Response(
         new Uint8Array([80, 75, 5, 6, ...Array(18).fill(0)]),
-        { headers: { "content-type": "application/zip" } },
+        {
+          headers: {
+            "content-type": "application/zip",
+            "content-disposition": "attachment; filename=resources.zip",
+          },
+        },
       );
     if (url.pathname === "/api/projects")
       if (ontrackDiscoveryUnavailable)
@@ -1028,6 +1044,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
         const preview = (await call(writer, name, { unit: unit.key, ...args }))
           .result;
         expect(preview.isError, JSON.stringify(preview)).not.toBe(true);
+        expect(JSON.stringify(preview)).not.toContain("quiz-password-canary");
         expect(beta.calls).toHaveLength(before);
         const id = preview.structuredContent.preview_id;
         expect(
@@ -1211,9 +1228,10 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
   it("previews timer start and sequential navigation, saves user answers and finally submits a Moodle quiz", async () => {
     const writer = await connect("write-quiz", "learning:read learning:write");
     beta.enabled = true;
+    beta.quizPasswordRequired = true;
     try {
       for (const [name, args] of [
-        ["moodle_quiz_start", {}],
+        ["moodle_quiz_start", { password: "quiz-password-canary" }],
         ["moodle_quiz_start", {}],
         [
           "moodle_quiz_answer",
@@ -1231,6 +1249,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
             await call(writer, name, { unit: unit.key, quiz_id: 20, ...args })
           ).result;
         expect(preview.isError, JSON.stringify(preview)).not.toBe(true);
+        expect(JSON.stringify(preview)).not.toContain("quiz-password-canary");
         expect(beta.calls).toHaveLength(before);
         if (name === "moodle_quiz_page")
           expect(preview.structuredContent.plan.warnings.join(" ")).toContain(
@@ -1246,6 +1265,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       }
       expect(beta.quizFinished).toBe(true);
     } finally {
+      beta.quizPasswordRequired = false;
       beta.enabled = false;
     }
   });
@@ -1466,7 +1486,10 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
   it("returns the OnTrack username on the first identity read", async () => {
     const result = (await call(a, "ontrack_user")).result;
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
-    expect(result.structuredContent.user).toEqual({ username: "a", id: 7 });
+    expect(result.structuredContent.user).toMatchObject({
+      username: "a",
+      id: 7,
+    });
     expect(result.structuredContent.authentication.method).toBe("token");
   });
   it("exercises every Ed read tool with real vendor payloads and no platform writes", async () => {
@@ -1485,6 +1508,7 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       ed_lesson_files: { unit: unit.key, lesson_id: 5 },
       ed_thread_files: { unit: unit.key, thread_id: 11 },
       ed_file: { unit: unit.key, lesson_id: 5 },
+      ed_download: { unit: unit.key, lesson_id: 5, limit: 1 },
       ed_read_thread: { unit: unit.key, number: 42 },
       ed_read_lesson: { unit: unit.key, lesson_id: 5 },
       ed_slide: { unit: unit.key, lesson_id: 5, slide_id: 8 },
@@ -1601,6 +1625,8 @@ describe("real workerd: client OAuth, user binding and in-Worker clients", () =>
       moodle_user: {},
       moodle_courses: {},
       moodle_unit: { unit: unit.key },
+      moodle_activities: { unit: unit.key },
+      moodle_quiz_show: { unit: unit.key, activity_id: 20, attempt_id: 500 },
       moodle_due: { unit: unit.key },
       moodle_grades: { unit: unit.key },
       moodle_search_forums: { unit: unit.key, query: "announcement" },

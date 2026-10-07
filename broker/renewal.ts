@@ -1,3 +1,4 @@
+import { ontrackProfile } from "../src/platforms/broker.ts";
 import { parse } from "node-html-parser";
 import { SuiteError } from "../src/errors.ts";
 import { platformFetch } from "../src/platforms/network.ts";
@@ -171,6 +172,7 @@ export async function refreshOnTrack(
   return {
     session: {
       username: data.user.username,
+      user: ontrackProfile(data.user),
       token: data.auth_token,
       expires_at: new Date(data.auth_token_expiry).toISOString(),
     },

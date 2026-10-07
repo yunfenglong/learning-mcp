@@ -95,7 +95,9 @@ Users can remove course associations, disconnect platforms, forget saved sign-in
 
 ## Available tools
 
-The complete tool and parameter reference is generated from the [capability catalog](docs/capabilities.md); `capability_catalog` returns the same inventory through MCP. Reads cover platform identities and enrollment, Ed lessons/threads/files/slides/views, Moodle materials/files/sync/forums/quiz reviews, OnTrack projects/task sheets/resources/unread counts, and attendance-code discovery.
+The tool and parameter reference is generated from the [capability catalog](docs/capabilities.md); `capability_catalog` returns the same inventory through MCP. Reads cover platform identities and enrollment, Ed lessons/threads/files/slides/views, Moodle materials/files/sync/forums/quiz reviews, OnTrack projects/task sheets/resources/unread counts, and attendance-code discovery.
+
+The [upstream source audit](docs/upstream-coverage.md) records operation mappings, tested behavior and remaining limits. Operation coverage does not imply complete CLI behavior or live-platform write verification.
 
 Account tools preserve connection status, sign-in links, fresh discovery and user-confirmed course associations. [Read semantics and maintenance](docs/read-contract.md) explains scope, pagination and file limits. Beta writes use a separate permission and preview confirmation. OnTrack chat history is included as a write because reading it marks comments read. See [write semantics](docs/write-contract.md) for file staging, irreversible effects and uncertain outcomes. Attendance submission remains unavailable.
 
@@ -134,7 +136,7 @@ See [architecture and session renewal](docs/architecture.md), [troubleshooting](
 
 ## Acknowledgements
 
-Platform clients are bundled from bunizao's [edstem-cli](https://github.com/bunizao/edstem-cli), [moodle-cli](https://github.com/bunizao/moodle-cli) and [ontrack-cli](https://github.com/bunizao/ontrack-cli). The public Worker uses them for learning-platform reads; the private broker also uses clients to verify platform sessions. The broker is the only separate service.
+Platform clients are bundled from bunizao's [edstem-cli](https://github.com/bunizao/edstem-cli), [moodle-cli](https://github.com/bunizao/moodle-cli) and [ontrack-cli](https://github.com/bunizao/ontrack-cli). The public Worker uses them for learning-platform reads and authorized beta writes; the private broker also uses clients to verify platform sessions. The broker is the only separate service.
 
 Pinned versions, commit hashes and file hashes are recorded in [`vendor/upstreams.json`](vendor/upstreams.json). Each bundled client retains its upstream MIT license notice under `vendor/`.
 

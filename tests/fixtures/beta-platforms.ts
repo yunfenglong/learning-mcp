@@ -9,6 +9,7 @@ export const beta = {
   draftStage: true,
   group: "Team Example",
   quizStarted: false,
+  quizPasswordRequired: false,
   quizFinished: false,
   quizPage: 0,
   quizAnswer: "",
@@ -28,7 +29,7 @@ const statement =
 function assignment() {
   return `<body class="course-202"><h1>Assignment 2</h1><table><tr><th>Submission status</th><td>${beta.assignmentStatus}</td></tr><tr><th>Group</th><td>${beta.group}</td></tr><tr><th>Last modified</th><td>Fixed timestamp</td></tr></table><div class="fileuploadsubmission">${[...beta.files.keys()].map((name) => `<a href="${moodle}/pluginfile.php/202/${name}">${name}</a>`).join("")}</div>${beta.draftStage ? `<form action="/mod/assign/view.php">${fields("submit")}</form>` : ""}</body>`;
 }
-function attempt(page: number) {
+export function quizAttemptPage(page: number) {
   const state = beta.quizAnswer ? "Answer saved" : "Not yet answered";
   return `<h1>Practice Quiz</h1><span class="qnbutton sequential" id="quiznavbutton1" data-quiz-page="0" title="Question 1 - ${state}">1</span><span class="qnbutton sequential" id="quiznavbutton2" data-quiz-page="1" title="Question 2 - Not yet answered">2</span><form id="responseform" action="/mod/quiz/processattempt.php?cmid=20"><input name="attempt" value="500"><input name="thispage" value="${page}"><input name="nextpage" value="${page}"><input name="sesskey" value="session-a"><div class="que shortanswer" id="question-1-${page + 1}"><div class="info"><span class="qno">${page + 1}</span><span class="state">${state}</span></div><div class="qtext">User answer question</div><input name="q1:${page + 1}_answer" value="${beta.quizAnswer}"></div></form>`;
 }
@@ -224,6 +225,15 @@ export async function betaPlatform(
       `<h1>Practice Quiz</h1>${!beta.quizStarted ? '<form action="/mod/quiz/startattempt.php"><input name="cmid" value="20"><input name="sesskey" value="session-a"><button>Attempt quiz</button></form>' : `<a href="/mod/quiz/attempt.php?attempt=500&cmid=20">Continue attempt</a><div class="card"><h2 class="card-title">Attempt 1</h2><table class="quizreviewsummary"><tr><th>Status</th><td>${beta.quizFinished ? "Finished" : "In progress"}</td></tr></table><a href="/mod/quiz/review.php?attempt=500">Review</a></div>`}`,
     );
   if (url.pathname === "/mod/quiz/startattempt.php") {
+    const body = new URLSearchParams(await req.text());
+    if (beta.quizPasswordRequired && !body.get("quizpassword")) {
+      beta.calls.push("POST quiz preflight");
+      return html(
+        '<form action="/mod/quiz/startattempt.php"><input name="cmid" value="20"><input name="sesskey" value="session-a"><input name="quizpassword" type="password"></form>',
+      );
+    }
+    if (beta.quizPasswordRequired)
+      expect(body.get("quizpassword")).toBe("quiz-password-canary");
     beta.calls.push("POST quiz start");
     beta.quizStarted = true;
     return redirect("/mod/quiz/attempt.php?attempt=500&cmid=20");
@@ -236,7 +246,7 @@ export async function betaPlatform(
       beta.calls.push("GET quiz advance");
       beta.quizPage = requested;
     }
-    return html(attempt(beta.quizPage));
+    return html(quizAttemptPage(beta.quizPage));
   }
   if (url.pathname === "/mod/quiz/summary.php")
     return html(

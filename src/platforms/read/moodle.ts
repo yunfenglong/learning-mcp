@@ -21,7 +21,15 @@ import {
   hasGrade,
   pageGradeReports,
   parseSavedDocumentHtml,
+  searchForumContent,
 } from "../../../vendor/moodle/client.js";
+import { digest } from "../../auth/crypto.ts";
+import {
+  syncPath,
+  syncAction,
+  localHash,
+  type SyncEntry,
+} from "./moodle-sync.ts";
 import { SuiteError } from "../../errors.ts";
 import { publicError } from "../../errors.ts";
 import { platformReadError } from "./error.ts";
@@ -51,7 +59,7 @@ export async function moodleRead(
   name: MoodleOperation,
   a: MoodleReadArgs,
   ctx: ReadContext<MoodleClientCore>,
-) {
+): Promise<unknown> {
   const c = ctx.client;
   const read =
     ctx.read ?? (async <T>(operation: () => Promise<T>) => operation());
@@ -93,6 +101,61 @@ export async function moodleRead(
     );
   const courses = allCourses.filter((v) => ids.includes(v.id));
   for (const id of ids) await ctx.enrolled(id);
+  if (name === "sync" && courses.length > 1) {
+    if (a.activity_id !== undefined || a.section !== undefined)
+      throw new SuiteError(
+        "INVALID_INPUT",
+        "Select one course when choosing an activity or section.",
+      );
+    const results: Array<Record<string, unknown>> = [];
+    let remaining = ctx.maxBatchBytes ?? MAX_FILE_BYTES;
+    for (const course of courses) {
+      if (remaining <= 0) {
+        results.push({
+          course_id: course.id,
+          unit: ctx.config.units.find((u) => u.moodle_course_id === course.id)
+            ?.key,
+          coverage: "partial",
+          next_offset: a.offset ?? 0,
+          has_more: true,
+        });
+        continue;
+      }
+      try {
+        const result = (await moodleRead(
+          "sync",
+          {
+            ...a,
+            unit: course.id,
+            courseId: course.id,
+            courseIds: [course.id],
+          },
+          { ...ctx, maxBatchBytes: remaining },
+        )) as Record<string, unknown> & { files: LearningFile[] };
+        remaining -= result.files.reduce((n, f) => n + f.bytes, 0);
+        results.push({
+          ...result,
+          course_id: course.id,
+          unit: ctx.config.units.find((u) => u.moodle_course_id === course.id)
+            ?.key,
+        });
+      } catch (error) {
+        results.push({
+          course_id: course.id,
+          coverage: "partial",
+          error: failure(error),
+        });
+      }
+    }
+    return {
+      courses: results,
+      coverage: results.some((v) => v.coverage !== "complete")
+        ? "partial"
+        : "complete",
+      pagination: "per_course",
+      dry_run: a.dry_run ?? false,
+    };
+  }
   const first = required(courses[0], "an enrolled Moodle course");
   const sections = async (course: number) => c.getCourseContents(course);
   const activity = async (ref: number | string) => {
@@ -158,10 +221,9 @@ export async function moodleRead(
       );
     return url.href;
   };
-  const fetchFile = async (entry: FileEntry) => {
-    const response = await read(() =>
-      c.requestAbsolute(safeFileUrl(entry.url)),
-    );
+  const fetchFile = async (entry: FileEntry, fetched?: Response) => {
+    const response =
+      fetched ?? (await read(() => c.requestAbsolute(safeFileUrl(entry.url))));
     const type =
       response.headers.get("content-type") ?? "application/octet-stream";
     const bytes = await responseBytes(response);
@@ -195,15 +257,41 @@ export async function moodleRead(
     return result;
   };
   switch (name) {
+    case "activities":
     case "unit": {
       const contents = await sections(first.id);
+      if (a.section !== undefined && a.section_id !== undefined)
+        throw new SuiteError(
+          "INVALID_INPUT",
+          "Choose section or section_id, not both.",
+        );
       const chosen =
-        a.section === undefined
-          ? contents
-          : withChildSections(
-              resolveSection(a.section, contents).section,
-              contents,
-            );
+        a.section_id !== undefined
+          ? contents.filter((s) => s.id === a.section_id)
+          : a.section === undefined
+            ? contents
+            : withChildSections(
+                resolveSection(a.section, contents).section,
+                contents,
+              );
+      if (name === "activities") {
+        const listed = chosen
+          .flatMap((s) =>
+            s.activities.map((v) => ({
+              ...v,
+              section_id: s.id,
+              section: s.name,
+            })),
+          )
+          .filter((v) => a.include_labels || v.modname !== "label");
+        const p = page(listed, a, 200);
+        return {
+          ...p,
+          activities: p.results,
+          results: undefined,
+          course_id: first.id,
+        };
+      }
       return { unit: first, sections: chosen };
     }
     case "due": {
@@ -377,6 +465,7 @@ export async function moodleRead(
     }
     case "item":
       return { item: await detail(required(a.activity_id, "activity_id")) };
+    case "quiz_show":
     case "attempt": {
       const quiz = await detail(required(a.activity_id, "activity_id"));
       if (
@@ -389,6 +478,16 @@ export async function moodleRead(
           "Choose one of your attempts listed by this quiz.",
           403,
         );
+      if (name === "quiz_show") {
+        // Upstream refuses sequential advancement unless advance=true, which is never passed here.
+        return {
+          attempt: await c.getQuizAttemptPage(
+            required(a.attempt_id, "attempt_id"),
+            quiz.id,
+            a.page === undefined ? undefined : a.page - 1,
+          ),
+        };
+      }
       const review = await c.getQuizAttempt(
         required(a.attempt_id, "attempt_id"),
       );
@@ -398,15 +497,30 @@ export async function moodleRead(
       return { attempt: review };
     }
     case "forums": {
-      const forums = await c.getForums(first.id);
-      for (const value of forums) requireOwner(value.course_id, first.id);
-      return { forums };
+      const forums: Awaited<ReturnType<MoodleClientCore["getForums"]>> = [];
+      for (const course of courses) {
+        const rows = await c.getForums(course.id);
+        for (const value of rows) requireOwner(value.course_id, course.id);
+        forums.push(...rows);
+      }
+      const p = page(forums, a);
+      return { ...p, forums: p.results, results: undefined };
     }
     case "forum": {
       const selected = await forum(required(a.forum_id, "forum_id"));
       return {
         forum: selected,
-        ...page(await c.getForumDiscussionRefs(selected.id), a),
+        ...page(
+          (await c.getForumDiscussionRefs(selected.id)).filter(
+            (v) =>
+              !a.query ||
+              a.query
+                .toLowerCase()
+                .split(/\s+/)
+                .every((word) => v.subject.toLowerCase().includes(word)),
+          ),
+          a,
+        ),
       };
     }
     case "thread": {
@@ -435,38 +549,89 @@ export async function moodleRead(
       };
     }
     case "search_forums": {
-      if (a.forum_id !== undefined)
-        await forum(required(a.forum_id, "forum_id"));
-      const hits: Array<ForumSearchHit & { unit_id: number; name: string }> =
-        [];
-      for (const course of courses) {
-        const values = await c.searchForumContent({
+      const options = {
+        courseId: courses.length === 1 ? first.id : undefined,
+        forumCmid: a.forum_id,
+        includePostText: a.include_post_text ?? a.includePostText ?? true,
+        titlesOnly: a.titles_only,
+        unreadOnly: a.unread_only,
+        sortBy: a.sort ?? a.sortBy ?? "recent",
+        limit: (a.offset ?? 0) + (a.limit ?? 30) + 1,
+        maxForums: a.max_forums ?? a.maxForums ?? 10,
+        maxDiscussionsPerForum:
+          a.max_discussions_per_forum ?? a.maxDiscussionsPerForum ?? 20,
+      };
+      let values: ForumSearchHit[];
+      if (courses.length === 1) {
+        if (a.forum_id !== undefined) await forum(a.forum_id);
+        values = await c.searchForumContent({
           query: required(a.query, "query"),
-          courseId: course.id,
-          forumCmid: a.forum_id,
-          includePostText: a.include_post_text ?? a.includePostText ?? true,
-          titlesOnly: a.titles_only,
-          unreadOnly: a.unread_only,
-          sortBy: a.sort ?? a.sortBy ?? "recent",
-          limit: (a.offset ?? 0) + (a.limit ?? 30) + 1,
-          maxForums: a.max_forums ?? a.maxForums ?? 10,
-          maxDiscussionsPerForum:
-            a.max_discussions_per_forum ?? a.maxDiscussionsPerForum ?? 20,
+          ...options,
         });
-        for (const hit of values) requireOwner(hit.course_id, course.id);
-        hits.push(
-          ...values.map((v) => ({
-            ...v,
-            unit_id: course.id,
-            name: v.discussion_subject,
-          })),
+        for (const hit of values) requireOwner(hit.course_id, first.id);
+      } else {
+        const forums: Awaited<ReturnType<MoodleClientCore["getForums"]>> = [];
+        for (const course of courses) {
+          const rows = await c.getForums(course.id);
+          for (const row of rows) requireOwner(row.course_id, course.id);
+          forums.push(...rows);
+        }
+        if (
+          a.forum_id !== undefined &&
+          !forums.some((v) => v.id === a.forum_id)
+        )
+          throw new SuiteError(
+            "ENTITY_NOT_ALLOWED",
+            "This forum is not in the selected linked courses.",
+            403,
+          );
+        const discussionCourses = new Map<number, number>();
+        values = await searchForumContent(
+          {
+            getForums: async () => forums,
+            getForumDiscussionRefs: async (id) => {
+              const owner = forums.find((v) => v.id === id);
+              if (!owner)
+                throw new SuiteError(
+                  "ENTITY_NOT_ALLOWED",
+                  "Unknown course forum.",
+                  403,
+                );
+              const rows = await c.getForumDiscussionRefs(id);
+              for (const row of rows)
+                discussionCourses.set(row.id, owner.course_id);
+              return rows;
+            },
+            getForumDiscussion: async (id) => {
+              const owner = discussionCourses.get(id);
+              if (owner === undefined)
+                throw new SuiteError(
+                  "ENTITY_NOT_ALLOWED",
+                  "Unknown forum discussion.",
+                  403,
+                );
+              const value = await c.getForumDiscussion(id);
+              requireOwner(value.course_id, owner);
+              return value;
+            },
+          },
+          required(a.query, "query"),
+          { ...options, baseUrl: c.baseUrl },
         );
       }
       return {
-        ...page(hits, a, 30),
+        ...page(
+          values.map((v) => ({
+            ...v,
+            unit_id: v.course_id,
+            name: v.discussion_subject,
+          })),
+          a,
+          30,
+        ),
         coverage: "bounded",
-        max_forums: a.max_forums ?? 10,
-        max_discussions_per_forum: a.max_discussions_per_forum ?? 20,
+        max_forums: options.maxForums,
+        max_discussions_per_forum: options.maxDiscussionsPerForum,
       };
     }
     case "news": {
@@ -529,13 +694,15 @@ export async function moodleRead(
               .flatMap((s) => s.activities)
               .filter((v) => supportedFiles.has(v.modname));
       const files: LearningFile[] = [],
-        manifest: Array<{
-          source: string;
-          sha256: string;
-          name: string;
-          bytes: number;
-          unchanged: boolean;
-        }> = [],
+        manifest: Array<
+          {
+            source: string;
+            sha256: string;
+            name: string;
+            bytes: number;
+            unchanged: boolean;
+          } & Partial<SyncEntry>
+        > = [],
         errors: Array<
           ReturnType<typeof publicError> & {
             activity_id?: number;
@@ -568,15 +735,88 @@ export async function moodleRead(
           errors.push({ activity_id: found.id, ...failure(error) });
         }
       }
+      const previous = (a.previous_manifest ?? []).filter(
+        (entry) => entry.course_id === first.id,
+      );
+      const keys = new Map<string, string>();
+      for (const candidate of candidates)
+        keys.set(
+          candidate.source,
+          await digest(
+            `${first.id}:${candidate.found.id}:${candidate.entry ? new URL(candidate.entry.url, c.baseUrl).pathname : "html"}`,
+          ),
+        );
+      const actions: object[] = [];
       const offset = a.offset ?? 0,
         limit = a.limit ?? 20;
       const chosen = candidates.slice(offset, offset + limit);
-      let used = 0;
+      let used = 0,
+        processed = 0;
       for (const { found, entry, source } of chosen) {
         try {
+          const key = keys.get(source)!;
+          const old = previous.find((v) => v.key === key);
+          const section = contents.find((s) =>
+            s.activities.some((v) => v.id === found.id),
+          );
+          const path = syncPath(
+            `${first.id}-${first.shortname}`,
+            `${section?.section ?? 0}-${section?.name ?? "Course"}`,
+            `${found.id}-${found.name}`,
+            `${key.slice(0, 12)}-${entry?.name ?? `${found.name}.html`}`,
+          );
           let file: LearningFile;
-          if (entry) file = await fetchFile(entry);
-          else {
+          let etag: string | undefined, last_modified: string | undefined;
+          if (entry) {
+            const headers = new Headers();
+            if (
+              name === "sync" &&
+              old &&
+              localHash(old) !== null &&
+              (localHash(old) === old.sha256 || old.path === path)
+            ) {
+              if (old.etag) headers.set("if-none-match", old.etag);
+              if (old.last_modified)
+                headers.set("if-modified-since", old.last_modified);
+            }
+            const response = await read(() =>
+              c.requestAbsolute(
+                safeFileUrl(entry.url),
+                { headers },
+                { allowErrorStatus: [...headers].length !== 0 },
+              ),
+            );
+            if (!response.ok && response.status !== 304) {
+              await response.body?.cancel();
+              throw platformReadError("moodle", {
+                code:
+                  response.status === 404
+                    ? "not_found"
+                    : response.status === 401
+                      ? "auth"
+                      : "upstream",
+                message: `HTTP ${response.status}`,
+              });
+            }
+            etag = response.headers.get("etag") ?? undefined;
+            last_modified = response.headers.get("last-modified") ?? undefined;
+            if (response.status === 304 && old && [...headers].length !== 0) {
+              const current: SyncEntry = {
+                ...old,
+                source,
+                section_id: section?.id ?? 0,
+                name: entry.name,
+                path,
+                etag: etag ?? old.etag,
+                last_modified: last_modified ?? old.last_modified,
+              };
+              manifest.push({ ...current, unchanged: true });
+              actions.push({ key, ...syncAction(current, old) });
+              processed++;
+              continue;
+            }
+            file = await fetchFile(entry, response);
+          } else {
             const path =
               found.modname === "book"
                 ? `/mod/book/tool/print/index.php?id=${found.id}`
@@ -612,13 +852,17 @@ export async function moodleRead(
                 );
                 const type =
                   img.headers.get("content-type")?.split(";")[0] ?? "";
-                if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) {
+                if (!/^image\/[a-z0-9.+-]+$/i.test(type)) {
                   await img.body?.cancel();
-                  continue;
+                  throw new SuiteError(
+                    "FILE_UNAVAILABLE",
+                    "Moodle did not return a readable inline image.",
+                    502,
+                  );
                 }
-                const bytes = await responseBytes(img, 1024 * 1024);
+                const bytes = await responseBytes(img, 5 * 1024 * 1024);
                 imageBytes += bytes.length;
-                if (imageBytes > 4 * 1024 * 1024)
+                if (imageBytes > 10 * 1024 * 1024)
                   throw new SuiteError(
                     "FILE_TOO_LARGE",
                     "This document contains too many inline images.",
@@ -652,28 +896,74 @@ export async function moodleRead(
               ctx.output,
             );
           }
-          const unchanged = a.known_hashes?.includes(file.sha256) ?? false;
-          if (!unchanged && used + file.bytes > MAX_FILE_BYTES)
-            throw new SuiteError(
-              "BATCH_TOO_LARGE",
-              "Select fewer files or download this file individually; one batch is limited to 16 MiB.",
-            );
-          manifest.push({
+          const current: SyncEntry = {
+            key,
             source,
-            sha256: file.sha256,
+            course_id: first.id,
+            activity_id: found.id,
+            section_id: section?.id ?? 0,
             name: file.name,
+            path,
+            sha256: file.sha256,
             bytes: file.bytes,
-            unchanged,
-          });
-          if (!unchanged) {
+            ...(etag ? { etag } : {}),
+            ...(last_modified ? { last_modified } : {}),
+          };
+          const previousEntry = old;
+          const action = syncAction(current, previousEntry);
+          const unchanged = previousEntry
+            ? ["unchanged", "rename", "preserve_local"].includes(action.action)
+            : (a.known_hashes?.includes(file.sha256) ?? false);
+          if (
+            !unchanged &&
+            !a.dry_run &&
+            used + file.bytes > (ctx.maxBatchBytes ?? MAX_FILE_BYTES)
+          )
+            break;
+          manifest.push({ ...current, unchanged });
+          if (name === "sync") actions.push({ key, ...action });
+          if (!unchanged && !a.dry_run) {
             used += file.bytes;
             files.push(file);
           }
         } catch (error) {
           errors.push({ source, activity_id: found.id, ...failure(error) });
         }
+        processed++;
       }
-      const next = offset + chosen.length;
+      const next = offset + processed;
+      const removed =
+        name === "sync" &&
+        errors.length === 0 &&
+        offset === 0 &&
+        next === candidates.length
+          ? previous
+              .filter(
+                (v) =>
+                  ![...keys.values()].includes(v.key) &&
+                  (a.activity_id === undefined ||
+                    activities.some((act) => act.id === v.activity_id)) &&
+                  (a.section === undefined ||
+                    scoped.some((s) => s.id === v.section_id)),
+              )
+              .filter(
+                (v) =>
+                  !actions.some(
+                    (action) => (action as { from?: string }).from === v.path,
+                  ),
+              )
+              .map((v) => ({
+                key: v.key,
+                path: v.path,
+                action:
+                  localHash(v) !== null && localHash(v) !== v.sha256
+                    ? "preserve_local"
+                    : "remove",
+                reason: "removed_upstream",
+              }))
+          : [];
+      const savedManifest = manifest.map(({ unchanged, ...v }) => v);
+
       return {
         files,
         manifest,
@@ -686,6 +976,17 @@ export async function moodleRead(
         total: candidates.length,
         limit,
         unchanged: manifest.filter((v) => v.unchanged).length,
+        ...(name === "sync"
+          ? {
+              actions: [...actions, ...removed],
+              saved_manifest: savedManifest,
+              dry_run: a.dry_run ?? false,
+              removals_complete:
+                offset === 0 &&
+                next === candidates.length &&
+                errors.length === 0,
+            }
+          : {}),
       };
     }
   }

@@ -112,9 +112,9 @@ export const edCapabilities = [
   ),
   definePlatformRead(
     "ed_activity",
-    "Read only the signed-in user's posts, answers and comments for a linked course.",
+    "Read the signed-in user's posts, answers and comments; omit unit for activity across verified, linked courses.",
     {
-      unit,
+      unit: unit.optional(),
       filter_type: z
         .enum(["all", "thread", "answer", "comment"])
         .default("all"),
@@ -123,7 +123,7 @@ export const edCapabilities = [
     },
     "ed",
     "list_activity",
-    "course",
+    "courses",
   ),
   definePlatformRead(
     "ed_modules",
@@ -161,6 +161,21 @@ export const edCapabilities = [
     },
     "ed",
     "file",
+    "course",
+  ),
+  definePlatformRead(
+    "ed_download",
+    "Download a page of freshly verified lesson or thread attachments, with a manifest, per-file errors and continuation. Select exactly one lesson_id or thread_id; slide_id optionally narrows a lesson. A batch is limited to 16 MiB.",
+    {
+      unit,
+      lesson_id: id.optional(),
+      thread_id: id.optional(),
+      slide_id: id.optional(),
+      limit: z.number().int().min(1).max(50).default(20),
+      offset: pagination.offset,
+    },
+    "ed",
+    "download",
     "course",
   ),
   definePlatformRead(

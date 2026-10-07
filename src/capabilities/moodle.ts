@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { syncManifestEntry } from "./moodle-sync.ts";
 import { defineRead, definePlatformRead } from "./definition.ts";
 import { resolveUnit } from "../domain/units.ts";
 
@@ -47,6 +48,29 @@ export const moodleCapabilities = [
     "unit",
     async (args, { config, adapters }) =>
       adapters.moodle.unit(resolveUnit(config.units, args.unit), args.section),
+  ),
+  definePlatformRead(
+    "moodle_activities",
+    "List activities in a linked Moodle course or section, optionally including inline labels.",
+    {
+      unit,
+      section: section.optional(),
+      section_id: id.optional(),
+      include_labels: z.boolean().default(false),
+      limit: z.number().int().min(1).max(200).default(200),
+      offset: pagination.offset,
+    },
+    "moodle",
+    "activities",
+    "course",
+  ),
+  definePlatformRead(
+    "moodle_quiz_show",
+    "Read an owned in-progress quiz attempt and saved answers without advancing sequential navigation. Page is one-based; omit it for the current page.",
+    { unit, activity_id: activityRef, attempt_id: id, page: id.optional() },
+    "moodle",
+    "quiz_show",
+    "course",
   ),
   defineRead(
     "moodle_due",
@@ -179,9 +203,12 @@ export const moodleCapabilities = [
   ),
   definePlatformRead(
     "moodle_sync",
-    "Read course resources/attachments and page/book HTML with inline images. Return only files whose SHA-256 is absent from the caller's known_hashes plus a fresh manifest. No platform writes or local paths.",
+    "Synchronize resources and saved HTML using a caller-persisted manifest, HTTP validators and local hashes. Return file bytes and explicit write/rename/removal/conflict actions for the client to apply. Omit unit for all linked Moodle courses; pagination is per course. No server-local paths or platform writes.",
     {
       ...batch,
+      unit: unit.optional(),
+      previous_manifest: z.array(syncManifestEntry).max(2000).default([]),
+      dry_run: z.boolean().default(false),
       known_hashes: z
         .array(z.string().regex(/^[a-f0-9]{64}$/))
         .max(2000)
@@ -189,7 +216,7 @@ export const moodleCapabilities = [
     },
     "moodle",
     "sync",
-    "course",
+    "courses",
   ),
   definePlatformRead(
     "moodle_news",
@@ -205,16 +232,16 @@ export const moodleCapabilities = [
   ),
   definePlatformRead(
     "moodle_forums",
-    "List forums in the selected enrolled course.",
-    { unit },
+    "List forums across linked, enrolled courses, or select one course.",
+    { unit: unit.optional(), ...pagination },
     "moodle",
     "forums",
-    "course",
+    "courses",
   ),
   definePlatformRead(
     "moodle_forum",
     "Page discussions in a forum verified to belong to the selected course.",
-    { unit, forum_id: id, ...pagination },
+    { unit, forum_id: id, query: text.optional(), ...pagination },
     "moodle",
     "forum",
     "course",

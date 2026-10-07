@@ -9,6 +9,7 @@ export async function moodleWrite(
   ctx: WriteContext<MoodleClientCore>,
   execute = false,
 ): Promise<unknown> {
+  ctx.output.remember(a.password);
   const c = ctx.client,
     course = required(ctx.unit.moodle_course_id, "Moodle course");
   await ctx.enrolled(course);
@@ -177,7 +178,7 @@ export async function moodleWrite(
       : await c.planQuizStart(activity.id);
     const preview = await verifyPlan(ctx, {
       target,
-      changes: start,
+      changes: { ...start, access_password_provided: Boolean(a.password) },
       irreversible: start.action === "start",
       warnings: [
         ...warnings,
@@ -185,7 +186,11 @@ export async function moodleWrite(
       ],
     });
     if (!execute) return preview;
-    return { attempt: await c.startQuizAttempt(activity.id) };
+    return {
+      attempt: await c.startQuizAttempt(activity.id, {
+        password: a.password ? async () => a.password! : undefined,
+      }),
+    };
   }
   const attempt = required(a.attempt_id, "attempt_id");
   if (!quiz.attempts.some((v) => v.id === attempt))

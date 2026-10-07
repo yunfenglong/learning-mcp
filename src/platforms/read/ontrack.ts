@@ -5,7 +5,7 @@ import {
 } from "../../../vendor/ontrack/client.js";
 import type { OnTrackClient } from "../../../vendor/ontrack/client.js";
 import type { OnTrackReadArgs, OnTrackOperation } from "./contracts.ts";
-import { getDocumentProxy } from "unpdf";
+import { taskMarkdown } from "./ontrack-pdf.ts";
 import { SuiteError } from "../../errors.ts";
 import { learningFile } from "./files.ts";
 import {
@@ -38,8 +38,30 @@ export async function ontrackRead(
         "OnTrack returned conflicting account identities. Reconnect OnTrack.",
         409,
       );
+    if (
+      ctx.profile &&
+      (ctx.profile.username !== ctx.username ||
+        (ids.length && ctx.profile.id !== null && ctx.profile.id !== ids[0]))
+    )
+      throw new SuiteError(
+        "ACCOUNT_CHANGED",
+        "OnTrack profile does not match the current account.",
+        409,
+      );
     return {
-      user: { username: ctx.username, id: ids[0] ?? null },
+      user: {
+        first_name: null,
+        last_name: null,
+        email: null,
+        nickname: null,
+        ...ctx.profile,
+        username: ctx.username,
+        id: ids[0] ?? ctx.profile?.id ?? null,
+      },
+      profile_source: ctx.profile
+        ? "authenticated_session"
+        : "unavailable_until_session_renewal",
+      base_url: ctx.config.platforms.ontrack?.site_url,
       authentication: await c.getAuthMethod(),
       authenticated: true,
     };
@@ -76,12 +98,33 @@ export async function ontrackRead(
   }
   const unit = await c.getUnit(bound.ontrack_unit_id);
   requireOwner(unit.id, bound.ontrack_unit_id);
+  const now = new Date();
+  const date = new Intl.DateTimeFormat("en-CA", {
+    timeZone: bound.timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+  const snapshot = buildProjectSnapshot(
+    {
+      ...project,
+      flexible_dates: unit.allow_flexible_dates ?? project.flexible_dates,
+    },
+    unit,
+    {
+      now: Instant.parse(now.toISOString()),
+      today: CivilDate.parse(date),
+    },
+  );
+
   const tasks = unit.task_definitions.map((definition) => {
     const progress =
       project.tasks.find((v) => v.task_definition_id === definition.id) ?? null;
     return {
       ...definition,
       ...progress,
+      ...snapshot.tasks.find((row) => row.task_definition_id === definition.id),
+      id: progress?.id ?? definition.id,
       task_definition_id: definition.id,
       status: progress?.status ?? "not_started",
       definition,
@@ -89,24 +132,6 @@ export async function ontrackRead(
     };
   });
   if (name === "get_unit") {
-    const now = new Date();
-    const date = new Intl.DateTimeFormat("en-CA", {
-      timeZone: bound.timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(now);
-    const snapshot = buildProjectSnapshot(
-      {
-        ...project,
-        flexible_dates: unit.allow_flexible_dates ?? project.flexible_dates,
-      },
-      unit,
-      {
-        now: Instant.parse(now.toISOString()),
-        today: CivilDate.parse(date),
-      },
-    );
     return {
       unit,
       project,
@@ -116,11 +141,12 @@ export async function ontrackRead(
   }
   if (name === "list_tasks") {
     const p = page(
-      tasks.filter(
-        (v) =>
-          !a.status?.length ||
-          a.status.includes(v.progress?.status ?? "not_started"),
-      ),
+      snapshot.tasks
+        .map((row) =>
+          tasks.find((v) => v.task_definition_id === row.task_definition_id)!,
+        )
+        .filter(Boolean)
+        .filter((v) => !a.status?.length || a.status.includes(v.status)),
       a,
       200,
     );
@@ -135,11 +161,16 @@ export async function ontrackRead(
   if (name === "unread")
     return {
       project_id: project.id,
-      tasks: tasks.map((v) => ({
-        task_definition_id: v.task_definition_id,
-        abbreviation: v.abbreviation,
-        unread: v.progress?.num_new_comments ?? 0,
-      })),
+      tasks: tasks
+        .filter((v) => v.progress)
+        .map((v) => ({
+          task_definition_id: v.task_definition_id,
+          abbreviation: v.abbreviation,
+          name: v.name,
+          status: v.status,
+          unread_comments: v.progress?.num_new_comments ?? 0,
+          unread: v.progress?.num_new_comments ?? 0,
+        })),
       total: tasks.reduce((n, v) => n + (v.progress?.num_new_comments ?? 0), 0),
     };
   const selected = tasks.filter((v) =>
@@ -155,16 +186,51 @@ export async function ontrackRead(
     );
   const chosen = required(selected[0], "task");
   const task = chosen.definition;
+  if (!chosen.progress && (name === "get_task" || project.tasks.length > 0))
+    throw new SuiteError(
+      "ENTITY_NOT_ALLOWED",
+      "This task is not assigned to the selected project.",
+      403,
+    );
   if (name === "get_task")
     return {
       project_id: project.id,
       unit_id: unit.id,
       task,
+      summary: snapshot.tasks.find((row) => row.task_definition_id === task.id),
       progress: chosen.progress,
     };
+  if ((a.resources ? task.has_task_resources : task.has_task_sheet) === false)
+    throw new SuiteError(
+      "FILE_NOT_FOUND",
+      "This task has no requested resource.",
+      404,
+    );
   const download = a.resources
     ? await c.downloadTaskResources(unit.id, task.id)
     : await c.downloadTaskSheet(unit.id, task.id);
+  if (download.filename?.toLowerCase() === "filenotfound.pdf")
+    throw new SuiteError(
+      "FILE_NOT_FOUND",
+      "OnTrack returned its missing-file placeholder.",
+      404,
+    );
+  if (
+    !a.resources &&
+    (download.contentType !== "application/pdf" ||
+      new TextDecoder().decode(download.bytes.subarray(0, 5)) !== "%PDF-")
+  )
+    throw new SuiteError(
+      "UPSTREAM_CONTRACT_ERROR",
+      "OnTrack did not return a valid task sheet PDF.",
+      502,
+    );
+  if (a.resources && !download.filename)
+    throw new SuiteError(
+      "UPSTREAM_CONTRACT_ERROR",
+      "OnTrack returned task resources without a filename.",
+      502,
+    );
   if (name === "task_file")
     return {
       file: await learningFile(
@@ -177,55 +243,7 @@ export async function ontrackRead(
       ),
     };
   if (name === "task_read") {
-    // No external URLs, PDF scripts, dynamic JavaScript evaluation, fonts or image fetches.
-    if (new TextDecoder().decode(download.bytes.subarray(0, 5)) !== "%PDF-")
-      throw new SuiteError(
-        "UPSTREAM_CONTRACT_ERROR",
-        "OnTrack did not return a PDF task sheet.",
-        502,
-      );
-    const options = {
-      isEvalSupported: false,
-      useSystemFonts: false,
-      disableFontFace: true,
-    };
-    const pdf = await getDocumentProxy(download.bytes.slice(), options);
-    try {
-      if (pdf.numPages < 1 || pdf.numPages > 200)
-        throw new SuiteError(
-          "FILE_TOO_LARGE",
-          "Task sheets are limited to 200 pages.",
-        );
-      const start = a.page ?? 1,
-        end = Math.min(pdf.numPages, start + (a.pages ?? 20) - 1);
-      if (start > pdf.numPages)
-        throw new SuiteError(
-          "INVALID_INPUT",
-          "The selected page is outside this task sheet.",
-        );
-      const lines: string[] = [`# ${task.name}`];
-      for (let index = start; index <= end; index++) {
-        const p = await pdf.getPage(index),
-          content = await p.getTextContent();
-        let text = "";
-        for (const item of content.items)
-          if ("str" in item) text += item.str + (item.hasEOL ? "\n" : " ");
-        lines.push(`## Page ${index}`, text.trim());
-        p.cleanup();
-      }
-      return {
-        markdown: lines.join("\n\n"),
-        total_pages: pdf.numPages,
-        first_page: start,
-        last_page: end,
-        next_page: end < pdf.numPages ? end + 1 : null,
-        coverage: "extractable_text",
-        reason:
-          "PDF text extraction does not transcribe images or scanned pages.",
-      };
-    } finally {
-      await pdf.loadingTask.destroy();
-    }
+    return taskMarkdown(download.bytes, task.name, a.page ?? 1, a.pages ?? 200);
   }
   return unhandledRead(name);
 }

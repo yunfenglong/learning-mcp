@@ -1,3 +1,4 @@
+import { upstreamCoverage } from "./coverage.ts";
 import { writeCapabilities } from "./write/index.ts";
 export { writeCapabilities } from "./write/index.ts";
 import {
@@ -37,6 +38,7 @@ const catalog: ReadCapability<undefined, "", {}> = defineRead(
     ),
     write_tools: writeCapabilities.map((c) => c.name),
     writes_pending: pendingWrites,
+    upstream_coverage: upstreamCoverage,
     write_workflow: [
       "begin_upload",
       "upload_chunk",
@@ -47,7 +49,7 @@ const catalog: ReadCapability<undefined, "", {}> = defineRead(
     policy:
       "Beta writes require learning:write and explicit confirmation of an account/client-bound preview. Reads use learning:read; connection/binding controls use learning:bindings. Attendance submission is prohibited.",
     file_delivery:
-      "Embedded MCP binary resources; 16 MiB per file and per Moodle batch. No local paths or arbitrary URLs.",
+      "Embedded MCP binary resources; 16 MiB per file and per file batch. No local paths or arbitrary URLs.",
   }),
 );
 export const readCapabilities = [

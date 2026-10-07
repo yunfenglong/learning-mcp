@@ -24,8 +24,18 @@ export const edWriteCapabilities = [
   capability(
     "ed",
     "mark_lessons_read",
-    "Mark explicitly selected lessons/slides viewed; complete non-quiz slides. Does not answer quizzes.",
-    { unit, lesson_ids: z.array(id).min(1).max(50) },
+    "Mark lessons selected by IDs, title/module query words, or all lessons viewed; complete non-quiz slides. The preview lists the exact selection. Does not answer quizzes.",
+    {
+      unit,
+      lesson_ids: z.array(id).min(1).max(200).optional(),
+      queries: z
+        .array(z.string().trim().min(1).max(200))
+        .min(1)
+        .max(20)
+        .optional(),
+      all: z.boolean().default(false),
+      delay_seconds: z.number().min(0).max(10).default(0),
+    },
   ),
   capability(
     "ed",

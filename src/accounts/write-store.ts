@@ -120,7 +120,7 @@ export class WriteStore {
         ...(await s.list<Saved>({ prefix: "upload:" })).values(),
       ].filter((v) => v.expires_at > this.now());
       if (
-        active.length >= 16 ||
+        active.length >= 20 ||
         active.reduce((n, v) => n + (v.bytes ?? 0), 0) + data.size >
           32 * 1024 * 1024
       )
@@ -238,7 +238,7 @@ export class WriteStore {
     });
   }
   async files(owner: WriteOwner, ids: string[]): Promise<StagedFile[]> {
-    if (new Set(ids).size !== ids.length || ids.length > 16)
+    if (new Set(ids).size !== ids.length || ids.length > 20)
       throw new SuiteError("INVALID_INPUT", "Choose distinct staged files.");
     const files: StagedFile[] = [];
     let total = 0;

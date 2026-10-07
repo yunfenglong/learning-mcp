@@ -1,4 +1,7 @@
-import { markdownToEdDocument } from "../../../vendor/ed/client.js";
+import {
+  markdownToEdDocument,
+  listLessons,
+} from "../../../vendor/ed/client.js";
 import type { EdClient } from "../../../vendor/ed/client.js";
 import type {
   Thread,
@@ -109,9 +112,37 @@ export async function edWrite(
     };
   }
   if (name === "mark_lessons_read" || name === "mark_slide_read") {
-    const lessons = await Promise.all(
-      (a.lesson_ids ?? [required(a.lesson_id, "lesson_id")]).map(lesson),
-    );
+    let ids: number[];
+    if (name === "mark_slide_read") ids = [required(a.lesson_id, "lesson_id")];
+    else {
+      if (a.lesson_ids && (a.queries?.length || a.all))
+        throw new SuiteError(
+          "INVALID_INPUT",
+          "Choose lesson IDs or query/all selection, not both.",
+        );
+      if (!a.lesson_ids && !a.queries?.length && !a.all)
+        throw new SuiteError(
+          "INVALID_INPUT",
+          "Provide lesson_ids, queries, or all: true.",
+        );
+      if (a.lesson_ids) ids = a.lesson_ids;
+      else {
+        const candidates = await listLessons(c, course);
+        for (const candidate of candidates)
+          requireOwner(candidate.courseId, course);
+        ids = candidates
+          .filter((l) =>
+            (a.queries ?? []).every((q) =>
+              `${l.title} ${l.moduleName}`
+                .toLowerCase()
+                .includes(q.trim().toLowerCase()),
+            ),
+          )
+          .map((l) => l.id);
+      }
+    }
+    const lessons = [];
+    for (const id of ids) lessons.push(await lesson(id));
     if (a.lesson_ids && new Set(a.lesson_ids).size !== a.lesson_ids.length)
       throw new SuiteError("INVALID_INPUT", "Choose distinct lesson IDs.");
     const slides = lessons.flatMap((l) =>
@@ -141,7 +172,7 @@ export async function edWrite(
         user_id: user.id,
         lessons: lessons.map((l) => ({ id: l.id, title: l.title })),
       },
-      changes: { slides },
+      changes: { slides, delay_seconds: a.delay_seconds ?? 0 },
       irreversible: true,
       warnings: [
         "This changes viewed/completed learning progress. Quiz slides are viewed, never completed without answers.",
@@ -155,6 +186,10 @@ export async function edWrite(
       for (const s of slides.filter((s) => s.lesson_id === l.id)) {
         if (s.action === "view") await c.fetchSlide(s.id, { view: true });
         else await c.completeSlide(s.id);
+        if (a.delay_seconds)
+          await new Promise((resolve) =>
+            setTimeout(resolve, a.delay_seconds! * 1000),
+          );
       }
       receipts.push(await c.fetchLesson(l.id, { view: false }));
     }

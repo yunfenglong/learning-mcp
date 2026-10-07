@@ -8,7 +8,7 @@ export const moodleWriteCapabilities = [
     {
       unit,
       activity_id: ref,
-      upload_ids: z.array(upload).max(16).default([]),
+      upload_ids: z.array(upload).max(20).default([]),
       final: z.boolean().default(false),
       replace: z.boolean().default(false),
       accept_statement: z.boolean().default(false),
@@ -17,8 +17,19 @@ export const moodleWriteCapabilities = [
   capability(
     "moodle",
     "quiz_start",
-    "Start or continue a beta quiz attempt. Starting can consume an attempt and immediately start a timer. Password/SEB requirements must be completed on the platform.",
-    { unit, quiz_id: ref },
+    "Start or continue a beta quiz attempt. Starting can consume an attempt and immediately start a timer. An optional quiz access password is used only if Moodle requests it; SEB remains unsupported upstream.",
+    {
+      unit,
+      quiz_id: ref,
+      password: z
+        .string()
+        .min(1)
+        .max(1024)
+        .optional()
+        .describe(
+          "Quiz access password only, never your account password. Encrypted with the expiring preview and never returned.",
+        ),
+    },
   ),
   capability(
     "moodle",

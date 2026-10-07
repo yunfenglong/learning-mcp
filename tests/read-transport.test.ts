@@ -74,6 +74,37 @@ describe("safe vendor error boundaries", () => {
 });
 
 describe("Moodle file redirect transport", () => {
+  it("forwards cache validators through approved CDN hops without credentials", async () => {
+    const network = vi.fn(async () => new Response(null, { status: 304 }));
+    const response = await fetchMoodleFile(
+      site,
+      file,
+      {
+        headers: {
+          "if-none-match": '"revision-1"',
+          "if-modified-since": "Mon, 05 Oct 2026 00:00:00 GMT",
+          Cookie: "private",
+          Authorization: "private",
+        },
+      },
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://files.example/spec" },
+        }),
+      network,
+      ["https://files.example"],
+    );
+    expect(response.status).toBe(304);
+    const headers = new Headers(
+      (network.mock.calls[0] as unknown as [unknown, RequestInit])[1].headers,
+    );
+    expect(Object.fromEntries(headers)).toEqual({
+      accept: "*/*",
+      "if-none-match": '"revision-1"',
+      "if-modified-since": "Mon, 05 Oct 2026 00:00:00 GMT",
+    });
+  });
   it.each([
     [
       "https://blocked.example/spec?token=canary",

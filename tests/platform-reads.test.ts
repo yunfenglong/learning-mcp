@@ -509,7 +509,11 @@ describe("OnTrack read scope", () => {
   it("extracts real task PDF text without invoking an external CLI", async () => {
     const c = {
       ...ontrack(),
-      downloadTaskSheet: vi.fn(async () => ({ bytes: taskSheetPdf() })),
+      downloadTaskSheet: vi.fn(async () => ({
+        bytes: taskSheetPdf(),
+        contentType: "application/pdf",
+        filename: "task.pdf",
+      })),
     };
     const result: any = await ontrackRead(
       "task_read",

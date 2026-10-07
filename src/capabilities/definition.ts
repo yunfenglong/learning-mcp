@@ -82,7 +82,7 @@ export function invokeRead(
     throw new SuiteError("INVALID_INPUT", "Choose a linked course.");
   if (
     platform === "ed" &&
-    operation === "file" &&
+    ["file", "download"].includes(operation) &&
     (args.lesson_id === undefined) === (args.thread_id === undefined)
   )
     throw new SuiteError(

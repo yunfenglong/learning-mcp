@@ -1,3 +1,4 @@
+import { ontrackProfile } from "../src/platforms/broker.ts";
 import { z } from "zod";
 import {
   launch,
@@ -283,6 +284,7 @@ export async function browserLogin(
                 return {
                   session: {
                     username: data.user.username,
+                    user: ontrackProfile(data.user),
                     token: data.auth_token,
                     expires_at: new Date(data.auth_token_expiry).toISOString(),
                   },

@@ -61,6 +61,7 @@ export class DirectBackend implements Backend {
   private ontrackSessionExpired = false;
   private authenticationFailure?: SuiteError;
   private platformUsername?: string;
+  private platformProfile?: import("./broker.ts").OnTrackSession["user"];
   private async renew(platform: "moodle" | "ontrack") {
     try {
       const value = await brokerCall(this.env, this.account, "/v1/renew", {
@@ -238,6 +239,7 @@ export class DirectBackend implements Backend {
     );
     this.output.rememberSession(c);
     this.platformUsername = c.username;
+    this.platformProfile = c.user;
     return new OnTrackClient(
       new HttpClient({
         baseUrl: site,
@@ -266,6 +268,7 @@ export class DirectBackend implements Backend {
               "Reconnect OnTrack to confirm this account.",
               409,
             );
+          this.platformProfile = v.user;
           return { username: v.username, accessToken: v.token };
         },
       }),
@@ -457,6 +460,7 @@ export class DirectBackend implements Backend {
             ...context,
             client: c,
             username: this.platformUsername,
+            profile: this.platformProfile,
           }),
         );
     }

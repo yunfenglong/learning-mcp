@@ -3509,6 +3509,7 @@ export {
   pageGradeReports,
   parseSavedDocumentHtml,
   resolveSection,
+  searchForumContent,
   searchSections,
   withChildSections
 };

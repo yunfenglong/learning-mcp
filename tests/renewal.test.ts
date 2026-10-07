@@ -99,6 +99,14 @@ describe("platform session renewal", () => {
       username: "user",
       token: "access-b",
       expires_at: expiry,
+      user: {
+        id: null,
+        username: "user",
+        first_name: null,
+        last_name: null,
+        email: null,
+        nickname: null,
+      },
     });
     expect(
       result?.cookies.find((c) => c.name === "refresh_token"),

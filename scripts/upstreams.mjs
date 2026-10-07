@@ -34,7 +34,7 @@ const entries = {
     repo: "moodle-cli",
     entries: ["src/moodle-client-core.ts", "src/resolve.ts", "src/grades.ts"],
     exports:
-      'export { MoodleClientCore } from "./src/moodle-client-core.js"; export { resolveSection, withChildSections, searchSections } from "./src/resolve.js"; export { hasGrade, pageGradeReports } from "./src/grades.js"; export { parseSavedDocumentHtml } from "./src/scraper.js";',
+      'export { MoodleClientCore } from "./src/moodle-client-core.js"; export { resolveSection, withChildSections, searchSections } from "./src/resolve.js"; export { hasGrade, pageGradeReports } from "./src/grades.js"; export { parseSavedDocumentHtml } from "./src/scraper.js"; export { searchForumContent } from "./src/moodle-forum-search-core.js";',
   },
   ontrack: {
     repo: "ontrack-cli",

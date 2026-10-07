@@ -57,8 +57,8 @@
       "src/moodle-quiz-core.ts": "9deaa0cabcea53f6e38891703d624f404cd65765819baf4773bfd74dee227691",
       "src/moodle-assign-core.ts": "9f4d2b89b090a07850a38e6d7750a636f2e8f2c6c1be023362071bb291bd3b60",
       "src/session-fetch.ts": "8b5b16bafd0aa1d689ff38ef221312513328e44d713d692b8c63428011a1fe73",
-      "client.js": "89d9d7cafaaf8afe6f255894bd1187c15a57af220f95a3c9fae20174e34bcca4",
-      "types/entry.d.ts": "88911e68ebd8970f6a2acb4191e684eec196b16672e68c06dfee2ad156a3671a",
+      "client.js": "3cfcacb97038dbb0b3b164943540a6c7e4e1007c3cb4f4c7656501d4179c36fc",
+      "types/entry.d.ts": "cdfbcd8bf00095ed18243f2c24b143b5f6b2557d92891f21cb1d55b18324dffc",
       "types/src/constants.d.ts": "7b548c35137325ba9ebfa737c70e8aed150a991b39afc12724a9c7cb7c359060",
       "types/src/grades.d.ts": "5ffd01f9ab6a855004754edbae449c98f423033af7122b997810eff183bea4c0",
       "types/src/html-utils.d.ts": "48f8b72c441dfcafeff0abf9bda76ddefa5ea526af5195709de3940f99d1613d",
@@ -73,7 +73,7 @@
       "types/src/scraper.d.ts": "6b8ad44adcd0196b26c3f1d8770e5bbdc99a07b26ee68a068c046706daa8066d",
       "types/src/session-fetch.d.ts": "1e49851f0eca0492ff82c91cc30094b6837042e18ffc21d3d0993060d7f2f078",
       "types/src/site-labels.d.ts": "89e35130914d3173071ea849cc77ed98639a18a8406c30ed2c2b1c4db755f1ef",
-      "entry.ts": "f4a06b9e32ea9fa108ea5e2ca44b69d991781bbf5bf04edadbd295b50703727d",
+      "entry.ts": "6b8c237d4d0b6d2d0642ce2079ec773c81814aa3614e6b793b406e7eaff7b98d",
       "client.d.ts": "1d332c4f89c472bde8a9d4a2b9cf5e5a055f82308fb3556aee260ae285503fc6"
     }
   },

@@ -32,6 +32,12 @@ export async function ontrackWrite(
     );
   const task = selected[0]!,
     progress = project.tasks.find((t) => t.task_definition_id === task.id);
+  if (!progress)
+    throw new SuiteError(
+      "ENTITY_NOT_ALLOWED",
+      "This task is not assigned to the selected project.",
+      403,
+    );
   const target = {
     project_id: projectId,
     unit_id: unitId,
@@ -103,7 +109,16 @@ export async function ontrackWrite(
       required(a.state, "state"),
     );
     requireOwner(updated.task_definition_id, task.id);
-    return { task: updated };
+    if (updated.status !== a.state)
+      throw new SuiteError(
+        "WRITE_OUTCOME_UNCERTAIN",
+        "OnTrack did not confirm the requested task state. Check the task before another write.",
+        409,
+      );
+    return {
+      task: updated,
+      previous_status: progress?.status ?? "not_started",
+    };
   }
   const uploads = ctx.files.map((f, i) => ({
     key: task.upload_requirements[i]!.key,
@@ -120,5 +135,16 @@ export async function ontrackWrite(
     acceptTiiEula: a.accept_tii_eula,
   });
   requireOwner(receipt.task_definition_id, task.id);
-  return { task: receipt };
+  if (receipt.status !== a.type)
+    throw new SuiteError(
+      "WRITE_OUTCOME_UNCERTAIN",
+      "OnTrack did not confirm the requested submission state. Check the task before another write.",
+      409,
+    );
+  return {
+    task: receipt,
+    previous_status: progress?.status ?? "not_started",
+    submission_type: a.type,
+    processing_async: true,
+  };
 }

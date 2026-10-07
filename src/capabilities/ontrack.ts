@@ -82,12 +82,12 @@ export const ontrackCapabilities = [
   ),
   definePlatformRead(
     "ontrack_task_read",
-    "Read task-sheet PDF text as paged Markdown, without executing PDF JavaScript or loading remote resources. Image-only content requires the task PDF file.",
+    "Convert task-sheet PDFs with the same pdf2md engine as the pinned upstream, preserving Markdown structure. Optional page selection; image-only content requires the PDF.",
     {
       unit,
       ...taskReference,
       page: id.default(1),
-      pages: z.number().int().min(1).max(50).default(20),
+      pages: z.number().int().min(1).max(200).default(200),
     },
     "ontrack",
     "task_read",
