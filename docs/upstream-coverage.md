@@ -1,10 +1,10 @@
 # Upstream coverage audit
 
-The beta exposes a corresponding operation for every educational entry point in the reviewed public command/MCP surfaces below. **It is not fully equivalent to the upstream CLIs.** File limits, local filesystem behavior and the verification boundaries below remain material differences. Runtime/deployment management was excluded by scope, and attendance submission remains prohibited.
+The beta exposes the educational operations in the reviewed mapping below; version-specific omissions are listed under Remaining limits. **It is not fully equivalent to the upstream CLIs.** File limits, local filesystem behavior and the verification boundaries below remain material differences. Runtime/deployment management was excluded by scope, and attendance submission remains prohibited.
 
 ## Baseline and method
 
-Reviewed sources: [Ed 0.7.2](https://github.com/bunizao/edstem-cli/tree/50570fb8577577d9f73dd556f05dfbbf0e906ecd), [Moodle 0.10.0](https://github.com/bunizao/moodle-cli/tree/698283631b97e7409d4b9b784ab1072a434ded83), [OnTrack 0.3.2](https://github.com/bunizao/ontrack-cli/tree/a8411553bc0edbd599becb0c2f908af9f608d130). `pnpm upstreams check` verified the bundled hashes and that these pins still matched upstream main on 2026-10-07.
+Reviewed sources: [Ed 0.8.0](https://github.com/bunizao/edstem-cli/tree/c98b3f93c53f7f94876fdab30635d248a393c5ec), [Moodle 0.10.0](https://github.com/bunizao/moodle-cli/tree/fe77b9ce07883650d5a813f4903329d2b6d9e6c5), [OnTrack 0.3.2](https://github.com/bunizao/ontrack-cli/tree/ea8806ab1b7098c2cc4b365894bcc406c3c386c2). `pnpm upstreams check` verified the bundled hashes and that these pins still matched upstream main on 2026-10-10.
 
 The review compared command declarations, MCP registrations, client implementations and CLI execution behavior with the suite's input schemas, adapters, handlers, vendor exports and delivery paths. It found missing behavior even where a similarly named tool already existed. The [generated mapping](capabilities.md#audited-upstream-entry-points) lists canonical educational operations; CLI aliases share a row. Ed MCP prompts map to `ed_triage_unanswered` and `ed_teach_lesson` in `src/mcp/prompts/ed.ts`.
 
@@ -19,7 +19,13 @@ The review compared command declarations, MCP registrations, client implementati
 | OnTrack  | Safe authenticated profile fields; assigned-task snapshot semantics and derived fields; upstream PDF-to-Markdown conversion; missing-sheet/resource detection; task assignment checks before writes; Unicode comment length and write-receipt state validation.                                                                     |
 | Shared   | Up to 20 staged files, including Moodle's upstream file-count range; safer conditional file redirects; explicit source mappings and remaining limitations.                                                                                                                                                                          |
 
+## 2026-10-10 deployment compatibility review
+
+Compared the new pins with the previous reviewed commits using the official repository commit diffs. Moodle and OnTrack changed README and image assets only; all bundled runtime source hashes are unchanged. Ed 0.8.0 adds thread star/watch/vote and explicit read/unread actions, bulk thread read markers, unread filtering, local Markdown export and saved cursors, and regional CLI credential selection. These new controls are not exposed by this suite. The suite continues to use its configured Ed endpoint and existing preview-confirmed write allowlist. Existing thread projections gain star/watch/vote state; filtered-list completion and comment ownership helpers remain compatible with current callers. Existing educational operations and authentication regressions passed against the synchronized clients.
+
 ## Remaining limits
+
+Ed 0.8.0's new controls listed above remain a coverage gap; updating the client pin does not authorize or expose them. The mapping describes the currently implemented suite operations.
 
 1. **Large files are not at upstream parity.** The suite still caps binary delivery and a staged submission at 16 MiB, 20 staged files per operation and 32 MiB reserved staging per account. OnTrack upstream permits 100 MiB uploads and 256 MiB downloads; Ed/Moodle CLI transfers can also exceed the suite bound. Supporting those sizes needs a streaming delivery/upload execution path: current RPC/base64 and official upload adapters buffer whole files. Increasing constants alone is not a verified solution.
 2. **Moodle sync requires a client to apply filesystem actions.** It supplies conditional reads, manifests, paths, conflicts and continuation, but does not create directories, atomically write a local mirror or reproduce CLI concurrency. Removal reconciliation is withheld when the scope cannot finish in one response. Consequently a large paginated course cannot currently obtain a complete pruning plan from one sync cycle. Cross-source identity changes are treated as new files rather than guessed from equal content hashes.
@@ -33,6 +39,6 @@ Local login/logout, credential configuration, installation/update, skill generat
 
 Execution regressions cover ownership, preview freshness, password redaction, activity filtering, attachment continuation, cross-course forum ranking, sync conditional requests and local conflicts, Unicode limits and unexpected write receipts. Runtime tests execute the built Worker and broker using synthetic HTTP fixtures, including PDF conversion and password-protected quiz preflight. The test suite also covers OAuth, encrypted staging, explicit write confirmation, stale previews and uncertain outcomes.
 
-On this revision, `pnpm check`, 238 unit tests, 38 workerd runtime tests, both Worker builds and the generated capability reference check passed. Runtime tests use synthetic platform responses.
+On this revision, `pnpm check`, 244 unit tests, 38 workerd runtime tests, both Worker builds and the generated capability reference check passed. Runtime tests use synthetic platform responses.
 
 Run `pnpm check`, `pnpm test`, `pnpm build`, `pnpm build:broker`, `pnpm test:runtime`, `pnpm capabilities:check` and `pnpm upstreams check` before publishing. This audit does not authorize a push, deployment or live educational write.

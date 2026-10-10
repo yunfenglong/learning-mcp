@@ -1,9 +1,9 @@
 // Source-audit baseline, independent of the vendoring lock. A new pin requires
 // reviewing the upstream public surfaces again, not merely updating this SHA.
 export const reviewedUpstreams = {
-  ed: "50570fb8577577d9f73dd556f05dfbbf0e906ecd",
-  moodle: "698283631b97e7409d4b9b784ab1072a434ded83",
-  ontrack: "a8411553bc0edbd599becb0c2f908af9f608d130",
+  ed: "c98b3f93c53f7f94876fdab30635d248a393c5ec",
+  moodle: "fe77b9ce07883650d5a813f4903329d2b6d9e6c5",
+  ontrack: "ea8806ab1b7098c2cc4b365894bcc406c3c386c2",
 } as const;
 
 // Canonical upstream educational operations; CLI aliases share their MCP row.
@@ -90,6 +90,7 @@ export const upstreamCoverage = {
   fully_equivalent: false,
   live_platform_writes_verified: false,
   remaining_limits: [
+    "Ed 0.8.0 thread star/watch/vote and explicit read/unread actions, bulk thread read markers, unread filtering, local export/cursors and regional credential selection are not exposed. Existing preview-confirmed Ed writes remain unchanged.",
     "Binary delivery and staged submissions remain limited to 16 MiB; OnTrack upstream permits 100 MiB uploads and 256 MiB downloads. Ed and Moodle CLI file transfers also exceed this remote bound.",
     "At most 20 staged files per operation. OnTrack tasks with more upload requirements are not supported by this channel.",
     "Sync supplies a paged manifest and filesystem actions for a client to apply. It does not create a local mirror, perform atomic disk writes, or manage local CLI concurrency. Removals are withheld unless a complete scope was read in one response.",

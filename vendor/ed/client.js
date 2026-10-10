@@ -141,6 +141,20 @@ var EdClient = class {
     const data = await this.get(`lessons/slides/${slideId}/questions`);
     return asArray(data.questions).map((entry) => parseLessonQuestion(asRecord(entry)));
   }
+  async threadAction(threadId, action, options = {}) {
+    if (options.commentId !== void 0 && action !== "upvote" && action !== "unvote") {
+      throw new Error("Only vote actions accept a comment target.");
+    }
+    const target = options.commentId === void 0 ? `threads/${threadId}` : `comments/${options.commentId}`;
+    const endpoint = action === "unwatch" ? "watch" : action === "mark-read" ? "read" : action === "mark-unread" ? "unread" : action;
+    await this.post(`${target}/${endpoint}`, {
+      allowEmpty: true,
+      ...action === "watch" || action === "unwatch" ? { jsonBody: { state: action === "watch" } } : {}
+    });
+  }
+  async markAllThreadsRead(courseId) {
+    await this.post(`courses/${courseId}/threads/read_all`, { allowEmpty: true });
+  }
   async fetchThread(threadId) {
     const data = await this.get(`threads/${threadId}`);
     const users = buildUsersMap(asArray(data.users));
@@ -477,6 +491,9 @@ function parseThread(data, usersMap = /* @__PURE__ */ new Map()) {
     isPrivate: Boolean(data.is_private),
     // Ed omits read state on some payloads; only an explicit false means unseen.
     isSeen: data.is_seen !== false,
+    isStarred: Boolean(data.is_starred),
+    isWatched: typeof data.is_watched === "boolean" ? data.is_watched : null,
+    vote: asInt(data.vote),
     number: asInt(data.number),
     metrics: parseThreadMetrics(data),
     subcategory: asString(data.subcategory),
@@ -513,7 +530,8 @@ function parseComment(data, usersMap = /* @__PURE__ */ new Map()) {
     isResolved: Boolean(data.is_resolved),
     type: asString(data.type),
     userId,
-    voteCount: asInt(data.vote_count)
+    voteCount: asInt(data.vote_count),
+    vote: asInt(data.vote)
   };
 }
 function asArray(value) {
@@ -741,6 +759,9 @@ function filterThreads(threads, options = {}) {
     if (threadType && normalizeFilter(thread.type) !== threadType) {
       return false;
     }
+    if (options.unread && thread.isSeen) {
+      return false;
+    }
     if (answered !== void 0 && thread.isAnswered !== answered) {
       return false;
     }
@@ -757,7 +778,7 @@ function filterThreads(threads, options = {}) {
   });
 }
 function hasThreadFilters(options) {
-  return options.answered !== void 0 || options.since !== void 0 || Boolean(normalizeFilter(options.category)) || Boolean(normalizeFilter(options.subcategory)) || Boolean(normalizeFilter(options.threadType)) || queryWords(options.query).length > 0;
+  return Boolean(options.unread) || options.answered !== void 0 || options.since !== void 0 || Boolean(normalizeFilter(options.category)) || Boolean(normalizeFilter(options.subcategory)) || Boolean(normalizeFilter(options.threadType)) || queryWords(options.query).length > 0;
 }
 function parseSince(value, now = /* @__PURE__ */ new Date()) {
   const normalized = value.trim();
@@ -831,12 +852,13 @@ async function listThreads(client, options) {
     });
     matches.push(...filterThreads(threads, options));
     if (matches.length >= options.limit || threads.length < pageSize) {
-      break;
+      return matches.slice(0, options.limit);
     }
     if (options.sort === "new" && passedSince(threads, options.since)) {
-      break;
+      return matches.slice(0, options.limit);
     }
   }
+  options.onIncomplete?.();
   return matches.slice(0, options.limit);
 }
 function parseSinceValue(value) {
@@ -1021,6 +1043,9 @@ function projectThreadDetail(thread, options = {}) {
   const result = {
     ...projectThreadSummary(thread),
     userId: thread.userId,
+    isStarred: thread.isStarred,
+    isWatched: thread.isWatched,
+    vote: thread.vote,
     document: thread.document
   };
   if (options.includeHtml) {

@@ -115,7 +115,7 @@ This is an explicit source-review baseline, not proof of full behavioral equival
 
 ### ed
 
-Reviewed commit: `50570fb8577577d9f73dd556f05dfbbf0e906ecd`.
+Reviewed commit: `c98b3f93c53f7f94876fdab30635d248a393c5ec`.
 
 | Upstream operation | Suite tools |
 | --- | --- |
@@ -151,7 +151,7 @@ Reviewed commit: `50570fb8577577d9f73dd556f05dfbbf0e906ecd`.
 
 ### moodle
 
-Reviewed commit: `698283631b97e7409d4b9b784ab1072a434ded83`.
+Reviewed commit: `fe77b9ce07883650d5a813f4903329d2b6d9e6c5`.
 
 | Upstream operation | Suite tools |
 | --- | --- |
@@ -182,7 +182,7 @@ Reviewed commit: `698283631b97e7409d4b9b784ab1072a434ded83`.
 
 ### ontrack
 
-Reviewed commit: `a8411553bc0edbd599becb0c2f908af9f608d130`.
+Reviewed commit: `ea8806ab1b7098c2cc4b365894bcc406c3c386c2`.
 
 | Upstream operation | Suite tools |
 | --- | --- |
