@@ -67,6 +67,73 @@ describe("bundled-client renewal errors", () => {
       }
     },
   );
+  it.each([false, true])(
+    "renews a stale Moodle sesskey at most once (renewed key rejected: %s)",
+    async (rejected) => {
+      let sesskey = "stale";
+      const broker = vi.fn(async (request: Request) => {
+        if (new URL(request.url).pathname === "/v1/renew" && !rejected)
+          sesskey = "fresh";
+        return Response.json({
+          cookie_name: "MoodleSession",
+          cookie_value: "valid",
+          sesskey,
+          userid: 12,
+          profile_id: "12",
+          display_name: "Student",
+        });
+      });
+      const network = vi.fn(async (input: any) =>
+        new URL(String(input)).searchParams.get("sesskey") === "stale"
+          ? Response.json([
+              {
+                error: true,
+                exception: {
+                  errorcode: "invalidsesskey",
+                  message: "private upstream text",
+                },
+              },
+            ])
+          : Response.json([
+              {
+                error: false,
+                data: {
+                  userid: 12,
+                  siteurl: "https://moodle.example.edu",
+                  fullname: "Student",
+                },
+              },
+            ]),
+      );
+      const backend = new DirectBackend(
+        {
+          SSO_BROKER: { fetch: broker },
+          BROKER_SERVICE_TOKEN: "x".repeat(32),
+        } as unknown as Env,
+        "a".repeat(64),
+        "moodle",
+        {
+          issuer: "https://suite.example.com",
+          units: [],
+          platforms: { moodle: { site_url: "https://moodle.example.edu" } },
+        },
+        network,
+      );
+      if (rejected) {
+        await expect(backend.call("list_courses", {})).rejects.toMatchObject({
+          code: "PLATFORM_SESSION_EXPIRED",
+        });
+      } else {
+        expect((await backend.api("moodle")).baseUrl).toBe(
+          "https://moodle.example.edu",
+        );
+      }
+      expect(
+        broker.mock.calls.map(([request]) => new URL(request.url).pathname),
+      ).toEqual(["/v1/session", "/v1/renew"]);
+      expect(network).toHaveBeenCalledTimes(2);
+    },
+  );
   it("uses broker-verified Moodle context when the site-info webservice is disabled", async () => {
     const broker = vi.fn(async () =>
       Response.json({

@@ -296,6 +296,74 @@ export async function browserLogin(
         };
         const existing = await capture();
         if (existing) return existing;
+        if (
+          options.platform === "moodle" &&
+          new URL(page.url()).origin === site.origin &&
+          new URL(page.url()).pathname.startsWith("/login/")
+        ) {
+          // Moodle's local password form can coexist with its SSO entry links.
+          // Enter the advertised provider before asking for provider credentials.
+          const links: string[] = await page.evaluate(() =>
+            Array.from(
+              (globalThis as any).document.querySelectorAll(
+                ".login-identityproviders a[href], a.login-identityprovider-btn[href]",
+              ),
+            )
+              .filter((link: any) => {
+                const rect = link.getBoundingClientRect();
+                const style = (globalThis as any).getComputedStyle(link);
+                return (
+                  rect.width > 0 &&
+                  rect.height > 0 &&
+                  style.display !== "none" &&
+                  style.visibility !== "hidden"
+                );
+              })
+              .map((link: any) => link.getAttribute("href")),
+          );
+          const targets = [
+            ...new Set(
+              links.flatMap((href) => {
+                try {
+                  const target = new URL(href, page.url());
+                  if (
+                    target.protocol !== "https:" ||
+                    target.username ||
+                    target.password ||
+                    !allowed.has(target.origin)
+                  )
+                    return [];
+                  if (
+                    target.origin === site.origin
+                      ? !target.pathname.startsWith("/auth/")
+                      : !(
+                          options.credentialOrigins ?? options.loginOrigins
+                        ).includes(target.origin)
+                  )
+                    return [];
+                  return [target.href];
+                } catch {
+                  return [];
+                }
+              }),
+            ),
+          ];
+          if (targets.length > 1)
+            throw new SuiteError(
+              "SSO_INTERACTION_REQUIRED",
+              "Moodle offers multiple sign-in providers. Select your provider on the platform and reconnect.",
+              409,
+            );
+          if (targets.length === 1) {
+            await page.goto(targets[0]!, {
+              waitUntil: "domcontentloaded",
+              timeout: 45000,
+            });
+            await submitSamlHandoff(page);
+            const restored = await capture();
+            if (restored) return restored;
+          }
+        }
         await autoLogin(page, options.input, options.credentialOrigins);
         await submitSamlHandoff(page);
         // Retain the deployed shared-auth session capture loop after its login handoff.

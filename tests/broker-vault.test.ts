@@ -523,6 +523,50 @@ describe("private credential vault", () => {
     expect(await f.storage.get("session:ontrack")).toBeUndefined();
     expect(await f.storage.get("refresh:ontrack")).toBeUndefined();
   });
+  it("follows a same-origin dashboard redirect during HTTP renewal and retains its rotated cookie", async () => {
+    const f = fixture(false);
+    expect(
+      (
+        await f.call("/v1/connect", {
+          platform: "moodle",
+          mode: "session",
+          input: { cookie_name: "MoodleSession", cookie_value: "valid" },
+        })
+      ).status,
+    ).toBe(200);
+    const fallback = network.getMockImplementation()!;
+    network.mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      if (
+        url.searchParams.has("info") &&
+        url.searchParams.get("info")!.includes("core_session_touch")
+      )
+        return Response.json([{ error: false, data: null }]);
+      if (url.pathname === "/my/")
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: "/my/index.php",
+            "set-cookie": "MoodleSession=redirected; Path=/; Secure",
+          },
+        });
+      if (url.pathname === "/my/index.php") {
+        expect(new Headers(init?.headers).get("cookie")).toContain(
+          "MoodleSession=redirected",
+        );
+        return fallback("https://moodle.example.edu/my/", init);
+      }
+      return fallback(input, init);
+    });
+    try {
+      expect(
+        await (await f.call("/v1/renew", { platform: "moodle" })).json(),
+      ).toMatchObject({ cookie_value: "redirected", profile_id: "1" });
+      expect(login).not.toHaveBeenCalled();
+    } finally {
+      network.mockImplementation(fallback);
+    }
+  });
   it("renews Moodle over HTTP, retains full cookie rotation and rejects stale cookie updates", async () => {
     const f = fixture(false);
     expect(

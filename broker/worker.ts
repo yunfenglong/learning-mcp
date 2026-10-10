@@ -108,7 +108,23 @@ export async function validateSession(
     );
     let dashboard: Response;
     try {
-      dashboard = await jar.fetch(`${site}/my/`);
+      let target = `${site}/my/`;
+      for (let hop = 0; ; hop++) {
+        dashboard = await jar.fetch(target);
+        const location = dashboard.headers.get("location");
+        if (![301, 302, 303, 307, 308].includes(dashboard.status) || !location)
+          break;
+        await dashboard.body?.cancel();
+        if (hop >= 5)
+          throw new SuiteError(
+            "UPSTREAM_UNAVAILABLE",
+            "Moodle exceeded its dashboard redirect limit.",
+            502,
+          );
+        // platformFetch rejects login and cross-origin redirects before they
+        // reach this loop; cookieFetch retains each allowed hop's rotations.
+        target = new URL(location, target).href;
+      }
     } catch (error) {
       if (error instanceof SuiteError) throw error;
       throw new SuiteError(

@@ -353,6 +353,58 @@ describe("shared-auth browser SSO", () => {
     await browserLogin(moodle);
     expect(f.filled).not.toHaveBeenCalled();
   });
+  it("enters Moodle's advertised SSO link before treating its local login form as an expired provider session", async () => {
+    const f = fixture({
+      url: `${site}/login/index.php`,
+      logged: false,
+      markup:
+        '<input name="username"><input type="password"><div class="login-identityproviders"><a class="login-identityprovider-btn" href="/auth/saml2/login.php">Institution login</a></div>',
+    });
+    f.page.goto.mockImplementation(async (target: string) => {
+      if (target === `${site}/auth/saml2/login.php`) {
+        f.verify();
+        f.navigate(site);
+      }
+    });
+    await expect(
+      browserLogin({
+        ...moodle,
+        cookies: [
+          {
+            name: "idx",
+            value: "saved",
+            domain: "tenant.okta.example",
+            path: "/",
+          },
+        ],
+      }),
+    ).resolves.toHaveProperty("session.cookie_name", "MoodleSession_custom");
+    expect(f.page.goto).toHaveBeenCalledWith(
+      `${site}/auth/saml2/login.php`,
+      expect.anything(),
+    );
+    expect(f.filled).not.toHaveBeenCalled();
+  });
+  it.each([
+    '<a class="login-identityprovider-btn" href="https://evil.example/auth/sso">SSO</a>',
+    '<a class="login-identityprovider-btn" href="/auth/saml2/a">A</a><a class="login-identityprovider-btn" href="/auth/saml2/b">B</a>',
+  ])(
+    "does not follow untrusted or ambiguous Moodle provider links: %s",
+    async (links) => {
+      const f = fixture({
+        url: `${site}/login/index.php`,
+        logged: false,
+        markup: '<input name="username"><input type="password">' + links,
+      });
+      await expect(browserLogin(moodle)).rejects.toMatchObject({
+        code: links.includes("evil.example")
+          ? "SSO_LOGIN_REQUIRED"
+          : "SSO_INTERACTION_REQUIRED",
+      });
+      expect(f.page.goto).toHaveBeenCalledTimes(1);
+      expect(f.filled).not.toHaveBeenCalled();
+    },
+  );
   it("rejects an expired session that needs fresh credentials", async () => {
     const f = fixture({
       url: login,

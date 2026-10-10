@@ -1,3 +1,4 @@
+import { moodleErrorAdapter } from "./moodle-errors.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   writeOperations,
@@ -193,6 +194,7 @@ export class DirectBackend implements Backend {
         },
       });
       const client = new MoodleClientCore(site, {
+        errorAdapter: moodleErrorAdapter,
         cookie: { name: c.cookie_name, value: c.cookie_value },
         pageContext: context(c),
         fetchImpl,
