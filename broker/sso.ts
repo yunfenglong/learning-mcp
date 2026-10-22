@@ -396,7 +396,34 @@ export async function browserLogin(
   }
 }
 
-export function browserSignInError(error: unknown): SuiteError | z.ZodError {
+export type SignInStage =
+  | "browser_launch"
+  | "browser_context"
+  | "provider_navigation"
+  | "provider_login"
+  | "identity_check"
+  | "mfa_selection"
+  | "mfa_verification";
+const signInStageMessages: Record<SignInStage, string> = {
+  browser_launch:
+    "The cloud browser could not start. Try signing in again shortly.",
+  browser_context:
+    "The cloud browser could not prepare an isolated sign-in session. Try again shortly.",
+  provider_navigation:
+    "The cloud browser could not open the provider sign-in page. Try again shortly.",
+  provider_login:
+    "The cloud browser could not complete the provider login step. Start a new sign-in.",
+  mfa_selection:
+    "The cloud browser could not prepare the verification method. Start a new sign-in.",
+  mfa_verification:
+    "The cloud browser could not complete the verification step. Start a new sign-in.",
+  identity_check:
+    "The cloud browser could not verify the signed-in provider account. Start a new sign-in.",
+};
+export function browserSignInError(
+  error: unknown,
+  stage?: SignInStage,
+): SuiteError | z.ZodError {
   if (error instanceof SuiteError || error instanceof z.ZodError) return error;
   const message = error instanceof Error ? error.message : "";
   if (
@@ -417,7 +444,9 @@ export function browserSignInError(error: unknown): SuiteError | z.ZodError {
     );
   return new SuiteError(
     "SSO_UNAVAILABLE",
-    "The cloud sign-in could not complete. Open the sign-in page and try again.",
+    stage
+      ? signInStageMessages[stage]
+      : "The cloud sign-in could not complete. Open the sign-in page and try again.",
     503,
   );
 }

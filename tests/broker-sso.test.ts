@@ -6,6 +6,8 @@ import { browserLogin } from "../broker/sso.ts";
 import { autoLogin } from "../broker/shared-auth.ts";
 import { parseTotp } from "../broker/totp.ts";
 import { InteractiveSignIn } from "../broker/interactive-sso.ts";
+import * as mfaPage from "../broker/mfa-page.ts";
+import * as sharedAuth from "../broker/shared-auth.ts";
 import { inspectMfa } from "../broker/mfa-page.ts";
 import { MFA_TTL_MS } from "../src/auth/mfa.ts";
 const site = "https://moodle.example.edu",
@@ -405,6 +407,48 @@ describe("shared-auth browser SSO", () => {
       expect(f.filled).not.toHaveBeenCalled();
     },
   );
+  it.each([
+    ["browser_launch", "could not start"],
+    ["browser_context", "could not prepare an isolated"],
+    ["provider_navigation", "could not open the provider sign-in page"],
+    ["provider_login", "could not complete the provider login step"],
+    ["identity_check", "could not verify the signed-in provider account"],
+  ] as const)(
+    "reports a safe interactive sign-in failure stage: %s",
+    async (stage, expectedMessage) => {
+      const f = fixture({ url: login });
+      const failure = new Error(
+        "credential-canary https://provider.example/?token=private",
+      );
+      if (stage === "browser_launch") launch.mockRejectedValueOnce(failure);
+      else if (stage === "browser_context")
+        f.browser.newContext.mockRejectedValueOnce(failure);
+      else if (stage === "provider_navigation")
+        f.page.goto.mockRejectedValueOnce(failure);
+      else if (stage === "provider_login")
+        f.page.waitForTimeout.mockRejectedValueOnce(failure);
+      else {
+        const evaluate = f.page.evaluate.getMockImplementation()!;
+        f.page.evaluate.mockImplementation(async (fn, arg) => {
+          if (fn.toString().includes("/api/v1/sessions/me")) throw failure;
+          return evaluate(fn, arg);
+        });
+      }
+      const transaction = new InteractiveSignIn();
+      try {
+        await transaction.start({} as Fetcher, login, [], {
+          username: "u",
+          password: "password-canary",
+        });
+        expect.fail("Expected the sign-in stage to fail");
+      } catch (error: any) {
+        expect(error.code).toBe("SSO_UNAVAILABLE");
+        expect(error.message).toContain(expectedMessage);
+        expect(String(error)).not.toContain("canary");
+        expect(String(error)).not.toContain("token=private");
+      }
+    },
+  );
   it("rejects an expired session that needs fresh credentials", async () => {
     const f = fixture({
       url: login,
@@ -549,6 +593,43 @@ describe("shared-auth browser SSO", () => {
 describe("interactive provider MFA", () => {
   const input = { username: "u", password: "password-canary" };
   const otp = '<input name="otp"><input type="submit">';
+  it.each([
+    ["selection", "could not prepare the verification method"],
+    ["submission", "could not complete the verification step"],
+    ["polling", "could not complete the verification step"],
+    ["polling_inspection", "could not complete the verification step"],
+  ] as const)(
+    "reports %s failures after an incomplete identity probe without exposing secrets",
+    async (phase, message) => {
+      const f = fixture({ url: login, logged: false, markup: otp });
+      const transaction = new InteractiveSignIn();
+      await expect(
+        transaction.start({} as Fetcher, login, [], input),
+      ).resolves.toMatchObject({ status: "mfa_required" });
+      const failure = new Error("password-canary token=private otp=012345");
+      if (phase === "selection")
+        vi.spyOn(mfaPage, "inspectMfa").mockRejectedValueOnce(failure);
+      else if (phase === "submission")
+        vi.spyOn(sharedAuth, "submitVerificationCode").mockRejectedValueOnce(
+          failure,
+        );
+      else if (phase === "polling_inspection") {
+        f.setSubmit(() => {});
+        const inspect = mfaPage.inspectMfa;
+        vi.spyOn(mfaPage, "inspectMfa")
+          .mockImplementationOnce(inspect)
+          .mockRejectedValueOnce(failure);
+      } else f.page.waitForTimeout.mockRejectedValueOnce(failure);
+      await expect(
+        transaction.next({ method: "sso_otp", mfa_code: "012345" }),
+      ).rejects.toMatchObject({
+        code: "SSO_UNAVAILABLE",
+        message: expect.stringContaining(message),
+      });
+      expect(f.browser.close).toHaveBeenCalledOnce();
+      expect(f.context.close).toHaveBeenCalledOnce();
+    },
+  );
   it("does not offer or click a provider push challenge", async () => {
     const f = fixture({
       url: login,
