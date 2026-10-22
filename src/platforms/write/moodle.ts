@@ -1,3 +1,4 @@
+import { parseConfirmForm } from "../../../vendor/moodle/client.js";
 import type { MoodleClientCore } from "../../../vendor/moodle/client.js";
 import type { WriteArgs } from "../../capabilities/write/index.ts";
 import { SuiteError } from "../../errors.ts";
@@ -79,6 +80,35 @@ export async function moodleWrite(
         });
       else throw error;
     }
+    // New upstream versions defer the final declaration until after a draft save.
+    // Read it before preview/confirmation; never discover new terms after uploading.
+    if (a.final && receipt.statement_pending) {
+      const response = await c.requestAbsolute(
+        `${c.baseUrl}/mod/assign/view.php?id=${activity.id}&action=submit`,
+      );
+      try {
+        const confirmation = parseConfirmForm(await response.text(), {
+          baseUrl: c.baseUrl,
+          fail: () =>
+            new SuiteError(
+              "DECLARATION_NOT_AVAILABLE",
+              "Save a draft first so Moodle can show the final submission declaration.",
+              409,
+            ),
+        });
+        receipt = {
+          ...receipt,
+          statement_pending: false,
+          statement: confirmation.statement,
+        };
+      } catch (error) {
+        if (
+          !(error instanceof SuiteError) ||
+          error.code !== "DECLARATION_NOT_AVAILABLE"
+        )
+          throw error;
+      }
+    }
     const {
       checked_at: _checked,
       time_remaining: _remaining,
@@ -102,12 +132,20 @@ export async function moodleWrite(
       },
       irreversible: Boolean(a.final),
       requirements: [
+        ...(receipt.statement_pending
+          ? ["Save a draft, then prepare a new final-submission preview."]
+          : []),
         ...(receipt.draft_stage !== true && !a.final ? ["final: true"] : []),
         ...(receipt.statement && !a.accept_statement
           ? ["accept_statement: true"]
           : []),
       ],
       warnings: [
+        ...(receipt.statement_pending
+          ? [
+              "Moodle has not yet shown the final declaration. Final submission is blocked until it can be reviewed.",
+            ]
+          : []),
         ...(receipt.group
           ? ["This changes the shared submission for all group members."]
           : []),
@@ -130,6 +168,12 @@ export async function moodleWrite(
     };
     const preview = await verifyPlan(ctx, plan);
     if (!execute) return preview;
+    if (receipt.statement_pending)
+      throw new SuiteError(
+        "DECLARATION_NOT_AVAILABLE",
+        "Save a draft first, then review a new final-submission preview with the declaration.",
+        409,
+      );
     if (receipt.draft_stage !== true && !a.final)
       throw new SuiteError(
         "FINAL_SUBMISSION_REQUIRED",

@@ -4,7 +4,7 @@ The beta exposes the educational operations in the reviewed mapping below; versi
 
 ## Baseline and method
 
-Reviewed sources: [Ed 0.8.0](https://github.com/bunizao/edstem-cli/tree/c98b3f93c53f7f94876fdab30635d248a393c5ec), [Moodle 0.10.0](https://github.com/bunizao/moodle-cli/tree/fe77b9ce07883650d5a813f4903329d2b6d9e6c5), [OnTrack 0.3.2](https://github.com/bunizao/ontrack-cli/tree/ea8806ab1b7098c2cc4b365894bcc406c3c386c2). `pnpm upstreams check` verified the bundled hashes and that these pins still matched upstream main on 2026-10-10.
+Reviewed sources: [Ed 0.8.2](https://github.com/bunizao/edstem-cli/tree/66f266ce935d2eb88d0db91e62d8d6e8256a4274), [Moodle 0.11.1](https://github.com/bunizao/moodle-cli/tree/170340706d9ad7120ad42cb2aef4e212e4f23aae), [OnTrack 0.3.2](https://github.com/bunizao/ontrack-cli/tree/75d31bb2398b5e830e4faabe3c9c262ce1dbd532). Synchronized from official main branches on 2026-10-22; deployment also runs `pnpm upstreams check`.
 
 The review compared command declarations, MCP registrations, client implementations and CLI execution behavior with the suite's input schemas, adapters, handlers, vendor exports and delivery paths. It found missing behavior even where a similarly named tool already existed. The [generated mapping](capabilities.md#audited-upstream-entry-points) lists canonical educational operations; CLI aliases share a row. Ed MCP prompts map to `ed_triage_unanswered` and `ed_teach_lesson` in `src/mcp/prompts/ed.ts`.
 
@@ -22,6 +22,12 @@ The review compared command declarations, MCP registrations, client implementati
 ## 2026-10-10 deployment compatibility review
 
 Compared the new pins with the previous reviewed commits using the official repository commit diffs. Moodle and OnTrack changed README and image assets only; all bundled runtime source hashes are unchanged. Ed 0.8.0 adds thread star/watch/vote and explicit read/unread actions, bulk thread read markers, unread filtering, local Markdown export and saved cursors, and regional CLI credential selection. These new controls are not exposed by this suite. The suite continues to use its configured Ed endpoint and existing preview-confirmed write allowlist. Existing thread projections gain star/watch/vote state; filtered-list completion and comment ownership helpers remain compatible with current callers. Existing educational operations and authentication regressions passed against the synchronized clients.
+
+## 2026-10-22 deployment compatibility review
+
+Compared the synchronized runtime sources and declarations with the prior reviewed pins. Ed and OnTrack runtime source hashes are unchanged from the 2026-10-10 beta baseline; Ed package metadata changes to 0.8.2. Moodle 0.11.1 adds calendar and messaging clients, forum posting/subscription, manual completion, assignment online text and submission removal. These new operations are not added to the suite allowlist. Existing home/due reads gain calendar data and actionable overdue tasks; activity, assignment, grades, forum and quiz parsers gain richer read results. Session cookies now respect Moodle's install path; suite connections continue to use exact user-configured origins.
+
+Moodle assignment receipts now report a structured submission state, and final declarations can remain pending until a draft exists. The beta uses the official confirmation parser to read a pending declaration before preparing a final preview, includes it in the state fingerprint and rechecks it before execution. When the confirmation page is unavailable, execution stops before uploading and requires a separate draft save followed by a new preview. New regression tests cover displayed declarations, required acceptance, changed declarations and unavailable confirmations. Runtime fixtures now reproduce Moodle's actual draft/submitted CSS state markers. Quiz changes include resumed password checks, server-based timers, multi-field answers and expired-attempt checks; the suite retains its existing confirmed operations and user-supplied answer interface. No live educational writes were used for verification.
 
 ## Remaining limits
 

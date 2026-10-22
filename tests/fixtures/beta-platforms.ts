@@ -27,7 +27,7 @@ const fields = (action: string) =>
 const statement =
   '<input type="checkbox" id="declaration" name="submissionstatement"><label for="declaration">This is my own submitted work.</label>';
 function assignment() {
-  return `<body class="course-202"><h1>Assignment 2</h1><table><tr><th>Submission status</th><td>${beta.assignmentStatus}</td></tr><tr><th>Group</th><td>${beta.group}</td></tr><tr><th>Last modified</th><td>Fixed timestamp</td></tr></table><div class="fileuploadsubmission">${[...beta.files.keys()].map((name) => `<a href="${moodle}/pluginfile.php/202/${name}">${name}</a>`).join("")}</div>${beta.draftStage ? `<form action="/mod/assign/view.php">${fields("submit")}</form>` : ""}</body>`;
+  return `<body class="course-202"><h1>Assignment 2</h1><table><tr><th>Submission status</th><td class="${beta.assignmentStatus === "Submitted for grading" ? "submissionstatussubmitted" : "submissionstatusdraft"}">${beta.assignmentStatus}</td></tr><tr><th>Group</th><td>${beta.group}</td></tr><tr><th>Last modified</th><td>Fixed timestamp</td></tr></table><div class="fileuploadsubmission">${[...beta.files.keys()].map((name) => `<a href="${moodle}/pluginfile.php/202/${name}">${name}</a>`).join("")}</div>${beta.draftStage ? `<form action="/mod/assign/view.php">${fields("submit")}</form>` : ""}</body>`;
 }
 export function quizAttemptPage(page: number) {
   const state = beta.quizAnswer ? "Answer saved" : "Not yet answered";

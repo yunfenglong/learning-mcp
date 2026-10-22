@@ -1,9 +1,9 @@
 // Source-audit baseline, independent of the vendoring lock. A new pin requires
 // reviewing the upstream public surfaces again, not merely updating this SHA.
 export const reviewedUpstreams = {
-  ed: "c98b3f93c53f7f94876fdab30635d248a393c5ec",
-  moodle: "fe77b9ce07883650d5a813f4903329d2b6d9e6c5",
-  ontrack: "ea8806ab1b7098c2cc4b365894bcc406c3c386c2",
+  ed: "66f266ce935d2eb88d0db91e62d8d6e8256a4274",
+  moodle: "170340706d9ad7120ad42cb2aef4e212e4f23aae",
+  ontrack: "75d31bb2398b5e830e4faabe3c9c262ce1dbd532",
 } as const;
 
 // Canonical upstream educational operations; CLI aliases share their MCP row.
@@ -90,6 +90,7 @@ export const upstreamCoverage = {
   fully_equivalent: false,
   live_platform_writes_verified: false,
   remaining_limits: [
+    "Moodle 0.11.1 adds calendar, messaging, forum writes, completion, online-text submissions and submission removal; no new tools are exposed for these operations. Final assignment declarations must be readable before confirmation; save a draft separately when Moodle hides them until the first save.",
     "Ed 0.8.0 thread star/watch/vote and explicit read/unread actions, bulk thread read markers, unread filtering, local export/cursors and regional credential selection are not exposed. Existing preview-confirmed Ed writes remain unchanged.",
     "Binary delivery and staged submissions remain limited to 16 MiB; OnTrack upstream permits 100 MiB uploads and 256 MiB downloads. Ed and Moodle CLI file transfers also exceed this remote bound.",
     "At most 20 staged files per operation. OnTrack tasks with more upload requirements are not supported by this channel.",

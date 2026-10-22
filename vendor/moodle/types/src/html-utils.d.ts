@@ -13,3 +13,4 @@ export interface StructuredHtmlContent {
 export declare function htmlToStructuredContent(html: string, baseUrl: string): StructuredHtmlContent;
 export declare function cleanText(value: string | null | undefined): string;
 export declare function resolveUrl(baseUrl: string, href: string): string;
+export declare function filemanagerOptions(html: string, itemid: string): Record<string, unknown> | null;

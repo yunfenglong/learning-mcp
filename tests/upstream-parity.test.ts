@@ -80,6 +80,113 @@ describe("upstream parity at execution boundaries", () => {
           expect(tools.has(name), `${platform}: ${name}`).toBe(true);
     }
   });
+  it.each([false, true])(
+    "previews a deferred Moodle declaration without accepting or posting it (accept=%s)",
+    async (accept) => {
+      const c = {
+        baseUrl: "https://moodle.example.edu",
+        getSiteInfo: vi.fn(async () => ({ userid: 7 })),
+        getCourseContents: vi.fn(async () => [
+          { activities: [{ id: 10, name: "Task", modname: "assign" }] },
+        ]),
+        getAssignment: vi.fn(async () => ({ course_id: 202 })),
+        submitAssignment: vi.fn(async (_request: { dryRun: boolean }) => ({
+          draft_stage: true,
+          statement_pending: true,
+          files: [],
+        })),
+        requestAbsolute: vi.fn(
+          async () =>
+            new Response(
+              '<form><input name="action" value="confirmsubmit"><input name="submissionstatement" id="statement"><label for="statement">My own work.</label></form>',
+            ),
+        ),
+      };
+      const args = {
+        unit: unit.key,
+        activity_id: 10,
+        final: true,
+        accept_statement: accept,
+      };
+      const ctx = context(c);
+      const preview: any = await moodleWrite("submit_assignment", args, ctx);
+      expect(preview.plan.state.statement).toBe("My own work.");
+      expect(preview.plan.state.statement_pending).toBe(false);
+      expect(preview.plan.requirements).toEqual(
+        accept ? [] : ["accept_statement: true"],
+      );
+      expect(c.submitAssignment).toHaveBeenCalledWith(
+        expect.objectContaining({ dryRun: true }),
+      );
+      if (!accept) {
+        await expect(
+          moodleWrite(
+            "submit_assignment",
+            args,
+            { ...ctx, expectedFingerprint: preview.fingerprint },
+            true,
+          ),
+        ).rejects.toMatchObject({ code: "STATEMENT_ACCEPTANCE_REQUIRED" });
+        expect(c.submitAssignment.mock.calls.every(([a]) => a.dryRun)).toBe(
+          true,
+        );
+      } else {
+        c.requestAbsolute.mockImplementation(
+          async () =>
+            new Response(
+              '<form><input name="action" value="confirmsubmit"><input name="submissionstatement" id="statement"><label for="statement">Changed declaration.</label></form>',
+            ),
+        );
+        await expect(
+          moodleWrite(
+            "submit_assignment",
+            args,
+            { ...ctx, expectedFingerprint: preview.fingerprint },
+            true,
+          ),
+        ).rejects.toMatchObject({ code: "WRITE_PREVIEW_CHANGED" });
+        expect(c.submitAssignment.mock.calls.every(([a]) => a.dryRun)).toBe(
+          true,
+        );
+      }
+    },
+  );
+  it("blocks final submission before any upload when Moodle hides the declaration until a draft save", async () => {
+    const c = {
+      baseUrl: "https://moodle.example.edu",
+      getSiteInfo: async () => ({ userid: 7 }),
+      getCourseContents: async () => [
+        { activities: [{ id: 10, name: "Task", modname: "assign" }] },
+      ],
+      getAssignment: async () => ({ course_id: 202 }),
+      submitAssignment: vi.fn(async (_request: { dryRun: boolean }) => ({
+        draft_stage: true,
+        statement_pending: true,
+        files: [],
+      })),
+      requestAbsolute: async () => new Response("Save your draft first."),
+    };
+    const args = {
+      unit: unit.key,
+      activity_id: 10,
+      final: true,
+      accept_statement: true,
+    };
+    const ctx = context(c);
+    const preview: any = await moodleWrite("submit_assignment", args, ctx);
+    expect(preview.plan.requirements).toContain(
+      "Save a draft, then prepare a new final-submission preview.",
+    );
+    await expect(
+      moodleWrite(
+        "submit_assignment",
+        args,
+        { ...ctx, expectedFingerprint: preview.fingerprint },
+        true,
+      ),
+    ).rejects.toMatchObject({ code: "DECLARATION_NOT_AVAILABLE" });
+    expect(c.submitAssignment.mock.calls.every(([a]) => a.dryRun)).toBe(true);
+  });
   it("pages all-course Ed activity without exposing unlinked courses or losing the raw continuation", async () => {
     const c = {
       fetchUser: async () => ({ user: { id: 7 } }),
