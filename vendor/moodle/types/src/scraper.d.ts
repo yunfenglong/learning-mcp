@@ -28,6 +28,7 @@ export declare function parseGradeOverviewRows(html: string, baseUrl: string): R
     url: string;
 }>;
 export declare function parseAssignmentHtml(html: string, assignmentId: number, baseUrl: string, labels?: SiteLabels): Assignment;
+export declare function assignmentCommentUrl(html: string, baseUrl: string): string | undefined;
 export declare function parseQuizHtml(html: string, quizId: number, baseUrl: string, labels?: SiteLabels): Quiz;
 export declare function parseQuizReviewHtml(html: string, attemptId: number, baseUrl: string, labels?: SiteLabels): QuizAttemptReview;
 export declare function blockText(node: HTMLElement | null | undefined): string;
@@ -44,3 +45,4 @@ export declare function parseForumGroupIdsHtml(html: string): number[];
 export declare function parseForumDiscussionGroupHtml(html: string): [number, string];
 /** The theme decides the markup every scraper reads, so a support report names it. */
 export declare function parseSiteTheme(html: string): string | undefined;
+export declare function parseMoodleConfig(html: string): Record<string, unknown>;

@@ -6,6 +6,8 @@ export interface SubmitFile {
 export interface SubmitAssignmentRequest {
     activityId: number;
     files: SubmitFile[];
+    /** HTML saved into Moodle's online-text editor. */
+    text?: string;
     /** Also submit for grading after saving. Moodle treats that as irreversible. */
     final?: boolean;
     /** Remove every file already in the submission before uploading. */
@@ -41,12 +43,16 @@ export interface SubmissionReceipt {
     /** Group members Moodle still waits for before the group's submission counts as submitted. */
     awaiting?: string[];
     submission_status: string;
+    submission_state?: "new" | "draft" | "submitted";
+    text?: string;
     grading_status: string;
     due: string;
     time_remaining: string;
     last_modified: string;
     statement?: string;
     statement_accepted?: boolean;
+    /** Final confirmation may reveal a statement only after saving the first draft. */
+    statement_pending?: boolean;
     /** Files Moodle lists in the submission (draft area for a plan, view page after a write). */
     files: SubmissionFileRow[];
     uploads: Array<{
@@ -68,6 +74,7 @@ export interface AssignSubmitDeps {
     /** The request cannot succeed as given; the caller can change it. */
     usage(message: string, hint?: string): Error;
     now?: () => Date;
+    labels?: import("./site-labels.js").SiteLabels;
 }
 type Field = [string, string];
 export interface SubmissionForm {
@@ -85,6 +92,7 @@ export interface SubmissionForm {
     maxFiles: number;
     acceptedTypes: string[] | "*";
     statement?: string;
+    onlineText?: string;
 }
 export interface ConfirmForm {
     action: string;
@@ -92,6 +100,47 @@ export interface ConfirmForm {
     statement?: string;
 }
 export declare function submitAssignmentFiles(deps: AssignSubmitDeps, request: SubmitAssignmentRequest): Promise<SubmissionReceipt>;
+export declare function removeAssignmentSubmission(deps: AssignSubmitDeps, activityId: number, dryRun?: boolean): Promise<{
+    id: number;
+    name: string;
+    unit_id?: number;
+    url: string;
+    draft_stage?: boolean;
+    group?: string;
+    awaiting?: string[];
+    submission_status: string;
+    submission_state?: "new" | "draft" | "submitted";
+    text?: string;
+    grading_status: string;
+    due: string;
+    time_remaining: string;
+    last_modified: string;
+    statement?: string;
+    statement_accepted?: boolean;
+    statement_pending?: boolean;
+    files: SubmissionFileRow[];
+    action: "planned";
+} | {
+    id: number;
+    name: string;
+    unit_id?: number;
+    url: string;
+    draft_stage?: boolean;
+    group?: string;
+    awaiting?: string[];
+    submission_status: string;
+    submission_state?: "new" | "draft" | "submitted";
+    text?: string;
+    grading_status: string;
+    due: string;
+    time_remaining: string;
+    last_modified: string;
+    statement?: string;
+    statement_accepted?: boolean;
+    statement_pending?: boolean;
+    files: SubmissionFileRow[];
+    action: "removed";
+}>;
 /**
  * A receipt that went through the intent layer has lost its empty lists and objects to
  * stripEmpty. Callers that render it need them back; a first submission has no files
@@ -100,7 +149,7 @@ export declare function submitAssignmentFiles(deps: AssignSubmitDeps, request: S
 export declare function submissionReceiptOf(value: unknown): SubmissionReceipt;
 export declare function parseSubmissionForm(html: string, deps: Pick<AssignSubmitDeps, "baseUrl" | "fail">): SubmissionForm;
 export declare function parseConfirmForm(html: string, deps: Pick<AssignSubmitDeps, "baseUrl" | "fail">): ConfirmForm;
-export declare function parseReceiptPage(html: string, activityId: number, baseUrl: string): Omit<SubmissionReceipt, "action" | "uploads" | "removed" | "limits" | "checked_at">;
+export declare function parseReceiptPage(html: string, activityId: number, baseUrl: string, labels?: import("./site-labels.js").SiteLabels): Omit<SubmissionReceipt, "action" | "uploads" | "removed" | "limits" | "checked_at">;
 /**
  * Whether saving keeps a draft: the assignment's "require students to click the submit
  * button" setting. No page states it, but Moodle's rendering gives it away:
@@ -111,7 +160,8 @@ export declare function parseReceiptPage(html: string, activityId: number, baseU
  *   locks a submitted submission when there is a draft stage.
  * Anything else is unknown.
  */
-export declare function draftStageOf(viewHtml: string, status: string, form: Pick<SubmissionForm, "statement">, confirmHtml?: string): boolean | undefined;
+export declare function draftStageOf(viewHtml: string, form: Pick<SubmissionForm, "statement">, confirmHtml?: string): boolean | undefined;
 /** Alerts and validation messages on a Moodle page, joined for an error message. */
 export declare function noticesOf(html: string): string;
+export declare function describeLimits(form: SubmissionForm): SubmissionLimits;
 export {};

@@ -1,6 +1,8 @@
 import { type SubmissionReceipt, type SubmitAssignmentRequest } from "./moodle-assign-core.js";
 import { type AnswerRequest, type AttemptFinishReceipt, type AttemptPage, type AttemptSummary, type QuizStartPlan, type StartOptions } from "./moodle-quiz-core.js";
-import type { AlertSummary, ActivityDetail, Assignment, Course, CourseGrades, Folder, ForumActivityRef, ForumDiscussion, ForumDiscussionRef, ForumSearchHit, Link, Overview, Page, PageContext, Quiz, QuizAttemptReview, Resource, Section, TodoItem, UserInfo } from "./models.js";
+import { type ForumPostReceipt } from "./moodle-forum-write-core.js";
+import type { SubmitFile } from "./moodle-assign-core.js";
+import type { AlertSummary, ActivityDetail, Assignment, CalendarEvent, Conversation, ConversationDetail, Course, CourseGrades, Folder, ForumActivityRef, ForumDiscussion, ForumDiscussionRef, ForumSearchHit, Link, Overview, Page, PageContext, Quiz, QuizAttemptReview, Resource, Section, TodoItem, UserInfo } from "./models.js";
 export interface AjaxCall {
     methodname: string;
     args?: Record<string, unknown>;
@@ -92,18 +94,77 @@ export declare class MoodleClientCore {
     resolveCourseReference(value: string): Promise<number>;
     getCourseContents(courseId: number): Promise<Section[]>;
     private fetchCourseContents;
+    private fillAvailabilityReasons;
+    private renderedActivities;
     getActivities(courseId: number): Promise<Section["activities"]>;
     getActivity(id: number): Promise<ActivityDetail & {
         type: string;
     }>;
     private readActivity;
+    completeActivity(id: number, completed?: boolean): Promise<{
+        id: number;
+        completion: number;
+    }>;
     private redirectedActivity;
     getTodo(limit?: number, days?: number, courseId?: number): Promise<TodoItem[]>;
     private readActionEvents;
+    getConversations(limit?: number, offset?: number): Promise<Conversation[]>;
+    getConversation(id: number, limit?: number, offset?: number): Promise<ConversationDetail>;
+    sendMessage(id: number, text: string, options?: {
+        user?: boolean;
+    }): Promise<{
+        id: number;
+    }>;
+    markMessagesRead(conversationId?: number): Promise<{
+        conversations: number[];
+    }>;
+    getCalendar(days?: number, courseId?: number): Promise<CalendarEvent[]>;
     getAlerts(limit?: number): Promise<AlertSummary>;
+    markAlertsRead(notificationId?: number): Promise<void>;
     getOverview(todoLimit?: number, todoDays?: number, alertsLimit?: number): Promise<Overview>;
     getCourseGrades(courseId: number): Promise<CourseGrades>;
     getAssignment(id: number): Promise<Assignment>;
+    removeAssignmentSubmission(id: number, dryRun?: boolean): Promise<{
+        id: number;
+        name: string;
+        unit_id?: number;
+        url: string;
+        draft_stage?: boolean;
+        group?: string;
+        awaiting?: string[];
+        submission_status: string;
+        submission_state?: "new" | "draft" | "submitted";
+        text?: string;
+        grading_status: string;
+        due: string;
+        time_remaining: string;
+        last_modified: string;
+        statement?: string;
+        statement_accepted?: boolean;
+        statement_pending?: boolean;
+        files: import("./moodle-assign-core.js").SubmissionFileRow[];
+        action: "planned";
+    } | {
+        id: number;
+        name: string;
+        unit_id?: number;
+        url: string;
+        draft_stage?: boolean;
+        group?: string;
+        awaiting?: string[];
+        submission_status: string;
+        submission_state?: "new" | "draft" | "submitted";
+        text?: string;
+        grading_status: string;
+        due: string;
+        time_remaining: string;
+        last_modified: string;
+        statement?: string;
+        statement_accepted?: boolean;
+        statement_pending?: boolean;
+        files: import("./moodle-assign-core.js").SubmissionFileRow[];
+        action: "removed";
+    }>;
     getQuiz(id: number): Promise<Quiz>;
     /**
      * The site's own text for the labels the page readers look for, in the session's
@@ -118,6 +179,7 @@ export declare class MoodleClientCore {
     getLink(id: number): Promise<Link>;
     getPage(id: number): Promise<Page>;
     getFolder(id: number): Promise<Folder>;
+    private getLabel;
     private getActivityPage;
     private assertActivityPage;
     requestAbsolute(url: string, init?: RequestInit, options?: {
@@ -137,6 +199,13 @@ export declare class MoodleClientCore {
     finishQuizAttempt(attemptId: number, quizId: number): Promise<AttemptFinishReceipt>;
     private quizDeps;
     getNewsForums(courseId?: number): Promise<ForumActivityRef[]>;
+    replyForumPost(postId: number, text: string, files?: SubmitFile[]): Promise<ForumPostReceipt>;
+    createForumDiscussion(forumCmid: number, subject: string, text: string): Promise<ForumPostReceipt>;
+    setForumSubscription(forumCmid: number, subscribed: boolean): Promise<{
+        forum_id: number;
+        subscribed: boolean;
+    }>;
+    private forumWriteDeps;
     getForumDiscussion(discussionId: number, options?: {
         group?: boolean;
     }): Promise<ForumDiscussion>;

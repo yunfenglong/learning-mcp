@@ -9,7 +9,7 @@ export interface QuizDeps {
     /** The request cannot succeed as given; the caller can change it. */
     usage(message: string, hint?: string): Error;
 }
-export type QuestionKind = "choice" | "multi" | "text" | "info" | "unsupported";
+export type QuestionKind = "choice" | "multi" | "text" | "fields" | "info" | "unsupported";
 export interface AttemptOption {
     /** Letter shown to the user: a, b, c... */
     key: string;
@@ -19,6 +19,15 @@ export interface AttemptOption {
     value: string;
     text: string;
     chosen: boolean;
+}
+export interface AttemptField {
+    /** The input this field posts to. */
+    name: string;
+    label?: string;
+    /** A plain text input or an editor-backed textarea. */
+    kind: "text" | "textarea";
+    /** Current value Moodle rendered for this field. */
+    answer: string;
 }
 export interface AttemptQuestion {
     slot: number;
@@ -30,6 +39,8 @@ export interface AttemptQuestion {
     text: string;
     /** The input a written or single-choice answer is posted to. */
     field?: string;
+    /** The inputs of a multi-field question, in display order. */
+    fields?: AttemptField[];
     options?: AttemptOption[];
     /** Current free-text answer, when the question takes one. */
     answer?: string;
@@ -51,6 +62,9 @@ export interface AttemptPage {
     questions: AttemptQuestion[];
     navigation: AttemptNavEntry[];
     url: string;
+    time_left_s?: number;
+    /** Estimated from the server clock when Moodle only provides a countdown. */
+    ends_at?: string;
 }
 export interface AttemptSummary {
     attempt: number;
@@ -116,7 +130,9 @@ export interface AnswerRequest {
     /** Display number of the question, as `moodle quiz show` lists it. */
     question: string;
     /** Option letters ("b", "a,c") for choice questions; the response text otherwise. */
-    value: string;
+    value?: string;
+    /** Values for a multi-field question, in display order. */
+    values?: string[];
 }
 /** Saves one answer and returns the page it lives on, re-read after the save. */
 export declare function answerQuizQuestion(deps: QuizDeps, request: AnswerRequest): Promise<AttemptPage>;
@@ -130,6 +146,6 @@ interface ParsedForm {
 interface ParsedAttemptPage extends AttemptPage {
     form: ParsedForm;
 }
-export declare function parseAttemptPage(html: string, url: string, deps: Pick<QuizDeps, "baseUrl" | "fail">): ParsedAttemptPage;
+export declare function parseAttemptPage(html: string, url: string, deps: Pick<QuizDeps, "baseUrl" | "fail">, serverDate?: string | null): ParsedAttemptPage;
 export declare function noticesOf(html: string): string;
 export {};
