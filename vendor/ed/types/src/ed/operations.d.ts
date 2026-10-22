@@ -1,12 +1,13 @@
 import type { EdClient } from "./client.js";
 import { type ThreadFilterOptions } from "./filter.js";
-import type { Course, Lesson, Thread } from "./models.js";
+import type { Comment, Course, Lesson, Thread } from "./models.js";
 export type CourseReference = number | string;
 export interface ThreadListOptions extends ThreadFilterOptions {
     courseId: CourseReference;
     limit: number;
     offset?: number;
     sort: string;
+    onIncomplete?: () => void;
 }
 export declare class EdInputError extends Error {
     constructor(message: string);
@@ -17,6 +18,11 @@ export declare class EdCourseNotFoundError extends EdInputError {
 export declare function listThreads(client: EdClient, options: ThreadListOptions): Promise<Thread[]>;
 /** Parse a --since / since value into a cutoff, reporting failures as usage errors. */
 export declare function parseSinceValue(value: string): Date;
+/**
+ * On a newest-first page, an older last thread means every later page is older too.
+ * Ed keeps pinned threads first whatever their date, so they never end the walk.
+ */
+export declare function passedSince(threads: Thread[], since: Date | undefined): boolean;
 export declare function resolveThread(client: EdClient, reference: string): Promise<Thread>;
 /** Ed replies to a question thread default to an answer; other threads take comments. */
 export declare function defaultReplyType(threadType: string): "answer" | "comment";
@@ -24,7 +30,7 @@ export declare function defaultReplyType(threadType: string): "answer" | "commen
  * Ed accepts a reply under any comment ID, so a mismatched ID would post to another
  * thread while we report the requested one.
  */
-export declare function assertCommentInThread(thread: Thread, commentId: number): void;
+export declare function assertCommentInThread(thread: Thread, commentId: number): Comment;
 export interface LessonListOptions {
     lessonType?: string;
     module?: string;

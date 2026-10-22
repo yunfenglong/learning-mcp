@@ -111,6 +111,7 @@ export interface Comment {
     type: string;
     userId: number;
     voteCount: number;
+    vote: number;
     isEndorsed: boolean;
     isAnonymous: boolean;
     isResolved: boolean;
@@ -140,6 +141,9 @@ export interface Thread {
     isAnonymous: boolean;
     isLocked: boolean;
     isSeen: boolean;
+    isStarred: boolean;
+    isWatched: boolean | null;
+    vote: number;
     createdAt: string;
     updatedAt: string;
     author: User | null;

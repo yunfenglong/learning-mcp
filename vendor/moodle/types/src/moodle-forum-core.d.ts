@@ -16,7 +16,9 @@ export declare class ForumModule {
     private readonly groupResolved;
     private readonly forumDiscussionRefsCache;
     private readonly forumViewCache;
+    private readonly forumCmids;
     constructor(options: ForumAdapter);
+    clearCache(): void;
     getForumDiscussion(discussionId: number, options?: {
         group?: boolean;
     }): Promise<ForumDiscussion>;

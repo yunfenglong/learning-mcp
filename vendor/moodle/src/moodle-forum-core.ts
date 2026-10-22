@@ -29,6 +29,9 @@ export class ForumModule {
   // The forum view page answers both "what type is this forum" and "which
   // discussions does it list"; load it once per forum.
   private readonly forumViewCache = new Map<number, Promise<string>>();
+  // Instance id -> module id. The pair never changes, so it survives clearCache and
+  // lets every later thread in the same forum skip the discussion page.
+  private readonly forumCmids = new Map<number, number>();
 
   constructor(options: ForumAdapter) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -38,13 +41,21 @@ export class ForumModule {
     this.loadCourseContents = options.getCourseContents;
   }
 
-  // The posts service does not name the discussion's group; that costs a page load,
-  // so callers that never show groups (announcements, thread pages) opt out.
+  clearCache(): void {
+    this.forumDiscussionCache.clear();
+    this.forumDiscussionRefsCache.clear();
+    this.forumViewCache.clear();
+    this.groupResolved.clear();
+  }
+
+  // The posts service returns an instance id; the discussion page carries the module
+  // id accepted by every public forum command, as well as optional group details.
+  // mod_forum_get_forums_by_courses would map the two, but stock Moodle keeps it off AJAX.
   async getForumDiscussion(discussionId: number, options: { group?: boolean } = {}): Promise<ForumDiscussion> {
     const wantGroup = options.group !== false;
     const cached = this.forumDiscussionCache.get(discussionId);
     if (cached) {
-      if (wantGroup && cached.group_id <= 0 && !this.groupResolved.has(discussionId)) await this.resolveGroup(cached);
+      if ((!cached.forum_id || (wantGroup && cached.group_id <= 0)) && !this.groupResolved.has(discussionId)) await this.resolveGroup(cached);
       return cached;
     }
 
@@ -56,7 +67,10 @@ export class ForumModule {
         includeinlineattachments: true,
       });
       const discussion = parseForumDiscussion(data, discussionId, this.baseUrl);
-      if (wantGroup && discussion.group_id <= 0) await this.resolveGroup(discussion);
+      const instanceId = Number((data as { forumid?: unknown } | null)?.forumid) || 0;
+      discussion.forum_id ||= this.forumCmids.get(instanceId) ?? 0;
+      if (!discussion.forum_id || (wantGroup && discussion.group_id <= 0)) await this.resolveGroup(discussion);
+      if (instanceId && discussion.forum_id) this.forumCmids.set(instanceId, discussion.forum_id);
       this.forumDiscussionCache.set(discussionId, discussion);
       return discussion;
     } catch (error) {
@@ -76,6 +90,7 @@ export class ForumModule {
     this.groupResolved.add(discussion.id);
     const html = await this.loadPage(FORUM_DISCUSS_PATH, { d: discussion.id }).catch(() => "");
     if (!html) return;
+    discussion.forum_id = parseForumViewCmidFromDiscussionHtml(html) ?? 0;
     const [groupId, groupName] = parseForumDiscussionGroupHtml(html);
     discussion.group_id = groupId;
     discussion.group_name = groupName;

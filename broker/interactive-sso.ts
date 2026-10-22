@@ -18,7 +18,12 @@ import { scopedCookies } from "../src/platforms/session-cookies.ts";
 import { autoLogin, submitVerificationCode } from "./shared-auth.ts";
 import { discoverMfa, inspectMfa } from "./mfa-page.ts";
 import { generateTotp, parseTotp } from "./totp.ts";
-import { bounded, browserSignInError, oktaIdentitySchema } from "./sso.ts";
+import {
+  bounded,
+  browserSignInError,
+  oktaIdentitySchema,
+  type SignInStage,
+} from "./sso.ts";
 import { z } from "zod";
 
 export interface InteractiveInput {
@@ -45,6 +50,7 @@ export class InteractiveSignIn {
   private expires = 0;
   private errors = 0;
   private methods: ProviderMfaMethod[] = [];
+  private stage: SignInStage = "browser_launch";
 
   async close() {
     const context = this.context,
@@ -60,6 +66,8 @@ export class InteractiveSignIn {
   }
   private async capture(): Promise<CompletedSignIn | undefined> {
     if (!this.page || new URL(this.page.url()).origin !== this.provider) return;
+    const previousStage = this.stage;
+    this.stage = "identity_check";
     const value = await this.page.evaluate(async () => {
       try {
         const response = await (globalThis.fetch as any)(
@@ -78,7 +86,10 @@ export class InteractiveSignIn {
       }
     });
     const identity = oktaIdentitySchema.safeParse(value);
-    if (!identity.success) return;
+    if (!identity.success) {
+      this.stage = previousStage;
+      return;
+    }
     const input = this.input!;
     return {
       provider: this.provider,
@@ -118,7 +129,7 @@ export class InteractiveSignIn {
       );
     } catch (error) {
       await this.close();
-      throw browserSignInError(error);
+      throw browserSignInError(error, this.stage);
     }
   }
   private async begin(
@@ -143,6 +154,7 @@ export class InteractiveSignIn {
     this.errors = 0;
     this.methods = [];
     try {
+      this.stage = "browser_launch";
       const pending = launch(binding, {
         keep_alive: MFA_TTL_MS,
         guardrails: {
@@ -156,6 +168,7 @@ export class InteractiveSignIn {
         () => {},
       );
       this.browser = await bounded(pending, 20000);
+      this.stage = "browser_context";
       this.context = await this.browser.newContext({ serviceWorkers: "block" });
       await this.context.route("**/*", async (route) => {
         const u = new URL(route.request().url());
@@ -170,16 +183,20 @@ export class InteractiveSignIn {
       });
       this.page = await this.context.newPage();
       this.page.setDefaultTimeout(5000);
+      this.stage = "provider_navigation";
       await this.page.goto(`${provider}/login/login.htm`, {
         waitUntil: "domcontentloaded",
         timeout: 20000,
       });
+      this.stage = "provider_login";
       await autoLogin(
         this.page,
         { username: input.username, password: input.password },
         [provider],
         async (page) => {
+          this.stage = "mfa_selection";
           const mfa = await discoverMfa(page);
+          this.stage = "provider_login";
           this.methods = mfa.methods;
           return !!mfa.methods.length;
         },
@@ -205,7 +222,7 @@ export class InteractiveSignIn {
       return this.challenge();
     } catch (error) {
       await this.close();
-      throw browserSignInError(error);
+      throw browserSignInError(error, this.stage);
     }
   }
   async next(value: unknown): Promise<MfaChallenge | CompletedSignIn> {
@@ -213,7 +230,7 @@ export class InteractiveSignIn {
       return await bounded(this.advance(value), 45000);
     } catch (error) {
       await this.close();
-      throw browserSignInError(error);
+      throw browserSignInError(error, this.stage);
     }
   }
   private async advance(
@@ -258,6 +275,7 @@ export class InteractiveSignIn {
         : data.mfa_code
           ? validateOtp(data.mfa_code)
           : undefined;
+      this.stage = "mfa_selection";
       let state = await inspectMfa(page);
       if (state.active !== method || !state.hasOtp) {
         if (!state.methods.includes(method)) state = await discoverMfa(page);
@@ -274,6 +292,7 @@ export class InteractiveSignIn {
             409,
           ),
         );
+      this.stage = "mfa_verification";
       await submitVerificationCode(page, code);
       for (let i = 0; i < 6; i++) {
         await page.waitForTimeout(1000);
@@ -302,6 +321,7 @@ export class InteractiveSignIn {
       ) {
         if (++this.errors < MFA_MAX_ERRORS) {
           // Rediscover from the live page; don't retain a rejected secret or code.
+          this.stage = "mfa_selection";
           this.methods = (await discoverMfa(page)).methods;
           return this.challenge(error);
         }

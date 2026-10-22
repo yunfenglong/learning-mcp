@@ -16,6 +16,7 @@ export interface SlideAnswerResult {
 export interface SlideSubmitResult {
     submitted: boolean;
 }
+export type ThreadAction = "star" | "unstar" | "watch" | "unwatch" | "upvote" | "unvote" | "mark-read" | "mark-unread";
 export interface ThreadCreateInput {
     anonymous?: boolean;
     category?: string;
@@ -78,6 +79,10 @@ export declare class EdClient {
     }>;
     fetchSlideQuestionResponses(slideId: number): Promise<LessonQuestionResponse[]>;
     fetchSlideQuestions(slideId: number): Promise<LessonQuestion[]>;
+    threadAction(threadId: number, action: ThreadAction, options?: {
+        commentId?: number;
+    }): Promise<void>;
+    markAllThreadsRead(courseId: number): Promise<void>;
     fetchThread(threadId: number): Promise<Thread>;
     fetchThreads(courseId: number, options?: {
         limit?: number;

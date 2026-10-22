@@ -1,4 +1,4 @@
-export declare function fetchWithSession(input: string, init: RequestInit, moodleOrigin: string, cookie: {
+export declare function fetchWithSession(input: string, init: RequestInit, siteRoot: string, cookie: {
     name: string;
     value: string;
 }, fetchImpl?: typeof fetch): Promise<Response>;

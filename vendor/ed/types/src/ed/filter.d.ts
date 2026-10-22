@@ -1,6 +1,7 @@
 import type { Thread } from "./models.js";
 export interface ThreadFilterOptions {
     answered?: boolean;
+    unread?: boolean;
     category?: string;
     query?: string;
     since?: Date;

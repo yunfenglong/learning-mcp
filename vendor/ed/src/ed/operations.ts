@@ -18,6 +18,7 @@ export interface ThreadListOptions extends ThreadFilterOptions {
   limit: number;
   offset?: number;
   sort: string;
+  onIncomplete?: () => void;
 }
 
 export class EdInputError extends Error {
@@ -58,12 +59,13 @@ export async function listThreads(client: EdClient, options: ThreadListOptions):
     });
     matches.push(...filterThreads(threads, options));
     if (matches.length >= options.limit || threads.length < pageSize) {
-      break;
+      return matches.slice(0, options.limit);
     }
     if (options.sort === "new" && passedSince(threads, options.since)) {
-      break;
+      return matches.slice(0, options.limit);
     }
   }
+  options.onIncomplete?.();
   return matches.slice(0, options.limit);
 }
 
@@ -80,7 +82,7 @@ export function parseSinceValue(value: string): Date {
  * On a newest-first page, an older last thread means every later page is older too.
  * Ed keeps pinned threads first whatever their date, so they never end the walk.
  */
-function passedSince(threads: Thread[], since: Date | undefined): boolean {
+export function passedSince(threads: Thread[], since: Date | undefined): boolean {
   const oldest = threads.filter((thread) => !thread.isPinned).at(-1);
   return Boolean(since && oldest && isThreadOlderThan(oldest, since));
 }
@@ -111,16 +113,21 @@ export function defaultReplyType(threadType: string): "answer" | "comment" {
  * Ed accepts a reply under any comment ID, so a mismatched ID would post to another
  * thread while we report the requested one.
  */
-export function assertCommentInThread(thread: Thread, commentId: number): void {
-  if (!containsComment(thread.answers, commentId) && !containsComment(thread.comments, commentId)) {
+export function assertCommentInThread(thread: Thread, commentId: number): Comment {
+  const comment = findComment([...thread.answers, ...thread.comments], commentId);
+  if (!comment) {
     throw new EdInputError(`Comment ${commentId} does not belong to thread ${thread.id}.`);
   }
+  return comment;
 }
 
-function containsComment(comments: Comment[], commentId: number): boolean {
-  return comments.some(
-    (comment) => comment.id === commentId || containsComment(comment.comments, commentId)
-  );
+function findComment(comments: Comment[], commentId: number): Comment | undefined {
+  for (const comment of comments) {
+    if (comment.id === commentId) return comment;
+    const nested = findComment(comment.comments, commentId);
+    if (nested) return nested;
+  }
+  return undefined;
 }
 
 export interface LessonListOptions {

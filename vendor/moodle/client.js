@@ -1,262 +1,3 @@
-// src/resolve.ts
-var ReferenceError = class extends Error {
-  constructor(code, message, candidates) {
-    super(message);
-    this.code = code;
-    this.candidates = candidates;
-    this.name = "ReferenceError";
-  }
-  code;
-  candidates;
-  hint = "Run `moodle units` to see this site's names, or refine the reference.";
-};
-var normalize = (value) => value.normalize("NFKC").toLocaleLowerCase().trim().replace(/\s+/gu, " ");
-var words = (value) => normalize(value).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-var tokensMatch = (text, query) => normalize(query).split(" ").every((token) => tokenMatches(normalize(text), token));
-function tokenMatches(text, token) {
-  if (/^\d+$/u.test(token)) return (text.match(/\b\d+\b/gu) ?? []).some((n) => Number(n) === Number(token));
-  if (text.includes(token)) return true;
-  const short = /^(\p{L}+)(\d+)$/u.exec(token);
-  return short !== null && new RegExp(`(?:^|[^\\p{L}])${short[1]}\\p{L}*[\\s:.#-]*0*${Number(short[2])}(?!\\d)`, "u").test(text);
-}
-var named = (course, raw) => [course.shortname, course.fullname].some((name) => normalize(name) === raw);
-function resolveUnit(value, courses) {
-  if (typeof value === "number") {
-    const byId = courses.find((c) => c.id === value);
-    if (byId) return byId;
-    throw unitError("not_found", value, courses);
-  }
-  const raw = normalize(String(value));
-  const exact = courses.filter((c) => named(c, raw));
-  if (raw && exact.length === 1) return exact[0];
-  let id = /^\d+$/u.test(raw) ? Number(raw) : void 0;
-  try {
-    const url = new URL(String(value));
-    if (url.pathname.endsWith("/course/view.php")) id = Number(url.searchParams.get("id"));
-  } catch {
-  }
-  const course = courses.find((c) => c.id === id);
-  if (course) return course;
-  const matches = exact.length ? exact : courses.filter((c) => [c.shortname, c.fullname].some((name) => normalize(name).includes(raw)));
-  if (raw && matches.length === 1) return matches[0];
-  if (raw && matches.length > 1) throw unitError("ambiguous", value, matches);
-  throw unitError("not_found", value, courses);
-}
-function unitError(code, ref, courses) {
-  const candidates = courses.map((c) => ({ id: c.id, name: c.fullname || c.shortname, code: c.shortname || void 0 }));
-  return new ReferenceError(code, `${code === "ambiguous" ? "Several units match" : "No unit matches"} '${ref}'. Your units: ${courses.map((c) => c.shortname || c.fullname).join(", ")}.`, candidates);
-}
-function resolveSection(ref, sections) {
-  const raw = normalize(String(ref));
-  const labels = sectionLabels(sections);
-  const label = (s) => labels.get(s.id) ?? s.name;
-  const numbers = raw.match(/\b\d+\b/gu) ?? [];
-  let matches = sections.filter((s) => numbers.length === 1 ? (label(s).match(/\b\d+\b/gu) ?? []).some((n) => Number(n) === Number(numbers[0])) && (raw === numbers[0] || tokensMatch(label(s), raw)) : normalize(label(s)).includes(raw));
-  const named2 = matches.filter((s) => tokensMatch(s.name, raw));
-  if (matches.length > 1 && named2.length) matches = named2;
-  if (matches.length === 1) return { section: matches[0] };
-  if (matches.length > 1) throw new ReferenceError("ambiguous", `Several sections match '${ref}'.`, matches.map((s) => ({ id: s.id, name: label(s) })));
-  if (/^\d+$/u.test(raw)) {
-    const positional = sections.filter((s) => s.section === Number(raw));
-    if (positional.length === 1) return { section: positional[0], positional: true };
-  }
-  throw new ReferenceError("not_found", `No section matches '${ref}'.`, sections.map((s) => ({ id: s.id, name: s.name })));
-}
-function searchSections(course, sections, query) {
-  const rows = [];
-  const labels = sectionLabels(sections);
-  for (const s of sections) {
-    const label = labels.get(s.id) ?? s.name;
-    const context = { unit_id: course.id, unit_code: course.shortname || course.fullname, section_id: s.id, section: label };
-    if (tokensMatch(s.name, query)) rows.push({ ...context, id: s.id, name: s.name, type: "section", score: words(s.name) === words(query) ? 100 : 70 });
-    for (const a of s.activities) {
-      if (!tokensMatch(`${a.name} ${label}`, query)) continue;
-      const chrome = ["label", "cms"].includes(a.modname);
-      const score = chrome ? 1 : words(a.name) === words(query) ? 100 : tokensMatch(a.name, query) ? 80 : 60;
-      rows.push({ ...context, id: a.id, name: a.name, type: a.modname, score, activity: a });
-    }
-  }
-  const useful = rows.filter((r) => r.score > 1);
-  return (useful.length ? useful : rows).sort((a, b) => b.score - a.score || a.id - b.id);
-}
-function parentsOf(sections) {
-  const byId = new Map(sections.map((s) => [s.id, s]));
-  const parents = /* @__PURE__ */ new Map();
-  if (sections.some((s) => s.parent !== void 0)) {
-    const holders = new Set(sections.map((s) => s.parent));
-    const headings = new Set(sections.filter((s) => holders.has(s.id)).map((s) => s.parent));
-    for (const s of sections) {
-      const parent = s.parent === void 0 || headings.has(s.parent) ? void 0 : byId.get(s.parent);
-      if (parent) parents.set(s.id, parent);
-    }
-    return parents;
-  }
-  const counts = /* @__PURE__ */ new Map();
-  for (const s of sections) counts.set(s.name, (counts.get(s.name) ?? 0) + 1);
-  let last;
-  for (const s of sections) {
-    if ((counts.get(s.name) ?? 0) < 2) last = s;
-    else if (last) parents.set(s.id, last);
-  }
-  return parents;
-}
-function sectionLabels(sections) {
-  const parents = parentsOf(sections);
-  const name = (s) => s.name || `Section ${s.section}`;
-  return new Map(sections.map((s) => {
-    const parent = parents.get(s.id);
-    return [s.id, parent ? `${name(parent)} \u203A ${name(s)}` : name(s)];
-  }));
-}
-function sectionTree(sections) {
-  const parents = parentsOf(sections);
-  const tree = sections.filter((s) => !parents.has(s.id)).map((section) => ({ section, children: [] }));
-  const nodes = new Map(tree.map((node) => [node.section.id, node]));
-  for (const s of sections) nodes.get(parents.get(s.id)?.id ?? NaN)?.children.push(s);
-  return tree;
-}
-function withChildSections(section, sections) {
-  const node = sectionTree(sections).find((n) => n.section.id === section.id);
-  return node ? [node.section, ...node.children] : [section];
-}
-
-// src/session-fetch.ts
-var MAX_REDIRECTS = 5;
-var REQUEST_TIMEOUT_MS = 3e4;
-var REDIRECT_STATUSES = /* @__PURE__ */ new Set([301, 302, 303, 307, 308]);
-async function fetchWithSession(input, init, moodleOrigin, cookie, fetchImpl = (url, options) => fetch(url, options)) {
-  let url = new URL(input);
-  const initialOrigin = url.origin;
-  const trustedOrigin = new URL(moodleOrigin).origin;
-  let method = (init.method ?? "GET").toUpperCase();
-  let body = init.body;
-  const headers = new Headers(init.headers);
-  const deadline = new AbortController();
-  let timer;
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
-    timer.unref?.();
-  };
-  const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
-  for (let hop = 0; ; hop += 1) {
-    signal.throwIfAborted();
-    arm();
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
-      throw new Error("The request destination is not allowed.");
-    }
-    headers.delete("cookie");
-    if (url.origin === trustedOrigin) headers.set("cookie", `${cookie.name}=${cookie.value}`);
-    if (url.origin !== initialOrigin) {
-      headers.delete("authorization");
-      headers.delete("proxy-authorization");
-    }
-    let response;
-    try {
-      response = await fetchImpl(url.toString(), { ...init, method, body, headers: Object.fromEntries(headers), signal, redirect: "manual" });
-    } catch (error) {
-      clearTimeout(timer);
-      throw requestFailure(error, url, deadline.signal);
-    }
-    if (!REDIRECT_STATUSES.has(response.status) || !response.headers.get("location")) return watchBody(response, arm, () => clearTimeout(timer));
-    const location = response.headers.get("location");
-    await response.body?.cancel();
-    if (hop >= MAX_REDIRECTS) throw new Error("The request exceeded its redirect limit.");
-    const next = new URL(location, url);
-    if (url.protocol === "https:" && next.protocol !== "https:") {
-      throw new Error("The request refused an insecure redirect.");
-    }
-    if (next.origin !== url.origin && method !== "GET" && method !== "HEAD") {
-      throw new Error("The request refused a cross-origin form redirect.");
-    }
-    if (response.status === 303 && method !== "HEAD" || [301, 302].includes(response.status) && method === "POST") {
-      method = "GET";
-      body = void 0;
-      for (const header of ["content-type", "content-length", "content-encoding", "content-language", "content-location"]) headers.delete(header);
-    }
-    url = next;
-  }
-}
-function watchBody(response, arm, done) {
-  if (!response.body) {
-    done();
-    return response;
-  }
-  arm();
-  const body = response.body.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      arm();
-      controller.enqueue(chunk);
-    },
-    flush: done
-  }));
-  const watched = new Response(body, response);
-  Object.defineProperty(watched, "url", { value: response.url });
-  return watched;
-}
-var RequestFailed = class extends Error {
-  host;
-  timedOut;
-  constructor(host, timedOut, cause) {
-    super(timedOut ? `${host} did not respond within ${REQUEST_TIMEOUT_MS / 1e3}s.` : `Could not reach ${host}: ${cause}`);
-    this.name = "RequestFailed";
-    this.host = host;
-    this.timedOut = timedOut;
-  }
-};
-function requestFailure(error, url, deadline) {
-  if (deadline.aborted) {
-    return new RequestFailed(url.host, true);
-  }
-  if (!(error instanceof Error)) {
-    return error;
-  }
-  return new RequestFailed(url.host, false, error.cause instanceof Error ? error.cause.message : error.message);
-}
-
-// src/moodle-client-core.ts
-import { z } from "zod";
-
-// src/constants.ts
-var PACKAGE_NAME = "moodle-cli";
-var NPM_LATEST_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
-var AJAX_SERVICE_PATH = "/lib/ajax/service.php";
-var DASHBOARD_PATH = "/my/";
-var COURSE_PATH = "/course/view.php";
-var ASSIGN_VIEW_PATH = "/mod/assign/view.php";
-var QUIZ_VIEW_PATH = "/mod/quiz/view.php";
-var QUIZ_REVIEW_PATH = "/mod/quiz/review.php";
-var QUIZ_START_PATH = "/mod/quiz/startattempt.php";
-var QUIZ_ATTEMPT_PATH = "/mod/quiz/attempt.php";
-var QUIZ_SUMMARY_PATH = "/mod/quiz/summary.php";
-var QUIZ_PROCESS_PATH = "/mod/quiz/processattempt.php";
-var RESOURCE_VIEW_PATH = "/mod/resource/view.php";
-var URL_VIEW_PATH = "/mod/url/view.php";
-var PAGE_VIEW_PATH = "/mod/page/view.php";
-var FOLDER_VIEW_PATH = "/mod/folder/view.php";
-var FORUM_DISCUSS_PATH = "/mod/forum/discuss.php";
-var FORUM_VIEW_PATH = "/mod/forum/view.php";
-var GRADE_REPORT_INDEX_PATH = "/grade/report/index.php";
-var GRADE_REPORT_OVERVIEW_PATH = "/grade/report/overview/index.php";
-var GRADE_REPORT_PATH = "/grade/report/user/index.php";
-var FUNC_GET_SITE_INFO = "core_webservice_get_site_info";
-var FUNC_GET_COURSES = "core_enrol_get_users_courses";
-var FUNC_GET_COURSES_BY_TIMELINE = "core_course_get_enrolled_courses_by_timeline_classification";
-var FUNC_GET_COURSE_CONTENTS = "core_course_get_contents";
-var FUNC_GET_COURSE_FORMAT_STATE = "core_courseformat_get_state";
-var FUNC_GET_COURSE_MODULE = "core_course_get_course_module";
-var FUNC_GET_ACTION_EVENTS = "core_calendar_get_action_events_by_timesort";
-var FUNC_GET_ACTION_EVENTS_BY_COURSE = "core_calendar_get_action_events_by_course";
-var FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notifications";
-var FUNC_GET_CONVERSATION_COUNTS = "core_message_get_conversation_counts";
-var FUNC_GET_UNREAD_CONVERSATION_COUNTS = "core_message_get_unread_conversation_counts";
-var FUNC_GET_DISCUSSION_POSTS = "mod_forum_get_discussion_posts";
-var FUNC_GET_STRINGS = "core_get_strings";
-var DEFAULT_SESSION_CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
-
-// src/moodle-assign-core.ts
-import { parse as parse3 } from "node-html-parser";
-
 // src/html-utils.ts
 import { parse } from "node-html-parser";
 function htmlToStructuredContent(html, baseUrl) {
@@ -290,7 +31,7 @@ function htmlToStructuredContent(html, baseUrl) {
   }
   for (const table of root.querySelectorAll("table")) {
     const headers = [];
-    const rows = [];
+    const rows3 = [];
     for (const row of table.querySelectorAll("tr")) {
       const headerCells = row.querySelectorAll("th");
       const dataCells = row.querySelectorAll("td");
@@ -299,15 +40,19 @@ function htmlToStructuredContent(html, baseUrl) {
         continue;
       }
       const values = cells.map((cell) => cleanText(cell.textContent));
-      if (headerCells.length && !headers.length && !rows.length) {
+      if (headerCells.length && !headers.length && !rows3.length) {
         headers.push(...values);
       } else {
-        rows.push(values);
+        rows3.push(values);
       }
     }
-    if (headers.length || rows.length) {
-      tables.push({ headers, rows });
+    if (headers.length || rows3.length) {
+      tables.push({ headers, rows: rows3 });
     }
+  }
+  for (const block of root.querySelectorAll("p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre, tr")) {
+    block.insertAdjacentHTML("afterbegin", "\n");
+    block.insertAdjacentHTML("beforeend", "\n");
   }
   const text = root.textContent.split(/\r?\n/).map((line) => cleanText(line)).filter(Boolean).join("\n");
   return { text, image_urls, links, tables };
@@ -325,63 +70,38 @@ function resolveUrl(baseUrl, href) {
 function decodeHtml(value) {
   return value.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
-
-// src/site-labels.ts
-var LABEL_STRINGS = {
-  "Submission status": [["mod_assign", "submissionstatus"], ["mod_assign", "submissionstatusheading"]],
-  "Grading status": [["mod_assign", "gradingstatus"]],
-  "Time remaining": [["mod_assign", "timeremaining"]],
-  "Grade": [["core", "gradenoun"], ["core_grades", "gradenoun"], ["mod_assign", "gradenoun"], ["mod_quiz", "grade"]],
-  "Graded on": [["mod_assign", "gradedon"]],
-  "Graded by": [["mod_assign", "gradedby"]],
-  "Feedback comments": [["assignfeedback_comments", "pluginname"]],
-  "Due:": [["mod_assign", "activitydate:submissionsdue"], ["core_course", "activitydate:due"]],
-  "Opens:": [["core_course", "activitydate:opens"], ["mod_assign", "activitydate:submissionsopen"]],
-  "Closes:": [["core_course", "activitydate:closes"]],
-  "Attempts allowed:": [["mod_quiz", "attemptsallowed"]],
-  "Time limit:": [["mod_quiz", "timelimit"]],
-  "Status": [["mod_quiz", "attemptstate"], ["core", "status"]],
-  "Started": [["mod_quiz", "startedon"]],
-  "Completed": [["mod_quiz", "completedon"]],
-  "Duration": [["mod_quiz", "attemptduration"]],
-  "Marks": [["mod_quiz", "marks"]]
-};
-function labelRequests() {
-  const seen = /* @__PURE__ */ new Set();
-  const requests = [];
-  for (const refs of Object.values(LABEL_STRINGS)) {
-    for (const [component, stringid] of refs) {
-      const key = `${component}/${stringid}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        requests.push({ stringid, component });
-      }
+function filemanagerOptions(html, itemid) {
+  const pattern = /M\.form_filemanager\.init\(\s*Y\s*,\s*/gu;
+  let match;
+  while (match = pattern.exec(html)) {
+    const json = balancedObject(html, match.index + match[0].length);
+    if (!json) continue;
+    try {
+      const options = JSON.parse(json);
+      if (typeof options === "object" && options !== null && !Array.isArray(options) && String(options.itemid) === itemid) return options;
+    } catch {
     }
   }
-  return requests;
+  return null;
 }
-function siteLabelsFrom(data) {
-  const texts = /* @__PURE__ */ new Map();
-  for (const item of Array.isArray(data) ? data : []) {
-    const { component, stringid, string } = item ?? {};
-    if (typeof string === "string" && string && !/^\[\[.*\]\]$/u.test(string)) texts.set(`${component}/${stringid}`, string);
+function balancedObject(text, start) {
+  if (text[start] !== "{") return null;
+  let depth = 0;
+  let quoted = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char === "\\") index += 1;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
   }
-  const labels = {};
-  for (const [label, refs] of Object.entries(LABEL_STRINGS)) {
-    const found = [...new Set(refs.map(([component, id]) => texts.get(`${component}/${id}`)).filter((text) => Boolean(text)))];
-    if (found.length) labels[label] = found;
-  }
-  return labels;
+  return null;
 }
-function labelKey(text) {
-  return text.normalize("NFKC").replace(/\s+/gu, " ").trim().replace(/\s*[:：]$/u, "").toLowerCase();
-}
-function labelTexts(label, labels) {
-  return [label, ...labels?.[label] ?? []];
-}
-
-// src/scraper.ts
-import { parse as parse2 } from "node-html-parser";
 
 // src/parsers.ts
 function schema(parser) {
@@ -465,6 +185,7 @@ function parseActivity(value) {
     url: stringValue(data.url),
     visible: booleanValue(data.visible, true),
     description: stringValue(data.description),
+    ...data.uservisible === false ? { available: false, availability_reason: htmlText(data.availabilityinfo, "") } : {},
     ...data.completiondata && typeof data.completiondata === "object" ? { completion: numberValue(asRecord(data.completiondata).state) } : {},
     ...Array.isArray(data.contents) ? { file_entries: data.contents.filter((f) => asRecord(f).fileurl).map((f) => ({ name: stringValue(asRecord(f).filename), url: stringValue(asRecord(f).fileurl), requires_authentication: true })) } : {}
   };
@@ -500,6 +221,7 @@ function parseCourseFormatState(value, baseUrl) {
       url: stringValue(data.url) ? resolveUrl(baseUrl, stringValue(data.url)) : "",
       visible: booleanValue(data.visible, true) && booleanValue(data.uservisible, true) && !booleanValue(data.stealth),
       description: htmlText(data.content ?? data.description, baseUrl),
+      ...data.uservisible === false ? { available: false, availability_reason: htmlText(data.availableinfo ?? data.availabilityinfo, baseUrl) } : {},
       ...data.completionstate !== void 0 && data.completionstate !== null ? { completion: numberValue(data.completionstate) } : {}
     };
     activities.set(String(id), activity);
@@ -556,6 +278,7 @@ function parseAlertNotification(value) {
     id: numberValue(data.id),
     subject: stringValue(data.subject),
     short_subject: stringValue(data.shortenedsubject),
+    body: data.fullmessagehtml || data.text ? htmlToStructuredContent(stringValue(data.fullmessagehtml || data.text), stringValue(data.contexturl)).text : stringValue(data.fullmessage || data.smallmessage),
     event_type: stringValue(data.eventtype),
     component: stringValue(data.component),
     created_at: numberValue(data.timecreated),
@@ -610,6 +333,10 @@ function parseForumPost(value, baseUrl = "") {
     image_urls: structured.image_urls,
     links: structured.links,
     tables: structured.tables,
+    attachments: asArray(data.attachments).map((item) => {
+      const file = asRecord(item);
+      return { name: stringValue(file.filename), size: numberValue(file.filesize), url: resolveUrl(baseUrl, stringValue(file.fileurl || file.url)) };
+    }),
     author: parseForumPostAuthor(data.author),
     parent_id: numberValue(data.parentid),
     time_created: numberValue(data.timecreated),
@@ -629,7 +356,7 @@ function parseForumDiscussion(value, discussionId, baseUrl = "") {
     id: discussionId,
     subject: posts[0]?.subject ?? "",
     course_id: numberValue(data.courseid),
-    forum_id: numberValue(data.forumid),
+    forum_id: numberValue(data.cmid),
     group_id: numberValue(data.groupid),
     group_name: stringValue(data.groupname),
     url: posts[0]?.url ? posts[0].url.split("#", 1)[0] : "",
@@ -672,9 +399,494 @@ function htmlText(value, baseUrl) {
   return htmlToStructuredContent(stringValue(value), baseUrl).text;
 }
 
+// src/constants.ts
+var PACKAGE_NAME = "moodle-cli";
+var NPM_LATEST_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
+var AJAX_SERVICE_PATH = "/lib/ajax/service.php";
+var DASHBOARD_PATH = "/my/";
+var COURSE_PATH = "/course/view.php";
+var ASSIGN_VIEW_PATH = "/mod/assign/view.php";
+var QUIZ_VIEW_PATH = "/mod/quiz/view.php";
+var QUIZ_REVIEW_PATH = "/mod/quiz/review.php";
+var QUIZ_START_PATH = "/mod/quiz/startattempt.php";
+var QUIZ_ATTEMPT_PATH = "/mod/quiz/attempt.php";
+var QUIZ_SUMMARY_PATH = "/mod/quiz/summary.php";
+var QUIZ_PROCESS_PATH = "/mod/quiz/processattempt.php";
+var RESOURCE_VIEW_PATH = "/mod/resource/view.php";
+var URL_VIEW_PATH = "/mod/url/view.php";
+var PAGE_VIEW_PATH = "/mod/page/view.php";
+var FOLDER_VIEW_PATH = "/mod/folder/view.php";
+var FORUM_DISCUSS_PATH = "/mod/forum/discuss.php";
+var FORUM_VIEW_PATH = "/mod/forum/view.php";
+var GRADE_REPORT_INDEX_PATH = "/grade/report/index.php";
+var GRADE_REPORT_OVERVIEW_PATH = "/grade/report/overview/index.php";
+var GRADE_REPORT_PATH = "/grade/report/user/index.php";
+var FUNC_GET_SITE_INFO = "core_webservice_get_site_info";
+var FUNC_GET_COURSES = "core_enrol_get_users_courses";
+var FUNC_GET_COURSES_BY_TIMELINE = "core_course_get_enrolled_courses_by_timeline_classification";
+var FUNC_GET_COURSE_CONTENTS = "core_course_get_contents";
+var FUNC_GET_COURSE_FORMAT_STATE = "core_courseformat_get_state";
+var FUNC_GET_COURSE_MODULE = "core_course_get_course_module";
+var FUNC_GET_ACTION_EVENTS = "core_calendar_get_action_events_by_timesort";
+var FUNC_GET_ACTION_EVENTS_BY_COURSE = "core_calendar_get_action_events_by_course";
+var FUNC_GET_CALENDAR_MONTH = "core_calendar_get_calendar_monthly_view";
+var FUNC_GET_CONVERSATIONS = "core_message_get_conversations";
+var FUNC_GET_CONVERSATION_MESSAGES = "core_message_get_conversation_messages";
+var FUNC_SEND_CONVERSATION_MESSAGES = "core_message_send_messages_to_conversation";
+var FUNC_SEND_INSTANT_MESSAGES = "core_message_send_instant_messages";
+var FUNC_MARK_NOTIFICATION_READ = "core_message_mark_notification_read";
+var FUNC_MARK_ALL_NOTIFICATIONS_READ = "core_message_mark_all_notifications_as_read";
+var FUNC_MARK_CONVERSATION_READ = "core_message_mark_all_conversation_messages_as_read";
+var FUNC_GET_POPUP_NOTIFICATIONS = "message_popup_get_popup_notifications";
+var FUNC_GET_CONVERSATION_COUNTS = "core_message_get_conversation_counts";
+var FUNC_GET_UNREAD_CONVERSATION_COUNTS = "core_message_get_unread_conversation_counts";
+var FUNC_ADD_DISCUSSION_POST = "mod_forum_add_discussion_post";
+var FUNC_UPDATE_ACTIVITY_COMPLETION = "core_completion_update_activity_completion_status_manually";
+var FUNC_GET_DISCUSSION_POSTS = "mod_forum_get_discussion_posts";
+var FUNC_GET_STRINGS = "core_get_strings";
+var DEFAULT_SESSION_CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+
+// src/moodle-messages-core.ts
+var rows = (value) => asArray(value).map(asRecord);
+var members = (value) => rows(value).map((m) => ({ id: Number(m.id), name: String(m.fullname ?? "") }));
+var messages = (value, baseUrl) => rows(value).map((m) => ({
+  id: Number(m.id),
+  sender_id: Number(m.useridfrom),
+  text: htmlToStructuredContent(String(m.text ?? ""), baseUrl).text,
+  created_at: Number(m.timecreated)
+}));
+async function listConversations(call, userid, baseUrl, limit, offset) {
+  const data = asRecord(await call(FUNC_GET_CONVERSATIONS, { userid, limitnum: limit, limitfrom: offset }));
+  return rows(data.conversations).map((c) => {
+    const people = members(c.members);
+    return {
+      id: Number(c.id),
+      name: String(c.name || people.filter((m) => m.id !== userid).map((m) => m.name).join(", ") || people[0]?.name || ""),
+      type: c.type === 2 ? "group" : c.type === 3 ? "self" : "direct",
+      unread_count: Number(c.unreadcount ?? 0),
+      members: people,
+      messages: messages(c.messages, baseUrl)
+    };
+  });
+}
+async function getConversation(call, userid, baseUrl, id, limit, offset) {
+  const data = asRecord(await call(FUNC_GET_CONVERSATION_MESSAGES, { currentuserid: userid, convid: id, limitnum: limit, limitfrom: offset, newest: true }));
+  return { id, members: members(data.members), messages: messages(data.messages, baseUrl).reverse(), offset };
+}
+async function sendMessage(call, id, text, user) {
+  const data = await call(user ? FUNC_SEND_INSTANT_MESSAGES : FUNC_SEND_CONVERSATION_MESSAGES, {
+    ...user ? {} : { conversationid: id },
+    messages: [{ ...user ? { touserid: id } : {}, text, textformat: 2 }]
+  });
+  const sent = rows(data)[0];
+  const messageId = Number(sent?.msgid ?? sent?.id);
+  if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error(String(sent?.errormessage || "Moodle did not send the message."));
+  return messageId;
+}
+async function markConversationRead(call, userid, id) {
+  await call(FUNC_MARK_CONVERSATION_READ, { userid, conversationid: id });
+}
+
+// src/moodle-calendar-core.ts
+import { parse as parse2 } from "node-html-parser";
+var rows2 = (value) => asArray(value).map(asRecord);
+async function readCalendar(call, getPage, baseUrl, days, courseId) {
+  const now = Math.floor(Date.now() / 1e3);
+  const end = now + days * 86400;
+  const events = /* @__PURE__ */ new Map();
+  const start = now - 86400;
+  const html = await getPage({ view: "month", time: start, course: courseId ?? 1 });
+  const month = parse2(html).querySelector('.calendarwrapper[data-view="month"]');
+  let year = Number(month?.getAttribute("data-year"));
+  let mon = Number(month?.getAttribute("data-month"));
+  if (!Number.isSafeInteger(year) || year <= 0 || !Number.isSafeInteger(mon) || mon <= 0) throw new Error("Moodle did not expose the active calendar month.");
+  let cursor = start;
+  while (true) {
+    const data = await fetchCalendarMonth(call, year, mon, courseId);
+    for (const event of calendarEvents(data, baseUrl)) {
+      if (event.starts_at > end || event.starts_at + event.duration < now || courseId !== void 0 && event.course_id !== courseId) continue;
+      events.set(event.id, event);
+    }
+    const next = asRecord(data.nextperiod);
+    const nextTime = Number(next.timestamp);
+    if (!Number.isSafeInteger(nextTime) || nextTime <= cursor) throw new Error("Moodle returned invalid calendar month navigation.");
+    if (nextTime > end) break;
+    year = Number(next.year);
+    mon = Number(next.mon);
+    if (!Number.isSafeInteger(year) || year <= 0 || !Number.isSafeInteger(mon) || mon <= 0) throw new Error("Moodle returned invalid calendar month navigation.");
+    cursor = nextTime;
+  }
+  return [...events.values()].sort((a, b) => a.starts_at - b.starts_at || a.id - b.id);
+}
+async function fetchCalendarMonth(call, year, month, courseId) {
+  return asRecord(await call(FUNC_GET_CALENDAR_MONTH, { year, month, courseid: courseId ?? 1, includenavigation: false, mini: false }));
+}
+async function readCalendarMonth(call, baseUrl, year, month, courseId) {
+  return calendarEvents(await fetchCalendarMonth(call, year, month, courseId), baseUrl);
+}
+function calendarEvents(data, baseUrl) {
+  const events = /* @__PURE__ */ new Map();
+  const monthEvents = rows2(data.weeks).flatMap((week) => rows2(week.days)).flatMap((day) => rows2(day.events));
+  for (const event of monthEvents) {
+    const course = asRecord(event.course);
+    const id = Number(event.id);
+    const starts = Number(event.timestart);
+    if (!Number.isSafeInteger(id) || !Number.isFinite(starts)) continue;
+    events.set(id, {
+      id,
+      name: htmlToStructuredContent(String(event.name ?? ""), baseUrl).text,
+      description: htmlToStructuredContent(String(event.description ?? ""), baseUrl).text,
+      starts_at: starts,
+      duration: Number(event.timeduration ?? 0),
+      event_type: String(event.eventtype ?? ""),
+      course_id: Number(course.id ?? event.courseid ?? 0),
+      course_name: String(course.shortname ?? course.fullname ?? ""),
+      location: String(event.location ?? ""),
+      url: resolveUrl(baseUrl, String((event.modulename ? event.activityurl || event.url : event.viewurl || event.url) || `/calendar/view.php?view=day&time=${starts}`))
+    });
+  }
+  return [...events.values()];
+}
+function calendarMonthOf(shown, language) {
+  const text = shown.normalize("NFKC").toLowerCase();
+  const iso = /^(\d{4})-(\d{2})-\d{2}/u.exec(text);
+  if (iso && Number(iso[2]) >= 1 && Number(iso[2]) <= 12) return { year: Number(iso[1]), month: Number(iso[2]) };
+  const years = [...text.matchAll(/(?<!\d)[1-9]\d{3}(?!\d)/gu)];
+  if (!language || years.length !== 1) return void 0;
+  const locale = language.replaceAll("_", "-");
+  try {
+    if (!Intl.DateTimeFormat.supportedLocalesOf(locale).length) return void 0;
+    const matches = /* @__PURE__ */ new Set();
+    const formatters = ["long", "short"].flatMap((month) => [void 0, "numeric"].map((day) => new Intl.DateTimeFormat(locale, { month, day, calendar: "gregory", timeZone: "UTC" })));
+    for (let month = 1; month <= 12; month++) {
+      for (const formatter of formatters) {
+        const date = new Date(Date.UTC(2026, month - 1, 15));
+        const token = formatter.resolvedOptions().day ? formatter.formatToParts(date).find((part) => part.type === "month")?.value : formatter.format(date);
+        const name = token?.normalize("NFKC").toLowerCase();
+        if (!name || /^\p{N}+$/u.test(name)) continue;
+        const index = text.indexOf(name);
+        const numeric = /^\p{N}/u.test(name);
+        const before = text.slice(0, index);
+        const after = text.slice(index + name.length);
+        if (index >= 0 && !(numeric ? /\p{N}$/u : /[\p{L}\p{N}]$/u).test(before) && (numeric || !/^[\p{L}\p{N}]/u.test(after))) matches.add(month);
+      }
+    }
+    if (matches.size === 1) return { year: Number(years[0][0]), month: [...matches][0] };
+  } catch {
+  }
+  return void 0;
+}
+
+// src/resolve.ts
+var ReferenceError = class extends Error {
+  constructor(code, message, candidates) {
+    super(message);
+    this.code = code;
+    this.candidates = candidates;
+    this.name = "ReferenceError";
+  }
+  code;
+  candidates;
+  hint = "Run `moodle units` to see this site's names, or refine the reference.";
+};
+var normalize = (value) => value.normalize("NFKC").toLocaleLowerCase().trim().replace(/\s+/gu, " ");
+var words = (value) => normalize(value).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+var tokensMatch = (text, query) => normalize(query).split(" ").every((token) => tokenMatches(normalize(text), token));
+function tokenMatches(text, token) {
+  if (/^\d+$/u.test(token)) return (text.match(/\b\d+\b/gu) ?? []).some((n) => Number(n) === Number(token));
+  if (text.includes(token)) return true;
+  const short = /^(\p{L}+)(\d+)$/u.exec(token);
+  return short !== null && new RegExp(`(?:^|[^\\p{L}])${short[1]}\\p{L}*[\\s:.#-]*0*${Number(short[2])}(?!\\d)`, "u").test(text);
+}
+var named = (course, raw) => [course.shortname, course.fullname].some((name) => normalize(name) === raw);
+function resolveUnit(value, courses) {
+  if (typeof value === "number") {
+    const byId = courses.find((c) => c.id === value);
+    if (byId) return byId;
+    throw unitError("not_found", value, courses);
+  }
+  const raw = normalize(String(value));
+  const exact = courses.filter((c) => named(c, raw));
+  if (raw && exact.length === 1) return exact[0];
+  let id = /^\d+$/u.test(raw) ? Number(raw) : void 0;
+  try {
+    const url = new URL(String(value));
+    if (url.pathname.endsWith("/course/view.php")) id = Number(url.searchParams.get("id"));
+  } catch {
+  }
+  const course = courses.find((c) => c.id === id);
+  if (course) return course;
+  const matches = exact.length ? exact : courses.filter((c) => [c.shortname, c.fullname].some((name) => normalize(name).includes(raw)));
+  if (raw && matches.length === 1) return matches[0];
+  if (raw && matches.length > 1) throw unitError("ambiguous", value, matches);
+  throw unitError("not_found", value, courses);
+}
+function unitError(code, ref, courses) {
+  const candidates = courses.map((c) => ({ id: c.id, name: c.fullname || c.shortname, code: c.shortname || void 0 }));
+  return new ReferenceError(code, `${code === "ambiguous" ? "Several units match" : "No unit matches"} '${ref}'. Your units: ${courses.map((c) => c.shortname || c.fullname).join(", ")}.`, candidates);
+}
+function resolveSection(ref, sections) {
+  const raw = normalize(String(ref));
+  const labels = sectionLabels(sections);
+  const label = (s) => labels.get(s.id) ?? s.name;
+  const numbers = raw.match(/\b\d+\b/gu) ?? [];
+  let matches = sections.filter((s) => numbers.length === 1 ? (label(s).match(/\b\d+\b/gu) ?? []).some((n) => Number(n) === Number(numbers[0])) && (raw === numbers[0] || tokensMatch(label(s), raw)) : normalize(label(s)).includes(raw));
+  const named2 = matches.filter((s) => tokensMatch(s.name, raw));
+  if (matches.length > 1 && named2.length) matches = named2;
+  if (matches.length === 1) return { section: matches[0] };
+  if (matches.length > 1) throw new ReferenceError("ambiguous", `Several sections match '${ref}'.`, matches.map((s) => ({ id: s.id, name: label(s) })));
+  if (/^\d+$/u.test(raw)) {
+    const positional = sections.filter((s) => s.section === Number(raw));
+    if (positional.length === 1) return { section: positional[0], positional: true };
+  }
+  throw new ReferenceError("not_found", `No section matches '${ref}'.`, sections.map((s) => ({ id: s.id, name: s.name })));
+}
+function searchSections(course, sections, query) {
+  const rows3 = [];
+  const labels = sectionLabels(sections);
+  for (const s of sections) {
+    const label = labels.get(s.id) ?? s.name;
+    const context = { unit_id: course.id, unit_code: course.shortname || course.fullname, section_id: s.id, section: label };
+    if (tokensMatch(s.name, query)) rows3.push({ ...context, id: s.id, name: s.name, type: "section", score: words(s.name) === words(query) ? 100 : 70 });
+    for (const a of s.activities) {
+      if (!tokensMatch(`${a.name} ${label}`, query)) continue;
+      const chrome = ["label", "cms"].includes(a.modname);
+      const score = chrome ? 1 : words(a.name) === words(query) ? 100 : tokensMatch(a.name, query) ? 80 : 60;
+      rows3.push({ ...context, id: a.id, name: a.name, type: a.modname, score, activity: a });
+    }
+  }
+  const useful = rows3.filter((r) => r.score > 1);
+  return (useful.length ? useful : rows3).sort((a, b) => b.score - a.score || a.id - b.id);
+}
+function parentsOf(sections) {
+  const byId = new Map(sections.map((s) => [s.id, s]));
+  const parents = /* @__PURE__ */ new Map();
+  if (sections.some((s) => s.parent !== void 0)) {
+    const holders = new Set(sections.map((s) => s.parent));
+    const headings = new Set(sections.filter((s) => holders.has(s.id)).map((s) => s.parent));
+    for (const s of sections) {
+      const parent = s.parent === void 0 || headings.has(s.parent) ? void 0 : byId.get(s.parent);
+      if (parent) parents.set(s.id, parent);
+    }
+    return parents;
+  }
+  const counts = /* @__PURE__ */ new Map();
+  for (const s of sections) counts.set(s.name, (counts.get(s.name) ?? 0) + 1);
+  let last;
+  for (const s of sections) {
+    if ((counts.get(s.name) ?? 0) < 2) last = s;
+    else if (last) parents.set(s.id, last);
+  }
+  return parents;
+}
+function sectionLabels(sections) {
+  const parents = parentsOf(sections);
+  const name = (s) => s.name || `Section ${s.section}`;
+  return new Map(sections.map((s) => {
+    const parent = parents.get(s.id);
+    return [s.id, parent ? `${name(parent)} \u203A ${name(s)}` : name(s)];
+  }));
+}
+function sectionTree(sections) {
+  const parents = parentsOf(sections);
+  const tree = sections.filter((s) => !parents.has(s.id)).map((section) => ({ section, children: [] }));
+  const nodes = new Map(tree.map((node) => [node.section.id, node]));
+  for (const s of sections) nodes.get(parents.get(s.id)?.id ?? NaN)?.children.push(s);
+  return tree;
+}
+function withChildSections(section, sections) {
+  const node = sectionTree(sections).find((n) => n.section.id === section.id);
+  return node ? [node.section, ...node.children] : [section];
+}
+
+// src/site-root.ts
+function siteRootPath(root) {
+  return new URL(root).pathname.replace(/\/+$/u, "");
+}
+function isSiteUrl(root, url) {
+  let site;
+  let target;
+  try {
+    site = new URL(root);
+    target = typeof url === "string" ? new URL(url) : url;
+  } catch {
+    return false;
+  }
+  if (target.origin !== site.origin) return false;
+  const base = siteRootPath(root);
+  return target.pathname === base || target.pathname.startsWith(`${base}/`);
+}
+function sitePath(root, url) {
+  if (!isSiteUrl(root, url)) return null;
+  const target = typeof url === "string" ? new URL(url) : url;
+  return target.pathname.slice(siteRootPath(root).length) || "/";
+}
+function isSiteLoginUrl(root, url) {
+  return sitePath(root, url)?.startsWith("/login/") ?? false;
+}
+
+// src/session-fetch.ts
+var MAX_REDIRECTS = 5;
+var REQUEST_TIMEOUT_MS = 3e4;
+var REDIRECT_STATUSES = /* @__PURE__ */ new Set([301, 302, 303, 307, 308]);
+async function fetchWithSession(input, init, siteRoot, cookie, fetchImpl = (url, options) => fetch(url, options)) {
+  let url = new URL(input);
+  const initialOrigin = url.origin;
+  let method = (init.method ?? "GET").toUpperCase();
+  let body = init.body;
+  const headers = new Headers(init.headers);
+  const deadline = new AbortController();
+  let timer;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+    timer.unref?.();
+  };
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline.signal]) : deadline.signal;
+  for (let hop = 0; ; hop += 1) {
+    signal.throwIfAborted();
+    arm();
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
+      throw new Error("The request destination is not allowed.");
+    }
+    headers.delete("cookie");
+    if (isSiteUrl(siteRoot, url)) headers.set("cookie", `${cookie.name}=${cookie.value}`);
+    if (url.origin !== initialOrigin) {
+      headers.delete("authorization");
+      headers.delete("proxy-authorization");
+    }
+    let response;
+    try {
+      response = await fetchImpl(url.toString(), { ...init, method, body, headers: Object.fromEntries(headers), signal, redirect: "manual" });
+    } catch (error) {
+      clearTimeout(timer);
+      throw requestFailure(error, url, deadline.signal);
+    }
+    if (!REDIRECT_STATUSES.has(response.status) || !response.headers.get("location")) return watchBody(response, arm, () => clearTimeout(timer));
+    const location = response.headers.get("location");
+    await response.body?.cancel();
+    if (hop >= MAX_REDIRECTS) throw new Error("The request exceeded its redirect limit.");
+    const next = new URL(location, url);
+    if (url.protocol === "https:" && next.protocol !== "https:") {
+      throw new Error("The request refused an insecure redirect.");
+    }
+    if (next.origin !== url.origin && method !== "GET" && method !== "HEAD") {
+      throw new Error("The request refused a cross-origin form redirect.");
+    }
+    if (response.status === 303 && method !== "HEAD" || [301, 302].includes(response.status) && method === "POST") {
+      method = "GET";
+      body = void 0;
+      for (const header of ["content-type", "content-length", "content-encoding", "content-language", "content-location"]) headers.delete(header);
+    }
+    url = next;
+  }
+}
+function watchBody(response, arm, done) {
+  if (!response.body) {
+    done();
+    return response;
+  }
+  arm();
+  const body = response.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      arm();
+      controller.enqueue(chunk);
+    },
+    flush: done
+  }));
+  const watched = new Response(body, response);
+  Object.defineProperty(watched, "url", { value: response.url });
+  return watched;
+}
+var RequestFailed = class extends Error {
+  host;
+  timedOut;
+  constructor(host, timedOut, cause) {
+    super(timedOut ? `${host} did not respond within ${REQUEST_TIMEOUT_MS / 1e3}s.` : `Could not reach ${host}: ${cause}`);
+    this.name = "RequestFailed";
+    this.host = host;
+    this.timedOut = timedOut;
+  }
+};
+function requestFailure(error, url, deadline) {
+  if (deadline.aborted) {
+    return new RequestFailed(url.host, true);
+  }
+  if (!(error instanceof Error)) {
+    return error;
+  }
+  return new RequestFailed(url.host, false, error.cause instanceof Error ? error.cause.message : error.message);
+}
+
+// src/moodle-client-core.ts
+import { z } from "zod";
+
+// src/moodle-assign-core.ts
+import { parse as parse4 } from "node-html-parser";
+
+// src/site-labels.ts
+var LABEL_STRINGS = {
+  "Group": [["mod_assign", "submissionteam"]],
+  "Last modified": [["mod_assign", "timemodified"]],
+  "Due date": [["mod_assign", "duedate"]],
+  "Extension due date": [["mod_assign", "extensionduedate"]],
+  "Cut-off date": [["mod_assign", "cutoffdate"]],
+  "Submission status": [["mod_assign", "submissionstatus"], ["mod_assign", "submissionstatusheading"]],
+  "Grading status": [["mod_assign", "gradingstatus"]],
+  "Time remaining": [["mod_assign", "timeremaining"]],
+  "Grade": [["core", "gradenoun"], ["core_grades", "gradenoun"], ["mod_assign", "gradenoun"], ["mod_quiz", "grade"]],
+  "Graded on": [["mod_assign", "gradedon"]],
+  "Graded by": [["mod_assign", "gradedby"]],
+  "Feedback comments": [["assignfeedback_comments", "pluginname"]],
+  "Due:": [["mod_assign", "activitydate:submissionsdue"], ["core_course", "activitydate:due"]],
+  "Opens:": [["core_course", "activitydate:opens"], ["mod_assign", "activitydate:submissionsopen"]],
+  "Closes:": [["core_course", "activitydate:closes"]],
+  "Attempts allowed:": [["mod_quiz", "attemptsallowed"]],
+  "Time limit:": [["mod_quiz", "timelimit"]],
+  "Status": [["mod_quiz", "attemptstate"], ["core", "status"]],
+  "Started": [["mod_quiz", "startedon"]],
+  "Completed": [["mod_quiz", "completedon"]],
+  "Duration": [["mod_quiz", "attemptduration"]],
+  "Marks": [["mod_quiz", "marks"]]
+};
+function labelRequests() {
+  const seen = /* @__PURE__ */ new Set();
+  const requests = [];
+  for (const refs of Object.values(LABEL_STRINGS)) {
+    for (const [component, stringid] of refs) {
+      const key = `${component}/${stringid}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        requests.push({ stringid, component });
+      }
+    }
+  }
+  return requests;
+}
+function siteLabelsFrom(data) {
+  const texts = /* @__PURE__ */ new Map();
+  for (const item of Array.isArray(data) ? data : []) {
+    const { component, stringid, string } = item ?? {};
+    if (typeof string === "string" && string && !/^\[\[.*\]\]$/u.test(string)) texts.set(`${component}/${stringid}`, string);
+  }
+  const labels = {};
+  for (const [label, refs] of Object.entries(LABEL_STRINGS)) {
+    const found = [...new Set(refs.map(([component, id]) => texts.get(`${component}/${id}`)).filter((text) => Boolean(text)))];
+    if (found.length) labels[label] = found;
+  }
+  return labels;
+}
+function labelKey(text) {
+  return text.normalize("NFKC").replace(/\s+/gu, " ").trim().replace(/\s*[:：]$/u, "").toLowerCase();
+}
+function labelTexts(label, labels) {
+  return [label, ...labels?.[label] ?? []];
+}
+
 // src/scraper.ts
+import { parse as parse3 } from "node-html-parser";
 function parseMoodleErrorHtml(html) {
-  const root = parse2(html);
+  const root = parse3(html);
   const messageNode = first(root, [
     ".errormessage",
     ".alert-danger .alert-message",
@@ -685,7 +897,7 @@ function parseMoodleErrorHtml(html) {
   if (!messageNode) {
     return null;
   }
-  const messageRoot = parse2(messageNode.toString());
+  const messageRoot = parse3(messageNode.toString());
   for (const unwanted of messageRoot.querySelectorAll(
     "button, .close, .errorcode, .stacktrace, .debuginfo, .backtrace, a.alert-link, a[href*='/error/']"
   )) {
@@ -702,15 +914,15 @@ function parseMoodleErrorHtml(html) {
 function isOtherMoodlePage(html, type, cmid) {
   const instance = numberValue2(parseMoodleConfig(html).contextInstanceId);
   if (instance && instance !== cmid) return true;
-  const pageId = parse2(html).querySelector("body")?.getAttribute("id") ?? "";
+  const pageId = parse3(html).querySelector("body")?.getAttribute("id") ?? "";
   return pageId.startsWith("page-") && pageId !== `page-mod-${type}-view`;
 }
 function parseUnavailableNotice(html) {
-  const conditions = parse2(html).querySelector(".availabilityinfo-error");
+  const conditions = parse3(html).querySelector(".availabilityinfo-error");
   return conditions ? blockText(conditions) : parseMoodleErrorHtml(html)?.message ?? "";
 }
 function parsePageContext(html, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const config = parseMoodleConfig(html);
   const sesskey = stringValue2(config.sesskey).trim();
   const timezone = moodleTimezone(config.usertimezone || config.timezone);
@@ -723,7 +935,7 @@ function parsePageContext(html, baseUrl) {
     user_info: {
       userid,
       username: "",
-      fullname: cleanNodeText(root.querySelector(".userfullname")),
+      fullname: cleanNodeText(root.querySelector(".userfullname")) || root.querySelector(".usermenu .userinitials")?.getAttribute("title") || cleanNodeText(root.querySelector('.logininfo a[href*="/user/"]')),
       sitename: extractSitename(root),
       siteurl: baseUrl,
       ...timezone ? { timezone } : {},
@@ -746,7 +958,7 @@ function moodleTimezone(value) {
   }
 }
 function parseCourseContentsHtml(html, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const sections = [];
   for (const sectionElement of root.querySelectorAll('li[data-for="section"]')) {
     const sectionId = safeInt(sectionElement.getAttribute("data-id"));
@@ -793,6 +1005,8 @@ function parseCourseContentsHtml(html, baseUrl) {
         // restriction beside it. Labels and subsections have no link either but can be read.
         // The contents service calls this uservisible.
         visible: !classes.some((item) => ["hidden", "stealth", "dimmed"].includes(item)) && (Boolean(href) || !activityElement.querySelector(".availabilityinfo")),
+        ...activityElement.querySelector(".availabilityinfo") && !href ? { available: false, availability_reason: blockText(activityElement.querySelector(".availabilityinfo")) } : {},
+        ...activityElement.querySelector('[data-action="toggle-manual-completion"]') ? { completion: activityElement.querySelector('[data-action="toggle-manual-completion"]')?.getAttribute("data-toggletype") === "manual:mark-done" ? 0 : 1 } : {},
         description: cleanNodeText(first(activityElement, ["[data-region='activity-description']", ".contentafterlink", ".description"]))
       });
     }
@@ -809,7 +1023,7 @@ function parseCourseContentsHtml(html, baseUrl) {
 }
 function parseCourseSectionNumbers(html, courseId) {
   const sections = [];
-  const root = parse2(html.replace(/&section=/gu, "&amp;section="));
+  const root = parse3(html.replace(/&section=/gu, "&amp;section="));
   const hrefs = root.querySelectorAll('a[href*="/course/view.php"]').map((link) => link.getAttribute("href") ?? "");
   for (const href of hrefs) {
     const url = parseMaybeUrl(href.replace(/&amp;/gu, "&"), "https://moodle.invalid");
@@ -825,13 +1039,13 @@ function parseCourseSectionNumbers(html, courseId) {
   return sections;
 }
 function parseCourseGradesUrl(html, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const link = root.querySelector('li[data-key="grades"] a[href]') ?? root.querySelector('.secondary-navigation a[href*="mode=grade"]') ?? root.querySelector('.secondary-navigation a[href*="/grade/report/"]') ?? root.querySelector('a[href*="mode=grade"], a[href*="/grade/report/"]');
   const href = link?.getAttribute("href") ?? "";
   return href ? resolveUrl(baseUrl, href) : "";
 }
 function parseCourseIdFromPageHtml(html) {
-  const root = parse2(html);
+  const root = parse3(html);
   for (const link of root.querySelectorAll('a[href*="/course/view.php?id="]')) {
     const courseId = numberQueryValue(link.getAttribute("href") ?? "", "id");
     if (courseId !== null) {
@@ -841,10 +1055,10 @@ function parseCourseIdFromPageHtml(html) {
   return null;
 }
 function hasCourseGradesHtml(html) {
-  return parse2(html).querySelector("table.user-grade") !== null;
+  return parse3(html).querySelector("table.user-grade") !== null;
 }
 function parseCourseGradesHtml(html, courseId, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const report = {
     course_id: courseId,
     course_name: cleanNodeText(root.querySelector("h1")),
@@ -871,27 +1085,25 @@ function parseCourseGradesHtml(html, courseId, baseUrl) {
     if (!title || row.querySelector(".toggle-category")) {
       continue;
     }
-    if (title === "Course total") {
+    if (row.querySelector(".column-itemname .courseitem, .courseitem")) {
       report.total_grade = cleanTableCell(row.querySelector("td.column-grade"));
       report.total_range = cleanTableCell(row.querySelector("td.column-range"));
       report.total_percentage = cleanTableCell(row.querySelector("td.column-percentage"));
       continue;
     }
     const link = row.querySelector(".rowtitle a.gradeitemheader, .rowtitle a");
-    if (!link) {
-      continue;
-    }
+    const category = Boolean(row.querySelector(".column-itemname .categoryitem, .categoryitem"));
     const statusIcon = row.querySelector("td.column-grade i[aria-label], td.column-grade i[title]");
     const item = parseGradeItem({
       name: title,
-      item_type: cleanText(row.querySelector(".item img.itemicon, .courseitem img.itemicon, img.itemicon")?.getAttribute("alt") ?? ""),
+      item_type: category ? "category" : cleanText(row.querySelector("img.itemicon")?.getAttribute("alt") ?? "") || (link ? "" : "manual"),
       grade: cleanTableCell(row.querySelector("td.column-grade")),
       range: cleanTableCell(row.querySelector("td.column-range")),
       percentage: cleanTableCell(row.querySelector("td.column-percentage")),
       weight: cleanTableCell(row.querySelector("td.column-weight")),
       contribution: cleanTableCell(row.querySelector("td.column-contributiontocoursetotal")),
       feedback: cleanTableCell(row.querySelector("td.column-feedback")),
-      url: resolveUrl(baseUrl, link.getAttribute("href") ?? ""),
+      url: link ? resolveUrl(baseUrl, link.getAttribute("href") ?? "") : "",
       status: statusIcon?.getAttribute("aria-label") ?? statusIcon?.getAttribute("title") ?? ""
     });
     report.items.push(item);
@@ -899,10 +1111,10 @@ function parseCourseGradesHtml(html, courseId, baseUrl) {
   return report;
 }
 function parseGradeOverviewRows(html, baseUrl) {
-  const rows = {};
-  const table = parse2(html).querySelector("table#overview-grade");
+  const rows3 = {};
+  const table = parse3(html).querySelector("table#overview-grade");
   if (!table) {
-    return rows;
+    return rows3;
   }
   for (const row of table.querySelectorAll("tbody tr, tr")) {
     const link = row.querySelector("td a[href]");
@@ -915,33 +1127,68 @@ function parseGradeOverviewRows(html, baseUrl) {
       continue;
     }
     const cells = row.querySelectorAll("td");
-    rows[courseId] = {
+    rows3[courseId] = {
       course_name: cleanNodeText(link),
       grade: cleanNodeText(cells[1]),
       url: href
     };
   }
-  return rows;
+  return rows3;
 }
 function parseAssignmentHtml(html, assignmentId, baseUrl, labels) {
-  const root = parse2(html);
+  const root = parse3(html);
   const feedback = root.querySelector(".feedback");
+  const submissionRoot = root.querySelector(".submissionstatustable") ?? root;
+  const textNode = submissionRoot.querySelector("[class*=full_assignsubmission_onlinetext_] .no-overflow") ?? submissionRoot.querySelector(".onlinetextsubmission, [class*=summary_assignsubmission_onlinetext_] .no-overflow, .assignsubmission_onlinetext .no-overflow");
+  const submissionFiles = [];
+  for (const link of submissionRoot.querySelectorAll('.fileuploadsubmission a[href], a[href*="/assignsubmission_file/submission_files/"]')) {
+    const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
+    if (!submissionFiles.some((file) => file.url === url)) submissionFiles.push(fileEntry(cleanNodeText(link) || decodeURIComponent(new URL(url).pathname.split("/").at(-1) || "file"), url, baseUrl));
+  }
+  const comments = submissionRoot.querySelectorAll(".comment-list .comment-message").map((node) => ({
+    author: cleanNodeText(node.querySelector(".user")),
+    text: cleanNodeText(node.querySelector(".text")),
+    time: cleanNodeText(node.querySelector(".time"))
+  })).filter((comment) => comment.text && !comment.text.includes("___content___"));
+  const state = submissionRoot.querySelector(".submissionstatussubmitted") ? "submitted" : submissionRoot.querySelector(".submissionstatusdraft") ? "draft" : void 0;
+  const due = extractLabeledText(html, "Due:", labels);
+  const feedbackFiles = feedback ? parseFeedbackFiles(feedback, baseUrl) : [];
+  const criteria = feedback ? parseFeedbackCriteria(feedback) : [];
+  const feedbackComments = feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "";
   return {
     id: assignmentId,
     name: pageTitle(html),
     ...activityContext(html),
-    due_pretty: extractLabeledText(html, "Due:", labels),
+    due_pretty: due,
+    description: htmlToStructuredContent(root.querySelector("#intro")?.innerHTML ?? "", baseUrl).text,
+    extension_due: findTableValue(html, "Extension due date", labels),
+    cutoff: findTableValue(html, "Cut-off date", labels),
+    ...state ? { submission_state: state } : {},
+    submission: {
+      ...textNode ? { text: htmlToStructuredContent(textNode.innerHTML, baseUrl).text, text_html: textNode.innerHTML } : {},
+      files: submissionFiles,
+      comments
+    },
+    feedback: { comments: feedbackComments, files: feedbackFiles, criteria },
     submission_status: findTableValue(html, "Submission status", labels),
     grading_status: findTableValue(html, "Grading status", labels),
     time_remaining: findTableValue(html, "Time remaining", labels),
     grade: findTableValue(html, "Grade", labels),
     graded_on: feedback ? findTableValue(feedback.toString(), "Graded on", labels) : "",
     graded_by: feedback ? findTableValue(feedback.toString(), "Graded by", labels) : "",
-    feedback_comments: feedback ? findTableValue(feedback.toString(), "Feedback comments", labels) : "",
-    criteria: feedback ? parseFeedbackCriteria(feedback) : [],
-    file_entries: [...parseIntroAttachments(root, baseUrl), ...feedback ? parseFeedbackFiles(feedback, baseUrl) : []],
+    feedback_comments: feedbackComments,
+    criteria,
+    file_entries: [...parseIntroAttachments(root, baseUrl), ...feedbackFiles],
     url: `${baseUrl.replace(/\/$/, "")}/mod/assign/view.php?id=${assignmentId}`
   };
+}
+function assignmentCommentUrl(html, baseUrl) {
+  const root = parse3(html);
+  if (Number(cleanNodeText(root.querySelector(".comment-link-count"))) <= 0) return void 0;
+  const href = root.querySelector("a.showcommentsnonjs[href]")?.getAttribute("href");
+  if (!href) return void 0;
+  const url = new URL(resolveUrl(baseUrl, href));
+  return url.origin === new URL(baseUrl).origin ? url.toString() : void 0;
 }
 function parseFeedbackCriteria(feedback) {
   const criteria = [];
@@ -978,7 +1225,7 @@ function parseFeedbackFiles(feedback, baseUrl) {
   return entries;
 }
 function parseQuizHtml(html, quizId, baseUrl, labels) {
-  const root = parse2(html);
+  const root = parse3(html);
   return {
     id: quizId,
     name: pageTitle(html),
@@ -1018,7 +1265,7 @@ function parseQuizAttempts(root, baseUrl, labels) {
   return attempts;
 }
 function parseQuizReviewHtml(html, attemptId, baseUrl, labels) {
-  const root = parse2(html);
+  const root = parse3(html);
   const summary = labelled(tableValues(root.querySelector("table.quizreviewsummary")), labels);
   const form = root.querySelector("form.questionflagsaveform");
   const url = `${baseUrl.replace(/\/$/, "")}/mod/quiz/review.php?attempt=${attemptId}`;
@@ -1043,7 +1290,9 @@ function parseQuizQuestion(que) {
     return cleanTableCell(label ? que.querySelector(`[id="${label}"]`) : input.parentNode);
   }).filter(Boolean) ?? [];
   const typed = cleanText(que.querySelector('input[type="text"], input[type="number"]')?.getAttribute("value") ?? "");
-  const response = picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
+  const selects = que.querySelectorAll("select");
+  const selected = selects.map((select) => cleanNodeText(select.querySelector("option[selected]"))).filter(Boolean);
+  const response = selects.length ? selected.join("; ") : picked.length ? picked.join("; ") : typed || blockText(answer?.querySelector(".qtype_essay_response") ?? answer);
   return {
     number: Number(cleanNodeText(que.querySelector(".qno")) || 0),
     type: que.classList.value[1] ?? "",
@@ -1057,7 +1306,7 @@ function parseQuizQuestion(que) {
 }
 function blockText(node) {
   if (!node) return "";
-  return cleanTableCell(parse2(node.toString().replace(/<br\s*\/?>|<\/(?:p|div|li|h\d|tr)>/giu, "$& ")));
+  return cleanTableCell(parse3(node.toString().replace(/<br\s*\/?>|<\/(?:p|div|li|h\d|tr)>/giu, "$& ")));
 }
 function labelled(values, labels) {
   const byKey = new Map(Object.entries(values).map(([key, value]) => [labelKey(key), value]));
@@ -1072,7 +1321,7 @@ function tableValues(table) {
   return values;
 }
 function parseResourceHtml(html, resourceId, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const link = root.querySelector(".resourceworkaround a[href], .resourcecontent a[href], a.resourceworkaround[href]");
   const embed = root.querySelector(".resourcecontent iframe[src], .resourcecontent object[data], .resourcecontent embed[src]");
   const rawUrl = link?.getAttribute("href") || embed?.getAttribute("src") || embed?.getAttribute("data") || "";
@@ -1089,7 +1338,7 @@ function parseResourceHtml(html, resourceId, baseUrl) {
   };
 }
 function parseLinkHtml(html, linkId, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const link = root.querySelector(".urlworkaround a[href], .mod_url-content a[href], .externalurl a[href]");
   return {
     id: linkId,
@@ -1100,7 +1349,7 @@ function parseLinkHtml(html, linkId, baseUrl) {
   };
 }
 function parsePageHtml(html, pageId, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const content = first(root, [".box.generalbox", ".activity-description", "[data-region='page-content']", "main"]);
   return {
     id: pageId,
@@ -1111,7 +1360,7 @@ function parsePageHtml(html, pageId, baseUrl) {
   };
 }
 function parseSavedDocumentHtml(html, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const content = first(root, [".book", "[role='main']", "#region-main"]);
   if (!content || !cleanNodeText(content)) return void 0;
   for (const node of content.querySelectorAll(".book_info, .hidden-print, script, meta, link, noscript")) node.remove();
@@ -1127,7 +1376,7 @@ function parseSavedDocumentHtml(html, baseUrl) {
   return content;
 }
 function parseFolderHtml(html, folderId, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const fileEntries = root.querySelectorAll(".foldertree a[href], .fp-filename-icon a[href]").map((link) => {
     const name = cleanNodeText(link);
     const url = resolveUrl(baseUrl, link.getAttribute("href") ?? "");
@@ -1143,7 +1392,7 @@ function parseFolderHtml(html, folderId, baseUrl) {
   };
 }
 function parseForumDiscussionHtml(html, baseUrl, discussionId) {
-  const root = parse2(html);
+  const root = parse3(html);
   let postElements = root.querySelectorAll("div.forumpost[data-post-id]");
   if (!postElements.length) {
     postElements = root.querySelectorAll("article[data-post-id]");
@@ -1155,6 +1404,9 @@ function parseForumDiscussionHtml(html, baseUrl, discussionId) {
     if (!postId) {
       continue;
     }
+    const parentLink = element.querySelectorAll('a[data-region="post-action"][href]').map((link) => new URL(link.getAttribute("href"), baseUrl)).find(
+      (url) => url.pathname.endsWith("/mod/forum/discuss.php") && Number(url.searchParams.get("d")) === discussionId && /^#p\d+$/.test(url.hash) && Number(url.hash.slice(2)) !== postId
+    );
     const header = first(element, ["header", ".header"]);
     const subject = cleanNodeText(
       firstDefined([
@@ -1189,7 +1441,8 @@ function parseForumDiscussionHtml(html, baseUrl, discussionId) {
         profile_url: authorLink ? resolveUrl(baseUrl, authorLink.getAttribute("href") ?? "") : "",
         profile_image_url: ""
       },
-      parent_id: 0,
+      attachments: element.querySelectorAll('.attachments a[href*="pluginfile.php"]').map((link) => ({ name: cleanNodeText(link), size: 0, url: resolveUrl(baseUrl, link.getAttribute("href") ?? "") })),
+      parent_id: safeInt(element.getAttribute("data-parent-post-id")) || safeInt(parentLink?.hash.slice(2)),
       time_created: 0,
       time_modified: 0,
       created_pretty: cleanNodeText(header ? first(header, [".date", "time"]) : null),
@@ -1204,7 +1457,7 @@ function parseForumDiscussionHtml(html, baseUrl, discussionId) {
     id: discussionId,
     subject: posts[0]?.subject ?? "",
     course_id: 0,
-    forum_id: 0,
+    forum_id: parseForumViewCmidFromDiscussionHtml(html) ?? 0,
     group_id: groupId,
     group_name: groupName,
     url: `${baseUrl.replace(/\/$/, "")}/mod/forum/discuss.php?d=${discussionId}`,
@@ -1212,7 +1465,7 @@ function parseForumDiscussionHtml(html, baseUrl, discussionId) {
   };
 }
 function parseForumViewCmidFromDiscussionHtml(html) {
-  const root = parse2(html);
+  const root = parse3(html);
   const link = first(root, ['a[href*="/mod/forum/view.php?id="]', 'a[href*="mod/forum/view.php?id="]']);
   const href = link?.getAttribute("href") ?? "";
   if (!href) {
@@ -1225,7 +1478,7 @@ function parseForumViewCmidFromDiscussionHtml(html) {
   return numericQueryValue(url, "id");
 }
 function parseForumDiscussionRefsHtml(html, baseUrl) {
-  const root = parse2(html);
+  const root = parse3(html);
   const refs = [];
   const seen = /* @__PURE__ */ new Set();
   const links = [
@@ -1248,9 +1501,13 @@ function parseForumDiscussionRefsHtml(html, baseUrl) {
       continue;
     }
     seen.add(discussionId);
+    const row = link.closest('[data-region="discussion-list-item"], tr');
+    const replyCount = row?.querySelector("td.text-center > span");
+    const author = row?.querySelector(".author .author-info > div, .author a[href*='/user/']");
     refs.push({
       id: discussionId,
       subject,
+      ...row ? { pinned: row.classList.contains("pinned"), author: cleanNodeText(author), ...replyCount ? { replies: Number(cleanNodeText(replyCount)) || 0 } : {}, unread: Number(cleanNodeText(row.querySelector("td.text-center a.badge"))) || 0 } : {},
       group_id: 0,
       group_name: "",
       url: resolveUrl(baseUrl, href)
@@ -1259,7 +1516,7 @@ function parseForumDiscussionRefsHtml(html, baseUrl) {
   return refs;
 }
 function parseForumGroupsHtml(html) {
-  const root = parse2(html);
+  const root = parse3(html);
   const select = first(root, ["form#selectgroup select[name='group']", "select[name='group']"]);
   if (!select) {
     return [];
@@ -1282,7 +1539,7 @@ function parseForumGroupsHtml(html) {
   return groups;
 }
 function parseForumDiscussionGroupHtml(html) {
-  const root = parse2(html);
+  const root = parse3(html);
   const groupId = safeInt(root.querySelector("form#mformforum input[name='groupid']")?.getAttribute("value"));
   return [groupId, selectedGroupName(root, groupId)];
 }
@@ -1358,11 +1615,13 @@ function parseMoodleConfig(html) {
   }
 }
 function extractSitename(root) {
+  const site = cleanNodeText(root.querySelector(".sitename"));
+  if (site) return site;
   const title = cleanNodeText(root.querySelector("title"));
   return title.includes("|") ? title.split("|").at(-1)?.trim() ?? title : title;
 }
 function pageTitle(html) {
-  const root = parse2(html);
+  const root = parse3(html);
   const heading = cleanNodeText(root.querySelector("h1"));
   const main = cleanNodeText(root.querySelector("#region-main h2"));
   const title = cleanNodeText(root.querySelector("title"));
@@ -1376,7 +1635,7 @@ function endIn(text, part) {
   return at < 0 ? -1 : at + part.length;
 }
 function activityContext(html) {
-  const root = parse2(html);
+  const root = parse3(html);
   const context = { course_id: parseCourseIdFromPageHtml(html) ?? 0, course_name: "", section_name: "" };
   const breadcrumbs = root.querySelectorAll('nav[aria-label="Breadcrumb"] a[href], #page-navbar .breadcrumb a[href]');
   const links = breadcrumbs.length ? breadcrumbs : root.querySelectorAll('a[href*="/course/view.php?id="]');
@@ -1396,7 +1655,7 @@ function activityContext(html) {
   return context;
 }
 function extractLabeledText(html, label, labels) {
-  const root = parse2(html);
+  const root = parse3(html);
   const wanted = new Set(labelTexts(label, labels).map(labelKey));
   for (const node of root.querySelectorAll("strong, b")) {
     const text = cleanNodeText(node);
@@ -1409,7 +1668,7 @@ function extractLabeledText(html, label, labels) {
   return "";
 }
 function findTableValue(html, label, labels) {
-  const root = parse2(html);
+  const root = parse3(html);
   const wanted = new Set(labelTexts(label, labels).map(labelKey));
   for (const row of root.querySelectorAll("tr")) {
     const cells = row.querySelectorAll("th, td");
@@ -1423,7 +1682,7 @@ function cleanTableCell(node) {
   if (!node) {
     return "";
   }
-  const clone = parse2(node.toString());
+  const clone = parse3(node.toString());
   for (const unwanted of clone.querySelectorAll(".action-menu, .dropdown, .hidden, .accesshide, .userinitials, script, style")) {
     unwanted.remove();
   }
@@ -1452,7 +1711,7 @@ function fileEntry(name, url, baseUrl) {
   return {
     name,
     url,
-    requires_authentication: new URL(url).origin === new URL(baseUrl).origin
+    requires_authentication: isSiteUrl(baseUrl, url)
   };
 }
 function unique(items) {
@@ -1463,8 +1722,8 @@ function unique(items) {
 async function submitAssignmentFiles(deps, request) {
   const id = request.activityId;
   if (!Number.isSafeInteger(id) || id <= 0) throw deps.usage("The assignment id must be a positive integer.");
-  if (!request.files.length && !request.final) throw deps.usage("Give at least one file to upload, or use --final to submit the existing draft.");
-  if (!request.files.length && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
+  if (!request.files.length && request.text === void 0 && !request.final) throw deps.usage("Give files or online text to save, or use --final to submit the existing draft.");
+  if (!request.files.length && request.text === void 0 && request.replace) throw deps.usage("--replace with no files would empty the submission.", "Give the files that should replace the current ones.");
   const seen = /* @__PURE__ */ new Set();
   for (const file of request.files) {
     if (!file.name || /[\\/]/u.test(file.name)) throw deps.usage(`'${file.name}' is not a plain file name.`);
@@ -1474,14 +1733,20 @@ async function submitAssignmentFiles(deps, request) {
   const viewUrl = `${deps.baseUrl}${ASSIGN_VIEW_PATH}?id=${id}`;
   request.onProgress?.("Reading the assignment");
   const viewHtml = await pageText(deps, viewUrl);
-  const before = parseReceiptPage(viewHtml, id, deps.baseUrl);
+  const before = parseReceiptPage(viewHtml, id, deps.baseUrl, deps.labels);
+  if (!request.files.length && request.text === void 0 && !before.files.length && !before.text) throw deps.usage("No saved draft was found to submit.", "Give files or online text to save first.");
   const form = parseSubmissionForm(await pageText(deps, `${viewUrl}&action=editsubmission`), deps);
-  const draft = await listDraftFiles(deps, form);
+  if (request.files.length && !form.itemid) throw deps.usage("This assignment does not accept file uploads.");
+  if (request.text !== void 0 && form.onlineText === void 0) throw deps.usage("This assignment does not accept online text.");
+  const draft = form.itemid ? await listDraftFiles(deps, form) : [];
   const removed = request.replace ? draft.map((file) => file.name) : [];
   const kept = request.replace ? [] : draft.filter((file) => !seen.has(file.name.toLowerCase()));
   checkLimits(deps, form, kept, request.files);
-  const confirmHtml = form.statement ? void 0 : await pageText(deps, `${viewUrl}&action=submit`);
-  const draftStage = draftStageOf(viewHtml, before.submission_status, form, confirmHtml);
+  let draftStage = draftStageOf(viewHtml, form);
+  if (draftStage === void 0 && !request.final) {
+    const confirmHtml = await pageText(deps, `${viewUrl}&action=submit`).catch(() => void 0);
+    draftStage = draftStageOf(viewHtml, form, confirmHtml);
+  }
   if (draftStage !== true && !request.final) {
     throw deps.usage(
       draftStage === false ? "This assignment has no draft stage: Moodle submits it for grading as soon as the files are saved." : "Moodle does not show whether this assignment keeps drafts, so saving the files may submit it for grading at once.",
@@ -1489,11 +1754,6 @@ async function submitAssignmentFiles(deps, request) {
     );
   }
   let statement = form.statement;
-  let confirm;
-  if (request.final && draftStage !== false && confirmHtml !== void 0) {
-    confirm = parseConfirmForm(confirmHtml, deps);
-    statement = confirm.statement;
-  }
   if (statement && !request.acceptStatement) {
     throw deps.usage(`Moodle requires you to accept this statement: "${statement}"`, "Re-run with --accept-statement once you agree.");
   }
@@ -1504,11 +1764,12 @@ async function submitAssignmentFiles(deps, request) {
       ...before,
       action: "planned",
       ...draftStage === void 0 ? {} : { draft_stage: draftStage },
+      ...request.text !== void 0 ? { text: request.text } : {},
       files: draft.map((file) => ({ name: file.name, bytes: file.bytes })),
       uploads,
       removed,
       limits,
-      ...statement ? { statement, statement_accepted: true } : {},
+      ...statement ? { statement, statement_accepted: true } : request.final && draftStage !== false ? { statement_pending: true } : {},
       checked_at: timestamp(deps)
     };
   }
@@ -1521,28 +1782,38 @@ async function submitAssignmentFiles(deps, request) {
     request.onProgress?.(`Uploading ${file.name} (${index + 1}/${request.files.length})`);
     storedNames.push(await uploadDraftFile(deps, form, file));
   }
-  if (storedNames.length || removed.length) {
+  if (storedNames.length || removed.length || request.text !== void 0) {
     request.onProgress?.("Saving the submission");
-    const savedHtml = await postForm(deps, form.action, [...form.fields, ...form.statement ? [["submissionstatement", "1"]] : [], ["submitbutton", "Save changes"]]);
+    const fields = form.fields.filter(([name]) => request.text === void 0 || !["onlinetext_editor[text]", "onlinetext_editor[format]"].includes(name));
+    if (request.text !== void 0) fields.push(["onlinetext_editor[text]", request.text], ["onlinetext_editor[format]", "1"]);
+    const savedHtml = await postForm(deps, form.action, [...fields, ...form.statement ? [["submissionstatement", "1"]] : [], ["submitbutton", "Save changes"]]);
     if (savedHtml !== null) throw deps.fail(`Moodle did not save the submission: ${noticesOf(savedHtml) || "it returned the edit form again without a reason"}`);
   }
   request.onProgress?.("Reading the receipt");
-  let receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
+  let receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl, deps.labels);
   const listed = new Set(receipt.files.map((file) => file.name.toLowerCase()));
   const missing = storedNames.filter((name) => !listed.has(name.toLowerCase()));
   if (missing.length) throw deps.fail(`Moodle saved the submission but its page does not list ${missing.join(", ")}; check the assignment in a browser before submitting.`);
+  if (request.text !== void 0 && cleanText(receipt.text) !== cleanText(htmlToStructuredContent(request.text, deps.baseUrl).text)) {
+    throw deps.fail("Moodle saved the submission but its page does not show the expected online text; check it in a browser before submitting.");
+  }
   let action = "saved";
-  if (isSubmitted(receipt.submission_status) && !request.final) {
+  if (receipt.submission_state === "submitted" && !request.final) {
     throw deps.fail(`Moodle submitted the assignment for grading when the files were saved, although its pages showed a draft stage. It now reports "${receipt.submission_status}"; check it in a browser.`);
   }
-  if (isSubmitted(receipt.submission_status)) action = "submitted";
+  if (receipt.submission_state === "submitted") action = "submitted";
   else if (request.final) {
     request.onProgress?.("Submitting for grading");
-    confirm ??= parseConfirmForm(await pageText(deps, `${viewUrl}&action=submit`), deps);
+    const confirm = parseConfirmForm(await pageText(deps, `${viewUrl}&action=submit`), deps);
+    statement = confirm.statement ?? statement;
+    if (statement && !request.acceptStatement) {
+      const submission = { ...receipt, action: "saved", draft_stage: true, uploads, removed, limits, statement, statement_accepted: false, checked_at: timestamp(deps) };
+      throw Object.assign(deps.usage(`The draft was saved. Moodle requires you to accept this statement: "${statement}"`, `Read the statement, then run moodle submit ${id} --final --accept-statement once you agree.`), { submission });
+    }
     const errorHtml = await postForm(deps, confirm.action, [...confirm.fields, ...confirm.statement ? [["submissionstatement", "1"]] : [], ["submitbutton", "Continue"]]);
     if (errorHtml !== null) throw deps.fail(`Moodle did not submit the assignment for grading: ${noticesOf(errorHtml) || "it returned the confirmation page again without a reason"}`);
-    receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl);
-    if (!isSubmitted(receipt.submission_status) && !receipt.awaiting?.length) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
+    receipt = parseReceiptPage(await pageText(deps, viewUrl), id, deps.baseUrl, deps.labels);
+    if (receipt.submission_state !== "submitted" && !receipt.awaiting?.length) throw deps.fail(`Moodle accepted the confirmation but still reports "${receipt.submission_status || "no status"}"; check the assignment in a browser.`);
     action = "submitted";
   }
   return {
@@ -1556,19 +1827,37 @@ async function submitAssignmentFiles(deps, request) {
     checked_at: timestamp(deps)
   };
 }
+async function removeAssignmentSubmission(deps, activityId, dryRun = false) {
+  if (!Number.isSafeInteger(activityId) || activityId <= 0) throw deps.usage("The assignment id must be a positive integer.");
+  const viewUrl = `${deps.baseUrl}${ASSIGN_VIEW_PATH}?id=${activityId}`;
+  const before = parseReceiptPage(await pageText(deps, viewUrl), activityId, deps.baseUrl, deps.labels);
+  const html = await pageText(deps, `${viewUrl}&action=removesubmissionconfirm`);
+  const form = formWithAction(parse4(html), "removesubmission");
+  if (!form) throw deps.fail(`Moodle cannot remove this submission${noticesOf(html) ? `: ${noticesOf(html)}` : "; it may be locked or graded"}.`);
+  const fields = formFields(form);
+  if (!fields.some(([name, value]) => name === "sesskey" && value)) throw deps.fail("Moodle's removal confirmation has no session key.");
+  if (dryRun) return { ...before, action: "planned" };
+  const action = resolveUrl(deps.baseUrl, form.getAttribute("action") || viewUrl);
+  const errorHtml = await postForm(deps, action, fields);
+  if (errorHtml !== null) throw deps.fail(`Moodle did not remove the submission: ${noticesOf(errorHtml) || "it returned the confirmation again"}`);
+  const receipt = parseReceiptPage(await pageText(deps, viewUrl), activityId, deps.baseUrl, deps.labels);
+  if (receipt.files.length || receipt.text || receipt.submission_state === "submitted" || receipt.submission_state === "draft") throw deps.fail("Moodle accepted removal but the submission still contains work; check it in a browser.");
+  return { ...receipt, action: "removed" };
+}
 function parseSubmissionForm(html, deps) {
-  const root = parse3(html);
+  const root = parse4(html);
   const form = formWithAction(root, "savesubmission");
   if (!form) {
     const notice = noticesOf(html);
-    if (root.querySelectorAll("input[type=submit], button").some((button) => /begin assignment/iu.test(cleanText(button.getAttribute("value") ?? button.textContent)))) {
+    if (root.querySelector('a[href*="begin=1"]')) {
       throw deps.fail("This is a timed assignment; start it in a browser before uploading files.");
     }
     throw deps.fail(notice ? `Moodle is not accepting a submission: ${notice}` : "Moodle did not show a submission form for this assignment.");
   }
   const itemid = form.querySelector("input[name=files_filemanager]")?.getAttribute("value")?.trim() ?? "";
-  if (!itemid) throw deps.fail("This assignment does not accept file uploads.");
-  const options = filemanagerOptions(html, itemid);
+  const editor = form.querySelector('textarea[name="onlinetext_editor[text]"]');
+  if (!itemid && !editor) throw deps.fail("This assignment accepts neither file uploads nor online text.");
+  const options = itemid ? filemanagerOptions(html, itemid) : {};
   if (!options) throw deps.fail("Moodle did not describe the file upload area for this assignment.");
   const fields = formFields(form);
   const sesskey = fields.find(([name]) => name === "sesskey")?.[1] ?? "";
@@ -1576,7 +1865,7 @@ function parseSubmissionForm(html, deps) {
   const picker = record(options.filepicker);
   const repositories = (Array.isArray(picker.repositories) ? picker.repositories : Object.values(record(picker.repositories))).map(record);
   const upload = repositories.find((repo) => repo.type === "upload");
-  if (!upload || upload.id === void 0) throw deps.fail("The site does not allow direct file uploads for this assignment.");
+  if (itemid && (!upload || upload.id === void 0)) throw deps.fail("The site does not allow direct file uploads for this assignment.");
   return {
     action: resolveUrl(deps.baseUrl, form.getAttribute("action") || `${deps.baseUrl}${ASSIGN_VIEW_PATH}`),
     fields,
@@ -1584,18 +1873,19 @@ function parseSubmissionForm(html, deps) {
     itemid,
     clientId: String(options.client_id ?? ""),
     contextId: String(record(options.context).id ?? ""),
-    repoId: String(upload.id),
+    repoId: String(upload?.id ?? ""),
     author: String(picker.author ?? ""),
     license: String(picker.defaultlicense ?? ""),
     maxBytes: integer(options.maxbytes),
     areaMaxBytes: integer(options.areamaxbytes),
     maxFiles: integer(options.maxfiles),
     acceptedTypes: acceptedTypesOf(options.accepted_types),
+    ...editor ? { onlineText: editor.textContent } : {},
     ...statementOf(form)
   };
 }
 function parseConfirmForm(html, deps) {
-  const root = parse3(html);
+  const root = parse4(html);
   const form = formWithAction(root, "confirmsubmit");
   if (!form) {
     const notice = noticesOf(html);
@@ -1603,20 +1893,12 @@ function parseConfirmForm(html, deps) {
   }
   return { action: resolveUrl(deps.baseUrl, form.getAttribute("action") || `${deps.baseUrl}${ASSIGN_VIEW_PATH}`), fields: formFields(form), ...statementOf(form) };
 }
-function parseReceiptPage(html, activityId, baseUrl) {
-  const page = parseAssignmentHtml(html, activityId, baseUrl);
-  const root = parse3(html);
-  const files = /* @__PURE__ */ new Map();
-  const add = (link) => {
-    const name = cleanText(link.textContent);
-    const href = link.getAttribute("href") ?? "";
-    if (name && !files.has(name.toLowerCase())) files.set(name.toLowerCase(), { name, ...href ? { url: resolveUrl(baseUrl, href) } : {} });
-  };
-  for (const link of root.querySelectorAll(".fileuploadsubmission a[href]")) add(link);
-  for (const link of tableCell(root, "File submissions")?.querySelectorAll("a[href]") ?? []) add(link);
-  const groupCell = tableCell(root, "Group");
+function parseReceiptPage(html, activityId, baseUrl, labels) {
+  const page = parseAssignmentHtml(html, activityId, baseUrl, labels);
+  const root = parse4(html);
+  const groupCell = tableCell(root, "Group", labels);
   const group = groupCell && !groupCell.querySelector(".alert") ? cleanText(groupCell.textContent) : "";
-  const pending = tableCell(root, "Submission status")?.querySelectorAll("div").find((div) => /^Users who need to submit:/iu.test(cleanText(div.textContent)));
+  const pending = tableCell(root, "Submission status", labels)?.querySelectorAll("div").find((div) => div.querySelector('a[href*="/user/"]'));
   const awaiting = pending?.querySelectorAll("a").map((link) => cleanText(link.textContent)).filter(Boolean) ?? [];
   return {
     id: activityId,
@@ -1625,24 +1907,29 @@ function parseReceiptPage(html, activityId, baseUrl) {
     url: page.url,
     ...group ? { group } : {},
     ...awaiting.length ? { awaiting } : {},
-    submission_status: page.submission_status.replace(/\s*Users who need to submit:.*$/isu, ""),
+    ...page.submission_state ? { submission_state: page.submission_state } : {},
+    ...page.submission?.text ? { text: page.submission.text } : {},
+    submission_status: pending ? page.submission_status.replace(cleanText(pending.textContent), "").trim() : page.submission_status,
     grading_status: page.grading_status,
-    due: page.due_pretty || cleanText(tableCell(root, "Due date")?.textContent),
+    due: page.due_pretty || cleanText(tableCell(root, "Due date", labels)?.textContent),
     time_remaining: page.time_remaining,
-    last_modified: cleanText(tableCell(root, "Last modified")?.textContent),
-    files: [...files.values()]
+    last_modified: cleanText(tableCell(root, "Last modified", labels)?.textContent),
+    files: page.submission?.files.map((file) => ({ name: file.name, url: file.url })) ?? []
   };
 }
-function draftStageOf(viewHtml, status, form, confirmHtml) {
+function draftStageOf(viewHtml, form, confirmHtml) {
   if (form.statement) return false;
-  const confirm = confirmHtml === void 0 ? null : formWithAction(parse3(confirmHtml), "confirmsubmit");
+  const confirm = confirmHtml === void 0 ? null : formWithAction(parse4(confirmHtml), "confirmsubmit");
   if (confirm && statementOf(confirm).statement) return true;
-  if (formWithAction(parse3(viewHtml), "submit")) return true;
-  if (isSubmitted(status)) return false;
+  if (formWithAction(parse4(viewHtml), "submit")) return true;
+  const parsed = parse4(viewHtml);
+  const root = parsed.querySelector(".submissionstatustable") ?? parsed;
+  if (root.querySelector(".submissionstatusdraft")) return true;
+  if (root.querySelector(".submissionstatussubmitted")) return false;
   return void 0;
 }
 function noticesOf(html) {
-  const root = parse3(html);
+  const root = parse4(html);
   const texts = [];
   for (const node of root.querySelectorAll(".alert, .invalid-feedback, .form-control-feedback, .error, [data-fieldtype] .text-danger")) {
     for (const junk of node.querySelectorAll("button, .close")) junk.remove();
@@ -1688,52 +1975,25 @@ function statementOf(form) {
   const text = cleanText(label?.textContent).replace(/\s*Required\s*$/u, "").trim();
   return { statement: text || "Submission statement" };
 }
-function filemanagerOptions(html, itemid) {
-  const pattern = /M\.form_filemanager\.init\(\s*Y\s*,\s*/gu;
-  let match;
-  while (match = pattern.exec(html)) {
-    const json = balancedObject(html, match.index + match[0].length);
-    if (!json) continue;
-    try {
-      const options = JSON.parse(json);
-      if (isRecord(options) && String(options.itemid) === itemid) return options;
-    } catch {
-    }
-  }
-  return null;
-}
 function acceptedTypesOf(value) {
   const list = Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : value === void 0 ? [] : [value];
   const types = list.map((type) => String(type).trim()).filter(Boolean);
   return types.length === 0 || types.includes("*") ? "*" : types;
 }
-function balancedObject(text, start) {
-  if (text[start] !== "{") return null;
-  let depth = 0;
-  let quoted = false;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (quoted) {
-      if (char === "\\") index += 1;
-      else if (char === '"') quoted = false;
-    } else if (char === '"') quoted = true;
-    else if (char === "{") depth += 1;
-    else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return text.slice(start, index + 1);
-    }
-  }
-  return null;
-}
-function tableCell(root, label) {
+function tableCell(root, label, labels) {
   for (const row of root.querySelectorAll("tr")) {
     const cells = row.querySelectorAll("th, td");
-    if (cells.length > 1 && cleanText(cells[0].textContent) === label) return cells[1];
+    if (cells.length > 1 && labelTexts(label, labels).includes(cleanText(cells[0].textContent))) return cells[1];
   }
   return null;
 }
 async function pageText(deps, url) {
-  return (await deps.request(url)).text();
+  try {
+    return await (await deps.request(url)).text();
+  } catch (error) {
+    if (record(error).moodleErrorCode === "nopermission") throw deps.fail("This assignment is locked, graded, or no longer accepts submissions.", "submissionlocked");
+    throw error;
+  }
 }
 async function postForm(deps, action, fields) {
   const response = await deps.request(action, {
@@ -1826,9 +2086,6 @@ function describeLimits(form) {
     ...form.acceptedTypes !== "*" ? { accepted_types: form.acceptedTypes } : {}
   };
 }
-function isSubmitted(status) {
-  return /\bsubmitted\b/iu.test(status) && !/\bnot submitted\b/iu.test(status);
-}
 function size(bytes) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -1849,16 +2106,17 @@ function record(value) {
 }
 
 // src/moodle-quiz-core.ts
-import { parse as parse4 } from "node-html-parser";
+import { parse as parse5 } from "node-html-parser";
 async function planQuizStart(deps, quizId) {
   const { viewUrl, viewHtml, root } = await readQuizView(deps, quizId);
-  const start = formWithAction2(root, QUIZ_START_PATH);
+  const resume = resumeControl(root);
+  const start = formWithAction2(root, QUIZ_START_PATH) ?? resume;
   if (!start) throw noAttemptButton(deps, root, viewUrl);
   const quiz = parseQuizHtml(viewHtml, quizId, deps.baseUrl);
   const control = start.querySelector("button, input[type=submit]");
   const button = cleanText(control?.getAttribute("value") ?? control?.textContent);
   const cards = root.querySelectorAll("table.quizreviewsummary");
-  const inProgress = /continue/iu.test(button) || cards.some((card) => /in progress/iu.test(cleanText(card.textContent)));
+  const inProgress = Boolean(resume) || /continue/iu.test(button) || cards.some((card) => /in progress/iu.test(cleanText(card.textContent)));
   return {
     quiz_id: quizId,
     name: quiz.name,
@@ -1872,18 +2130,24 @@ async function planQuizStart(deps, quizId) {
 }
 async function startQuizAttempt(deps, quizId, options = {}) {
   const { viewUrl, root } = await readQuizView(deps, quizId);
-  const resume = formWithAction2(root, QUIZ_ATTEMPT_PATH) ?? root.querySelector(`a[href*="${QUIZ_ATTEMPT_PATH}?"]`);
+  let response;
+  const resume = resumeControl(root);
   if (resume) {
     const target = resume.tagName.toLowerCase() === "form" ? `${resolveUrl(deps.baseUrl, resume.getAttribute("action") ?? "")}?${new URLSearchParams(formFields2(resume)).toString()}` : resolveUrl(deps.baseUrl, resume.getAttribute("href") ?? "");
     const attempt = numberParam(target, "attempt");
-    if (attempt) return getAttemptPage(deps, attempt, quizId);
+    if (attempt) {
+      response = await deps.request(attemptUrl(deps.baseUrl, attempt, quizId, 0));
+      if (!onPath(response.url, QUIZ_START_PATH)) assertAttemptAccess(deps, response.url, attempt, quizId);
+    }
   }
-  const start = formWithAction2(root, QUIZ_START_PATH);
-  if (!start) throw noAttemptButton(deps, root, viewUrl);
-  let response = await deps.request(resolveUrl(deps.baseUrl, start.getAttribute("action") ?? ""), postInit(formFields2(start)));
+  if (!response) {
+    const start = formWithAction2(root, QUIZ_START_PATH);
+    if (!start) throw noAttemptButton(deps, root, viewUrl);
+    response = await deps.request(resolveUrl(deps.baseUrl, start.getAttribute("action") ?? ""), postInit(formFields2(start)));
+  }
   let html = await response.text();
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) {
-    const preflight = formWithAction2(parse4(html), QUIZ_START_PATH);
+    const preflight = formWithAction2(parse5(html), QUIZ_START_PATH);
     if (!preflight) throw deps.fail(`Moodle did not start the attempt: ${noticesOf2(html) || "it returned an unexpected page"}`);
     const fields = [...formFields2(preflight).filter(([name]) => name !== "quizpassword"), ["submitbutton", "Start attempt"]];
     if (preflight.querySelector("input[name=quizpassword]")) {
@@ -1895,14 +2159,14 @@ async function startQuizAttempt(deps, quizId, options = {}) {
     html = await response.text();
     if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) throw deps.fail(`Moodle did not start the attempt: ${noticesOf2(html) || "it returned the pre-flight form again"}`);
   }
-  return withoutForm(parseAttemptPage(html, response.url, deps));
+  return withoutForm(parseAttemptPage(html, response.url, deps, response.headers?.get("date")));
 }
 async function readQuizView(deps, quizId) {
   if (!Number.isSafeInteger(quizId) || quizId <= 0) throw deps.usage("The quiz id must be a positive integer.");
   const viewUrl = `${deps.baseUrl}${QUIZ_VIEW_PATH}?id=${quizId}`;
   const viewHtml = await pageText2(deps, viewUrl);
   if (/safeexambrowser|Safe Exam Browser/iu.test(viewHtml)) throw deps.usage("This quiz requires the Safe Exam Browser, which the CLI cannot provide.", "Open it in the browser Moodle asks for.");
-  return { viewUrl, viewHtml, root: parse4(viewHtml) };
+  return { viewUrl, viewHtml, root: parse5(viewHtml) };
 }
 function noAttemptButton(deps, root, viewUrl) {
   const reason = cleanText(root.querySelector(".quizattempt, .quizinfo")?.textContent) || "the quiz page shows no attempt button";
@@ -1926,9 +2190,19 @@ async function loadAttemptPage(deps, attemptId, quizId, page) {
   const url = attemptUrl(deps.baseUrl, attemptId, quizId, page);
   const response = await deps.request(url);
   const html = await response.text();
-  if (onPath(response.url, QUIZ_REVIEW_PATH)) throw deps.usage(`Attempt ${attemptId} is already finished.`, `Its review is at ${response.url}`);
+  assertAttemptAccess(deps, response.url, attemptId, quizId);
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) throw deps.fail(`Moodle did not show attempt ${attemptId}: ${noticesOf2(html) || "it redirected elsewhere"}`);
-  return parseAttemptPage(html, response.url, deps);
+  return parseAttemptPage(html, response.url, deps, response.headers?.get("date"));
+}
+function assertAttemptAccess(deps, url, attemptId, quizId) {
+  if (onPath(url, QUIZ_START_PATH)) throw deps.usage(
+    `Moodle requires the access password again for attempt ${attemptId} in this session.`,
+    `Run moodle quiz start ${quizId} --password <password> to continue, or omit --password at a terminal to be prompted.`
+  );
+  if (onPath(url, QUIZ_REVIEW_PATH) || onPath(url, QUIZ_SUMMARY_PATH)) throw deps.usage(
+    `Attempt ${attemptId} is already finished or its time ran out; Moodle may have submitted it automatically.`,
+    `Check the attempt at ${url}`
+  );
 }
 function withoutForm({ form: _form, ...page }) {
   return page;
@@ -1943,12 +2217,13 @@ async function answerQuizQuestion(deps, request) {
   const page = entry.page === first2.page ? first2 : await loadAttemptPage(deps, request.attemptId, request.quizId, entry.page);
   const question = page.questions.find((item) => item.slot === entry.slot);
   if (!question) throw deps.fail(`Page ${entry.page + 1} does not contain question ${request.question}.`);
-  const fields = encodeAnswer(deps, page.form, question, request.value);
+  const fields = encodeAnswer(deps, page.form, question, request.value ?? "", request.values);
   const replay = fields.map(([name, value]) => name === "nextpage" ? [name, String(page.page)] : [name, value]);
   const response = await deps.request(page.form.action, postInit(replay));
   const html = await response.text();
+  assertAttemptAccess(deps, response.url, request.attemptId, request.quizId);
   if (!onPath(response.url, QUIZ_ATTEMPT_PATH)) throw deps.fail(`Moodle did not save the answer: ${noticesOf2(html) || "it left the attempt page"}`);
-  const after = parseAttemptPage(html, response.url, deps);
+  const after = parseAttemptPage(html, response.url, deps, response.headers?.get("date"));
   const saved = after.questions.find((item) => item.slot === question.slot);
   if (!saved || /not yet answered|not answered/iu.test(saved.state)) throw deps.fail(`Moodle accepted the post but still reports question ${request.question} as "${saved?.state || "missing"}".`);
   return withoutForm(after);
@@ -1962,17 +2237,17 @@ async function loadAttemptSummary(deps, attemptId, quizId) {
   const response = await deps.request(url);
   const html = await response.text();
   if (onPath(response.url, QUIZ_REVIEW_PATH)) throw deps.usage(`Attempt ${attemptId} is already finished.`, `Its review is at ${response.url}`);
-  const root = parse4(html);
-  const rows = root.querySelectorAll("table.quizsummaryofattempt tbody tr").flatMap((row) => {
+  const root = parse5(html);
+  const rows3 = root.querySelectorAll("table.quizsummaryofattempt tbody tr").flatMap((row) => {
     const cells = row.querySelectorAll("td");
     if (cells.length < 2) return [];
     const link = cells[0].querySelector("a")?.getAttribute("href") ?? "";
     return [{ number: cleanText(cells[0].textContent), state: cleanText(cells[1].textContent), page: numberParam(link, "page") ?? 0 }];
   });
   const finish = root.querySelector("form#frm-finishattempt") ?? formWithAction2(root, QUIZ_PROCESS_PATH);
-  if (!finish || !rows.length) throw deps.fail(`Moodle did not show the summary of attempt ${attemptId}: ${noticesOf2(html) || "the page has no finish button"}`);
+  if (!finish || !rows3.length) throw deps.fail(`Moodle did not show the summary of attempt ${attemptId}: ${noticesOf2(html) || "the page has no finish button"}`);
   const form = { action: resolveUrl(deps.baseUrl, finish.getAttribute("action") ?? ""), fields: formFields2(finish) };
-  return { attempt: attemptId, quiz_id: quizId, name: pageHeading(root), rows, url, form };
+  return { attempt: attemptId, quiz_id: quizId, name: pageHeading(root), rows: rows3, url, form };
 }
 async function finishQuizAttempt(deps, attemptId, quizId) {
   const summary = await loadAttemptSummary(deps, attemptId, quizId);
@@ -1992,11 +2267,11 @@ async function finishQuizAttempt(deps, attemptId, quizId) {
     return receipt;
   }
   const probe = await deps.request(attemptUrl(deps.baseUrl, attemptId, quizId, 0));
-  if (onPath(probe.url, QUIZ_ATTEMPT_PATH) && parse4(await probe.text()).querySelector("form#responseform")) throw deps.fail(`Moodle accepted the finish request but attempt ${attemptId} is still open; check the quiz in a browser.`);
+  if (onPath(probe.url, QUIZ_ATTEMPT_PATH) && parse5(await probe.text()).querySelector("form#responseform")) throw deps.fail(`Moodle accepted the finish request but attempt ${attemptId} is still open; check the quiz in a browser.`);
   return receipt;
 }
-function parseAttemptPage(html, url, deps) {
-  const root = parse4(html);
+function parseAttemptPage(html, url, deps, serverDate) {
+  const root = parse5(html);
   const form = root.querySelector("form#responseform");
   if (!form) throw deps.fail(`Moodle did not render an attempt page: ${noticesOf2(html) || "no response form found"}`);
   const attempt = numberParam(url, "attempt") ?? Number(form.querySelector("input[name=attempt]")?.getAttribute("value"));
@@ -2023,6 +2298,7 @@ function parseAttemptPage(html, url, deps) {
     pages: Math.max(page + 1, ...navigation.map((entry) => entry.page + 1)),
     questions,
     navigation,
+    ...attemptTimer(root, html, serverDate),
     url: attemptUrl(deps.baseUrl, attempt, quizId, page),
     form: { action: resolveUrl(deps.baseUrl, form.getAttribute("action") ?? ""), fields: formFields2(form) }
   };
@@ -2065,9 +2341,40 @@ function parseAttemptQuestion(que) {
   if (texts.length === 1 && only(texts)) {
     const text = texts[0];
     const html = tag(text) === "textarea";
-    return { ...base, kind: "text", field: text.getAttribute("name"), answer: html ? blockText(parse4(text.textContent)) : cleanText(text.getAttribute("value") ?? "") };
+    return { ...base, kind: "text", field: text.getAttribute("name"), answer: html ? blockText(parse5(text.textContent)) : cleanText(text.getAttribute("value") ?? "") };
+  }
+  if (texts.length > 1 && only(texts) && base.type === "formulas") {
+    return {
+      ...base,
+      kind: "fields",
+      fields: texts.map((text) => {
+        const html = tag(text) === "textarea";
+        const label = fieldLabel(que, text);
+        return {
+          name: text.getAttribute("name"),
+          ...label ? { label } : {},
+          kind: html ? "textarea" : "text",
+          answer: html ? blockText(parse5(text.textContent)) : cleanText(text.getAttribute("value") ?? "")
+        };
+      })
+    };
   }
   return base;
+}
+function fieldLabel(que, field) {
+  const id = field.getAttribute("id");
+  return cleanText(id ? que.querySelectorAll("label[for]").find((label) => label.getAttribute("for") === id)?.textContent : "");
+}
+function attemptTimer(root, html, serverDate) {
+  const serverNow = Date.parse(serverDate ?? "");
+  const now = Number.isFinite(serverNow) ? serverNow : Date.now();
+  const timer = root.querySelector("#quiz-timer, [data-endtime]");
+  const end = Number(timer?.getAttribute("data-endtime") ?? timer?.getAttribute("endtime"));
+  if (end > 0) return { time_left_s: Math.max(0, Math.ceil(end - now / 1e3)), ends_at: new Date(end * 1e3).toISOString() };
+  const remaining = html.match(/M\.mod_quiz\.timer\.init\(\s*(?:Y\s*,\s*)?(-?\d+)/u)?.[1];
+  if (remaining === void 0) return {};
+  const seconds = Math.max(0, Number(remaining));
+  return { time_left_s: seconds, ends_at: new Date(now + seconds * 1e3).toISOString() };
 }
 function option(que, input, index) {
   const labelId = input.getAttribute("aria-labelledby");
@@ -2076,9 +2383,41 @@ function option(que, input, index) {
   const text = blockText(label) || label?.querySelectorAll("img").map((img) => cleanText(img.getAttribute("alt"))).filter(Boolean).join(" ") || "(image; see the quiz in a browser)";
   return { key: String.fromCharCode(97 + index), field: input.getAttribute("name") ?? "", value: input.getAttribute("value") ?? "", text, chosen: input.hasAttribute("checked") };
 }
-function encodeAnswer(deps, form, question, value) {
-  const raw = value.trim();
+function splitFieldAnswers(value) {
+  const trimmed = value.trim();
+  return trimmed ? trimmed.split(/\r?\n|;/u).map((part) => part.trim()) : [];
+}
+function encodeAnswer(deps, form, question, value, values) {
   if (question.kind === "info") throw deps.usage(`Question ${question.number} is an information block; it takes no answer.`);
+  if (question.kind !== "fields" && values !== void 0) {
+    if (values.length !== 1) {
+      throw deps.usage(
+        `Question ${question.number} takes exactly one --value, not ${values.length}.`,
+        question.kind === "multi" ? "Pass multiple options in one value, such as --value a,c." : void 0
+      );
+    }
+    value = values[0];
+  }
+  const raw = value.trim();
+  if (question.kind === "fields") {
+    const answerFields = question.fields ?? [];
+    const answers = values?.length ? values : splitFieldAnswers(value);
+    if (answers.length !== answerFields.length) {
+      throw deps.usage(
+        `Question ${question.number} needs ${answerFields.length} values, got ${answers.length}.`,
+        `Pass them in order with --value, for example: ${answerFields.map((_, index) => `--value <${index + 1}>`).join(" ")}.`
+      );
+    }
+    const names = new Set(answerFields.map((field) => field.name));
+    const next = form.fields.filter(([name]) => !names.has(name));
+    for (const [index, field] of answerFields.entries()) {
+      const answer = answers[index].trim();
+      if (!answer) throw deps.usage(`Question ${question.number} is missing answer ${index + 1}.`);
+      const format = form.fields.find(([name]) => name === `${field.name}format`)?.[1];
+      next.push([field.name, field.kind === "textarea" && format === "1" ? paragraphs(answer) : answer]);
+    }
+    return next;
+  }
   if (question.kind === "unsupported" || !question.field && question.kind !== "multi") throw deps.usage(`Question ${question.number} is a ${question.type || "question"} type the CLI cannot answer.`, "Answer it in a browser; other questions can still be answered here.");
   if (question.kind === "text") {
     if (!raw) throw deps.usage(`Question ${question.number} needs a written answer.`);
@@ -2111,7 +2450,7 @@ function infoLine(root, label) {
   return "";
 }
 function noticesOf2(html) {
-  const root = parse4(html);
+  const root = parse5(html);
   const texts = [];
   for (const node of root.querySelectorAll(".alert, .errorbox, .error, #notice")) {
     for (const junk of node.querySelectorAll("button, .close")) junk.remove();
@@ -2119,6 +2458,9 @@ function noticesOf2(html) {
     if (text && !texts.includes(text)) texts.push(text);
   }
   return texts.join(" ");
+}
+function resumeControl(root) {
+  return formWithAction2(root, QUIZ_ATTEMPT_PATH) ?? root.querySelector(`a[href*="${QUIZ_ATTEMPT_PATH}?"]`);
 }
 function formWithAction2(root, path) {
   return root.querySelectorAll("form").find((form) => onPath(form.getAttribute("action") ?? "", path)) ?? null;
@@ -2181,6 +2523,142 @@ function paragraphs(text) {
   return escaped.split(/\n\s*\n/u).map((block) => `<p>${block.trim().replace(/\n/gu, "<br>")}</p>`).join("");
 }
 
+// src/moodle-forum-write-core.ts
+import { parse as parse6 } from "node-html-parser";
+async function replyForumPost(deps, postId, text, files = []) {
+  if (!text.trim()) throw deps.usage("A forum reply needs some text.");
+  const html = await (await deps.request(`${deps.baseUrl}/mod/forum/post.php?reply=${postId}`)).text();
+  const form = postForm2(deps, html);
+  const subject = form.querySelector('input[name="subject"]')?.getAttribute("value") ?? "";
+  const discussionId = Number(form.querySelector('input[name="discussion"]')?.getAttribute("value"));
+  if (!discussionId || !subject) throw deps.fail("Moodle did not show the reply's discussion and subject.");
+  const options = [];
+  if (files.length) options.push({ name: "attachmentsid", value: await uploadAttachments(deps, html, form, files) });
+  const result = asRecord(await deps.call(FUNC_ADD_DISCUSSION_POST, { postid: postId, subject, message: text, messageformat: 2, options }));
+  const id = numberValue(result.postid);
+  if (!id) throw deps.fail("Moodle did not return a post id for the reply.");
+  return verifyPost(deps, discussionId, id, postId);
+}
+async function createForumDiscussion(deps, forumCmid, subject, text) {
+  if (!subject.trim() || !text.trim()) throw deps.usage("A new discussion needs a subject and text.");
+  const viewHtml = await (await deps.request(`${deps.baseUrl}/mod/forum/view.php?id=${forumCmid}`)).text();
+  const previous = new Set(parseForumDiscussionRefsHtml(viewHtml, deps.baseUrl).map((ref) => ref.id));
+  const view = parse6(viewHtml);
+  const link = view.querySelectorAll("a[href]").find((node) => {
+    const url2 = new URL(node.getAttribute("href") ?? "", deps.baseUrl);
+    return url2.pathname.endsWith("/mod/forum/post.php") && url2.searchParams.has("forum");
+  });
+  const addForm = view.querySelectorAll("form").find((node) => node.querySelector('input[name="forum"]'));
+  const forumId = link ? new URL(link.getAttribute("href"), deps.baseUrl).searchParams.get("forum") : addForm?.querySelector('input[name="forum"]')?.getAttribute("value");
+  if (!forumId) throw deps.usage("Moodle does not offer a new discussion in this forum.");
+  const html = await (await deps.request(`${deps.baseUrl}/mod/forum/post.php?forum=${encodeURIComponent(forumId)}`)).text();
+  const postingCmid = Number(parseMoodleConfig(html).contextInstanceId);
+  if (postingCmid && postingCmid !== forumCmid) throw deps.fail(`Moodle offered the posting form of activity ${postingCmid}, not forum ${forumCmid}; nothing was posted.`);
+  const form = postForm2(deps, html);
+  const fields = formFields3(form);
+  fields.set("subject", subject.trim());
+  fields.set("message[text]", text);
+  fields.set("message[format]", "2");
+  fields.set("submitbutton", "1");
+  const response = await deps.request(new URL(form.getAttribute("action") || "post.php", `${deps.baseUrl}/mod/forum/post.php`).toString(), { method: "POST", body: fields });
+  const responseHtml = await response.text();
+  const url = new URL(response.url, deps.baseUrl);
+  let discussionId = url.pathname.endsWith("/mod/forum/discuss.php") ? Number(url.searchParams.get("d")) : 0;
+  if (!discussionId) {
+    const afterHtml = await (await deps.request(`${deps.baseUrl}/mod/forum/view.php?id=${forumCmid}`)).text();
+    const added = parseForumDiscussionRefsHtml(afterHtml, deps.baseUrl).filter((ref) => !previous.has(ref.id) && ref.subject === subject.trim());
+    if (added.length === 1) discussionId = added[0].id;
+  }
+  if (!discussionId) {
+    if (findPostForm(responseHtml)) throw deps.fail(`Moodle did not create the discussion: ${noticesOf2(responseHtml) || "it returned the posting form"}`);
+    throw deps.fail(`Moodle may have created the discussion, but it could not be found in forum ${forumCmid}. Check the forum before posting again.`);
+  }
+  const discussion = await deps.getDiscussion(discussionId);
+  const first2 = discussion.posts.find((post) => !post.parent_id && post.subject === subject.trim());
+  if (!first2) throw deps.fail(`Moodle created discussion ${discussionId}, but its first post could not be verified. Check it before posting again.`);
+  return { id: first2.id, discussion_id: discussionId, parent_id: 0, url: `${deps.baseUrl}/mod/forum/discuss.php?d=${discussionId}#p${first2.id}` };
+}
+async function setForumSubscription(deps, forumCmid, subscribed) {
+  const labels = asArray(await deps.call(FUNC_GET_STRINGS, { strings: ["subscribe", "unsubscribe"].map((stringid) => ({ stringid, component: "forum" })) })).map((item) => cleanText(stringValue(asRecord(item).string)));
+  if (!labels[0] || !labels[1]) throw deps.fail("Moodle did not provide its subscription labels.");
+  const viewUrl = `${deps.baseUrl}/mod/forum/view.php?id=${forumCmid}`;
+  const readToggle = (html) => {
+    const root = parse6(html);
+    for (const element of root.querySelectorAll("a[href], form[action]")) {
+      const url = new URL(element.getAttribute("href") ?? element.getAttribute("action") ?? "", deps.baseUrl);
+      if (!isSiteUrl(deps.baseUrl, url) || !url.pathname.endsWith("/mod/forum/subscribe.php")) continue;
+      if (element.tagName === "FORM") for (const [key, value] of formFields3(element)) url.searchParams.set(key, value);
+      if (url.searchParams.has("d") || url.searchParams.has("mode") || url.searchParams.has("user")) continue;
+      const label = cleanText(element.textContent);
+      if (label === labels[0] || label === labels[1]) return { url, subscribed: label === labels[1] };
+    }
+    return null;
+  };
+  const before = readToggle(await (await deps.request(viewUrl)).text());
+  if (!before) throw deps.usage("Moodle does not offer a subscription toggle for this forum; subscriptions may be forced or disabled.");
+  if (before.subscribed === subscribed) return { forum_id: forumCmid, subscribed };
+  if (!before.url.searchParams.has("sesskey")) throw deps.fail("Moodle's subscription control has no session key.");
+  before.url.searchParams.set("returnurl", `/mod/forum/view.php?id=${forumCmid}`);
+  const body = new URLSearchParams(before.url.searchParams);
+  before.url.search = "";
+  const response = await deps.request(before.url.toString(), { method: "POST", body });
+  await response.body?.cancel();
+  const after = readToggle(await (await deps.request(viewUrl)).text());
+  if (!after || after.subscribed !== subscribed) throw deps.fail("Moodle did not confirm the requested forum subscription state.");
+  return { forum_id: forumCmid, subscribed };
+}
+async function verifyPost(deps, discussionId, postId, parentId) {
+  const discussion = await deps.getDiscussion(discussionId);
+  const post = discussion.posts.find((item) => item.id === postId && item.parent_id === parentId);
+  if (!post) throw deps.fail(`Moodle returned post ${postId}, but the reply could not be verified in discussion ${discussionId}.`);
+  return { id: postId, discussion_id: discussionId, parent_id: parentId, url: `${deps.baseUrl}/mod/forum/discuss.php?d=${discussionId}#p${postId}` };
+}
+function findPostForm(html) {
+  return parse6(html).querySelectorAll("form").find((node) => node.querySelector('input[name="subject"]') && node.querySelector('textarea[name="message[text]"]'));
+}
+function postForm2(deps, html) {
+  const form = findPostForm(html);
+  if (!form) throw deps.usage(`Moodle is not accepting a forum post: ${noticesOf2(html) || "no posting form is available"}`);
+  return form;
+}
+function formFields3(form) {
+  const fields = new URLSearchParams();
+  for (const node of form.querySelectorAll("input[name], textarea[name], select[name]")) {
+    const type = node.getAttribute("type") ?? "";
+    if (["submit", "button", "file"].includes(type) || ["checkbox", "radio"].includes(type) && !node.hasAttribute("checked")) continue;
+    if (node.hasAttribute("disabled")) continue;
+    if (node.tagName === "SELECT") {
+      const options = node.hasAttribute("multiple") ? node.querySelectorAll("option[selected]") : [node.querySelector("option[selected]") ?? node.querySelector("option")].filter((option2) => option2 !== null);
+      for (const option2 of options) fields.append(node.getAttribute("name"), option2.getAttribute("value") ?? option2.textContent);
+    } else fields.append(node.getAttribute("name"), node.tagName === "TEXTAREA" ? node.textContent : node.getAttribute("value") ?? "");
+  }
+  return fields;
+}
+async function uploadAttachments(deps, html, form, files) {
+  const itemid = form.querySelector('input[name="attachments"]')?.getAttribute("value");
+  if (!itemid) throw deps.usage("This forum does not accept attachments.");
+  const options = filemanagerOptions(html, itemid);
+  if (!options) throw deps.fail("Moodle did not describe the attachment upload area.");
+  const maxFiles = Number(options.maxfiles ?? -1);
+  if (maxFiles >= 0 && files.length > maxFiles) throw deps.usage(`This forum accepts at most ${maxFiles} attachment${maxFiles === 1 ? "" : "s"}.`);
+  const picker = asRecord(options.filepicker);
+  const repo = (Array.isArray(picker.repositories) ? picker.repositories : Object.values(asRecord(picker.repositories))).map(asRecord).find((item) => item.type === "upload");
+  const sesskey = form.querySelector('input[name="sesskey"]')?.getAttribute("value");
+  if (!repo || !sesskey) throw deps.fail("Moodle did not provide an attachment upload repository.");
+  for (const file of files) {
+    const body = new FormData();
+    for (const [key, value] of Object.entries({ sesskey, itemid, repo_id: repo.id, client_id: options.client_id, ctx_id: asRecord(options.context).id, env: "filemanager", savepath: "/", title: file.name, author: picker.author, license: picker.defaultlicense, maxbytes: options.maxbytes, areamaxbytes: options.areamaxbytes })) body.set(key, stringValue(value));
+    const accepted = options.accepted_types;
+    const types = Array.isArray(accepted) ? accepted.map(stringValue) : accepted && typeof accepted === "object" ? Object.values(accepted).map(stringValue) : ["*"];
+    for (const type of types.length ? types : ["*"]) body.append("accepted_types[]", type);
+    body.set("repo_upload_file", new Blob([Uint8Array.from(file.bytes)]), file.name);
+    const response = await deps.request(`${deps.baseUrl}/repository/repository_ajax.php?action=upload`, { method: "POST", body }, { allowErrorStatus: true });
+    const result = asRecord(await response.json());
+    if (result.error || result.event === "fileexists" || !result.url && !result.id && !result.file) throw deps.fail(`Moodle refused attachment ${file.name}: ${stringValue(result.error) || "upload was not confirmed"}`);
+  }
+  return itemid;
+}
+
 // src/moodle-forum-core.ts
 var ForumModule = class {
   baseUrl;
@@ -2194,6 +2672,9 @@ var ForumModule = class {
   // The forum view page answers both "what type is this forum" and "which
   // discussions does it list"; load it once per forum.
   forumViewCache = /* @__PURE__ */ new Map();
+  // Instance id -> module id. The pair never changes, so it survives clearCache and
+  // lets every later thread in the same forum skip the discussion page.
+  forumCmids = /* @__PURE__ */ new Map();
   constructor(options) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.callMoodle = options.call;
@@ -2201,13 +2682,20 @@ var ForumModule = class {
     this.loadCourses = options.getCourses;
     this.loadCourseContents = options.getCourseContents;
   }
-  // The posts service does not name the discussion's group; that costs a page load,
-  // so callers that never show groups (announcements, thread pages) opt out.
+  clearCache() {
+    this.forumDiscussionCache.clear();
+    this.forumDiscussionRefsCache.clear();
+    this.forumViewCache.clear();
+    this.groupResolved.clear();
+  }
+  // The posts service returns an instance id; the discussion page carries the module
+  // id accepted by every public forum command, as well as optional group details.
+  // mod_forum_get_forums_by_courses would map the two, but stock Moodle keeps it off AJAX.
   async getForumDiscussion(discussionId, options = {}) {
     const wantGroup = options.group !== false;
     const cached = this.forumDiscussionCache.get(discussionId);
     if (cached) {
-      if (wantGroup && cached.group_id <= 0 && !this.groupResolved.has(discussionId)) await this.resolveGroup(cached);
+      if ((!cached.forum_id || wantGroup && cached.group_id <= 0) && !this.groupResolved.has(discussionId)) await this.resolveGroup(cached);
       return cached;
     }
     try {
@@ -2218,7 +2706,10 @@ var ForumModule = class {
         includeinlineattachments: true
       });
       const discussion2 = parseForumDiscussion(data, discussionId, this.baseUrl);
-      if (wantGroup && discussion2.group_id <= 0) await this.resolveGroup(discussion2);
+      const instanceId = Number(data?.forumid) || 0;
+      discussion2.forum_id ||= this.forumCmids.get(instanceId) ?? 0;
+      if (!discussion2.forum_id || wantGroup && discussion2.group_id <= 0) await this.resolveGroup(discussion2);
+      if (instanceId && discussion2.forum_id) this.forumCmids.set(instanceId, discussion2.forum_id);
       this.forumDiscussionCache.set(discussionId, discussion2);
       return discussion2;
     } catch (error) {
@@ -2236,6 +2727,7 @@ var ForumModule = class {
     this.groupResolved.add(discussion.id);
     const html = await this.loadPage(FORUM_DISCUSS_PATH, { d: discussion.id }).catch(() => "");
     if (!html) return;
+    discussion.forum_id = parseForumViewCmidFromDiscussionHtml(html) ?? 0;
     const [groupId, groupName] = parseForumDiscussionGroupHtml(html);
     discussion.group_id = groupId;
     discussion.group_name = groupName;
@@ -2323,6 +2815,61 @@ function shouldFallbackForumAjax(error) {
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/label-media.ts
+import { parse as parse7 } from "node-html-parser";
+function parseLabelMedia(html, activityId, baseUrl) {
+  const module = parse7(html).querySelector(`#module-${activityId}`);
+  if (!module) return null;
+  const media = /* @__PURE__ */ new Map();
+  for (const link of module.querySelectorAll("a[href]")) {
+    const url = mediaUrl(link.getAttribute("href"), baseUrl);
+    if (!url || !/\/Panopto\/Pages\/Viewer\.aspx$/iu.test(url.pathname)) continue;
+    const id = url.searchParams.get("id");
+    if (!id) continue;
+    const canonical = new URL(url.pathname, url.origin);
+    canonical.searchParams.set("id", id);
+    media.set(`${url.origin}/${id}`, { id, title: cleanText(link.textContent) || cleanText(link.querySelector("img")?.getAttribute("alt")), url: canonical.toString() });
+  }
+  for (const iframe of module.querySelectorAll("iframe[src]")) {
+    const url = mediaUrl(iframe.getAttribute("src"), baseUrl);
+    if (!url) continue;
+    const panopto = /\/Panopto\/Pages\/Embed\.aspx$/iu.test(url.pathname);
+    const id = panopto ? url.searchParams.get("id") : null;
+    const key = id ? `${url.origin}/${id}` : url.toString();
+    const title = cleanText(iframe.getAttribute("title"));
+    const existing = media.get(key);
+    if (existing) {
+      existing.title ||= title;
+      continue;
+    }
+    const canonical = id ? new URL(`/Panopto/Pages/Viewer.aspx?id=${encodeURIComponent(id)}`, url.origin) : url;
+    media.set(key, { ...id ? { id } : {}, title, url: canonical.toString() });
+  }
+  for (const video of module.querySelectorAll("video")) {
+    const url = mediaUrl(video.getAttribute("src") || video.querySelector("source[src]")?.getAttribute("src"), baseUrl);
+    if (!url) continue;
+    const captions = video.querySelectorAll("track[src]").filter((track) => ["captions", "subtitles"].includes(track.getAttribute("kind") ?? "captions")).flatMap((track) => {
+      const captionUrl = mediaUrl(track.getAttribute("src"), baseUrl);
+      return captionUrl ? [{ url: captionUrl.toString(), language: track.getAttribute("srclang") ?? void 0 }] : [];
+    });
+    media.set(url.toString(), { title: cleanText(video.getAttribute("title")), url: url.toString(), ...captions.length ? { captions } : {} });
+  }
+  return {
+    // An image-only link with no alt text still needs a title; the schema requires one.
+    media: [...media.values()].map((item) => ({ ...item, title: item.title || "Embedded video" })),
+    restriction: cleanText(module.querySelector(".availabilityinfo")?.textContent)
+  };
+}
+function mediaUrl(value, baseUrl) {
+  if (!value) return null;
+  try {
+    const url = new URL(value, baseUrl);
+    return ["https:", "http:"].includes(url.protocol) ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 // src/moodle-forum-search-core.ts
@@ -2742,7 +3289,7 @@ var MoodleClientCore = class {
   async fetchCourseContents(courseId) {
     await this.ensureSession();
     try {
-      return parseCourseContents(await this.call(FUNC_GET_COURSE_CONTENTS, { courseid: courseId }));
+      return this.fillAvailabilityReasons(courseId, parseCourseContents(await this.call(FUNC_GET_COURSE_CONTENTS, { courseid: courseId })));
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
@@ -2753,7 +3300,7 @@ var MoodleClientCore = class {
         await this.call(FUNC_GET_COURSE_FORMAT_STATE, { courseid: courseId }),
         this.baseUrl
       );
-      if (sections.length) return sections;
+      if (sections.length) return this.fillAvailabilityReasons(courseId, sections);
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
@@ -2761,6 +3308,28 @@ var MoodleClientCore = class {
     }
     const response = await this.get(COURSE_PATH, { id: courseId });
     return this.scrapeCourseContents(courseId, response);
+  }
+  async fillAvailabilityReasons(courseId, sections) {
+    const missing = sections.flatMap((section) => section.activities).filter((activity) => activity.available === false && !activity.availability_reason);
+    if (!missing.length) return sections;
+    const rendered = await this.renderedActivities(courseId);
+    for (const activity of missing) {
+      const reason = rendered.find((item) => item.id === activity.id)?.availability_reason;
+      if (reason) activity.availability_reason = reason;
+    }
+    return sections;
+  }
+  // The rendered course page is the only place some sites explain a restriction. Reading it
+  // is best effort: the AJAX answer is already complete without the reasons.
+  async renderedActivities(courseId, sectionPages = true) {
+    try {
+      const html = await this.get(COURSE_PATH, { id: courseId });
+      const sections = sectionPages ? await this.scrapeCourseContents(courseId, html) : parseCourseContentsHtml(html, this.baseUrl);
+      return sections.flatMap((section) => section.activities);
+    } catch (error) {
+      if (this.errors.isLoginRequired(error)) throw error;
+      return [];
+    }
   }
   async getActivities(courseId) {
     return (await this.getCourseContents(courseId)).flatMap((section) => section.activities);
@@ -2773,17 +3342,39 @@ var MoodleClientCore = class {
     let activity = null;
     let courseId;
     let type = "";
+    let moduleName = "";
+    let moduleDates = {};
     try {
       const data = await this.call(FUNC_GET_COURSE_MODULE, { cmid: id });
       const module = isRecord3(data) && isRecord3(data.cm) ? data.cm : data;
       type = isRecord3(module) && typeof module.modname === "string" ? module.modname : "";
       courseId = isRecord3(module) && typeof module.course === "number" ? module.course : void 0;
+      moduleName = isRecord3(module) && typeof module.name === "string" ? module.name : "";
+      if (isRecord3(module) && module.customdata) {
+        try {
+          const data2 = typeof module.customdata === "string" ? JSON.parse(module.customdata) : module.customdata;
+          if (isRecord3(data2)) moduleDates = data2;
+        } catch {
+        }
+      }
+      if (isRecord3(module) && module.uservisible === false) {
+        return { id, name: moduleName, modname: type, type, visible: module.visible !== 0, description: "", url: `${this.baseUrl}/mod/${type}/view.php?id=${id}`, available: false, availability_reason: htmlToStructuredContent(String(module.availabilityinfo ?? ""), this.baseUrl).text };
+      }
+      if (isRecord3(module) && Number(module.completion) > 0 && courseId) activity = await this.findActivity(id, courseId);
     } catch (error) {
       if (!this.errors.isApi(error) || error.moodleErrorCode !== "servicenotavailable") {
         throw error;
       }
       activity = await this.findActivity(id);
       type = activity.modname;
+      courseId = activity.course_id;
+      moduleName = activity.name;
+    }
+    if (activity?.available === false) {
+      if (!activity.availability_reason && courseId) {
+        activity.availability_reason = (await this.renderedActivities(courseId, false)).find((item) => item.id === id)?.availability_reason;
+      }
+      return { ...activity, type };
     }
     const loaders = {
       assign: () => this.getAssignment(id),
@@ -2791,7 +3382,8 @@ var MoodleClientCore = class {
       resource: () => this.getResource(id),
       url: () => this.getLink(id),
       page: () => this.getPage(id),
-      folder: () => this.getFolder(id)
+      folder: () => this.getFolder(id),
+      label: () => this.getLabel(id, courseId)
     };
     const load = loaders[type];
     if (!load) {
@@ -2800,7 +3392,26 @@ var MoodleClientCore = class {
       activity ??= await this.findActivity(id, courseId);
       return { ...activity, type: type || activity.modname || "unknown" };
     }
-    return { ...await load(), type: type === "url" ? "link" : type };
+    try {
+      const detail = await load();
+      if (type === "assign") {
+        for (const [source, target] of [["duedate", "due_at"], ["cutoffdate", "cutoff_at"]]) {
+          const at = Number(moduleDates[source]);
+          if (Number.isFinite(at) && at > 0) Object.assign(detail, { [target]: new Date(at * 1e3).toISOString() });
+        }
+      }
+      return { ...detail, ...activity?.completion !== void 0 ? { completion: activity.completion } : {}, ...type === "resource" ? { name: moduleName || activity?.name || detail.name, ...courseId ? { course_id: courseId } : {} } : {}, type: type === "url" ? "link" : type };
+    } catch (error) {
+      if (!this.errors.isApi(error) || error.moodleErrorCode !== "requireloginerror") throw error;
+      return { ...activity ?? { id, name: moduleName, modname: type, visible: true, description: "", url: `${this.baseUrl}/mod/${type}/view.php?id=${id}` }, type, available: false, availability_reason: error.message };
+    }
+  }
+  async completeActivity(id, completed = true) {
+    await this.ensureSession();
+    const result = await this.call(FUNC_UPDATE_ACTIVITY_COMPLETION, { cmid: id, completed });
+    if (isRecord3(result) && result.status === false) throw this.errors.api("Moodle did not change the activity's completion state.");
+    this.contentsCache.clear();
+    return { id, completion: completed ? 1 : 0 };
   }
   async redirectedActivity(type, id) {
     const response = await this.requestAbsolute(`${this.baseUrl}/mod/${type}/view.php?id=${id}`, {}, { allowErrorStatus: true });
@@ -2812,7 +3423,7 @@ var MoodleClientCore = class {
   async getTodo(limit = 20, days, courseId) {
     await this.ensureSession();
     const now = Math.floor(Date.now() / 1e3);
-    const window = { timesortfrom: now, timesortto: days ? now + days * 86400 : 0 };
+    const window = { timesortfrom: now - 14 * 86400, timesortto: days ? now + days * 86400 : 0 };
     const timeline = () => this.readActionEvents(FUNC_GET_ACTION_EVENTS, { ...window, limittononsuspendedevents: true }, limit);
     const unit = (id) => this.readActionEvents(FUNC_GET_ACTION_EVENTS_BY_COURSE, { courseid: id, ...window }, limit);
     if (courseId !== void 0) {
@@ -2844,7 +3455,7 @@ var MoodleClientCore = class {
       const batchSize = Math.min(50, limit - items.length);
       const data = await this.call(functionName, { ...args, aftereventid, limitnum: batchSize });
       const events = isRecord3(data) && Array.isArray(data.events) ? data.events : [];
-      for (const item of parseTodoItems(events)) if (!seen.has(item.id)) {
+      for (const item of parseTodoItems(events)) if ((!item.overdue || item.actionable) && !seen.has(item.id)) {
         seen.add(item.id);
         items.push(item);
       }
@@ -2856,6 +3467,38 @@ var MoodleClientCore = class {
     }
     return items;
   }
+  async getConversations(limit = 20, offset = 0) {
+    await this.ensureSession();
+    return listConversations((name, args) => this.call(name, args), this.userid, this.baseUrl, limit, offset);
+  }
+  async getConversation(id, limit = 50, offset = 0) {
+    await this.ensureSession();
+    return getConversation((name, args) => this.call(name, args), this.userid, this.baseUrl, id, limit, offset);
+  }
+  async sendMessage(id, text, options = {}) {
+    if (!text.trim()) throw this.errors.usage?.("Message text cannot be empty.") ?? new MoodleClientCoreError("usage", "Message text cannot be empty.");
+    await this.ensureSession();
+    return { id: await sendMessage((name, args) => this.call(name, args), id, text, Boolean(options.user)) };
+  }
+  async markMessagesRead(conversationId) {
+    await this.ensureSession();
+    const ids = [];
+    if (conversationId !== void 0) ids.push(conversationId);
+    else {
+      for (let offset = 0; ; offset += 100) {
+        const page = await this.getConversations(100, offset);
+        ids.push(...page.filter((c) => c.unread_count > 0).map((c) => c.id));
+        if (page.length < 100) break;
+      }
+    }
+    for (const id of ids) await markConversationRead((name, args) => this.call(name, args), this.userid, id);
+    return { conversations: ids };
+  }
+  async getCalendar(days = 14, courseId) {
+    if (!Number.isInteger(days) || days < 1 || days > 365) throw new MoodleClientCoreError("usage", "Calendar days must be between 1 and 365.");
+    await this.ensureSession();
+    return readCalendar((name, args) => this.call(name, args), (params) => this.get("/calendar/view.php", params), this.baseUrl, days, courseId);
+  }
   async getAlerts(limit = 20) {
     await this.ensureSession();
     const [notifications, counts, unread] = await this.callBatchValues([
@@ -2864,6 +3507,11 @@ var MoodleClientCore = class {
       { methodname: FUNC_GET_UNREAD_CONVERSATION_COUNTS, args: { userid: this.userid } }
     ]);
     return parseAlertSummary(notifications, counts, unread);
+  }
+  async markAlertsRead(notificationId) {
+    await this.ensureSession();
+    if (notificationId === void 0) await this.call(FUNC_MARK_ALL_NOTIFICATIONS_READ, { useridto: this.userid });
+    else await this.call(FUNC_MARK_NOTIFICATION_READ, { notificationid: notificationId });
   }
   async getOverview(todoLimit = 5, todoDays, alertsLimit = 5) {
     await this.ensureSession();
@@ -2879,7 +3527,7 @@ var MoodleClientCore = class {
         methodname: FUNC_GET_ACTION_EVENTS,
         args: {
           limitnum: todoLimit,
-          timesortfrom: now,
+          timesortfrom: now - 14 * 86400,
           timesortto: todoDays ? now + todoDays * 24 * 60 * 60 : 0,
           aftereventid: 0,
           limittononsuspendedevents: true
@@ -2892,7 +3540,9 @@ var MoodleClientCore = class {
     const [coursesData, todoData, notifications, counts, unread] = results;
     const userPromise = this.userInfo?.fullname ? Promise.resolve(this.userInfo) : this.getSiteInfo();
     const coursesPromise = coursesData?.ok ? Promise.resolve(parseCourses(coursesData.data)) : this.getCourses();
-    const todoPromise = todoData?.ok ? Promise.resolve(parseTodoPayload(todoData.data)) : todoData && todoData.error.moodleErrorCode !== "servicenotavailable" ? Promise.reject(todoData.error) : this.getTodo(todoLimit, todoDays);
+    const batchedTodo = todoData?.ok ? parseTodoPayload(todoData.data) : [];
+    const visibleTodo = batchedTodo.filter((item) => !item.overdue || item.actionable);
+    const todoPromise = todoData?.ok ? batchedTodo.length >= todoLimit && visibleTodo.length < todoLimit ? this.getTodo(todoLimit, todoDays) : Promise.resolve(visibleTodo) : todoData && todoData.error.moodleErrorCode !== "servicenotavailable" ? Promise.reject(todoData.error) : this.getTodo(todoLimit, todoDays);
     const alertResults = [notifications, counts, unread];
     const alertFailureIndex = alertResults.findIndex((result) => result !== void 0 && !result.ok);
     const alertFailure = alertFailureIndex >= 0 ? alertResults[alertFailureIndex] : void 0;
@@ -2901,20 +3551,22 @@ var MoodleClientCore = class {
       counts && counts.ok ? counts.data : void 0,
       unread && unread.ok ? unread.data : void 0
     )) : this.getAlerts(alertsLimit);
-    const settled = await Promise.allSettled([userPromise, coursesPromise, todoPromise, alertsPromise]);
+    const settled = await Promise.allSettled([userPromise, coursesPromise, todoPromise, alertsPromise, this.getCalendar(todoDays ?? 14)]);
     const labels = [
       "user",
       "courses",
       "todo",
-      alertFailureIndex >= 0 ? ["notifications", "conversation counts", "unread conversation counts"][alertFailureIndex] : "alerts"
+      alertFailureIndex >= 0 ? ["notifications", "conversation counts", "unread conversation counts"][alertFailureIndex] : "alerts",
+      "calendar"
     ];
     const errors = settled.flatMap((result, index) => result.status === "rejected" ? [`${labels[index]}: ${errorMessage(result.reason)}`] : []);
-    const [userResult, coursesResult, todoResult, alertsResult] = settled;
+    const [userResult, coursesResult, todoResult, alertsResult, calendarResult] = settled;
     return {
       user: userResult.status === "fulfilled" ? userResult.value : this.userInfo,
       courses: coursesResult.status === "fulfilled" ? coursesResult.value : [],
       todo: todoResult.status === "fulfilled" ? todoResult.value : [],
       ...alertsResult.status === "fulfilled" ? { alerts: alertsResult.value } : {},
+      ...calendarResult.status === "fulfilled" ? { calendar: calendarResult.value } : {},
       errors
     };
   }
@@ -2978,7 +3630,46 @@ var MoodleClientCore = class {
   }
   async getAssignment(id) {
     const [html, labels] = await Promise.all([this.getActivityPage(ASSIGN_VIEW_PATH, "assign", id), this.siteLabels()]);
-    return parseAssignmentHtml(html, id, this.baseUrl, labels);
+    const assignment = parseAssignmentHtml(html, id, this.baseUrl, labels);
+    const month = calendarMonthOf(assignment.due_pretty, this.userInfo?.lang);
+    if (month && !assignment.due_at) {
+      try {
+        const events = await readCalendarMonth((name, args) => this.call(name, args), this.baseUrl, month.year, month.month, assignment.course_id || void 0);
+        const matching = events.filter((event) => {
+          const url = new URL(event.url);
+          return event.event_type === "due" && url.origin === new URL(this.baseUrl).origin && url.pathname === new URL(assignment.url).pathname && Number(url.searchParams.get("id")) === id;
+        });
+        const dates = new Set(matching.map((event) => event.starts_at));
+        if (dates.size === 1) assignment.due_at = new Date(matching[0].starts_at * 1e3).toISOString();
+      } catch (error) {
+        if (this.errors.isLoginRequired(error) || !this.errors.isApi(error)) throw error;
+      }
+    }
+    if (html.includes("editsubmission")) {
+      try {
+        const editHtml = await this.getAbsolute(`${this.baseUrl}${ASSIGN_VIEW_PATH}?id=${id}&action=editsubmission`);
+        const form = parseSubmissionForm(editHtml, { baseUrl: this.baseUrl, fail: (message) => this.errors.api(message) });
+        assignment.limits = describeLimits(form);
+      } catch (error) {
+        if (!this.errors.isApi(error) || this.errors.isLoginRequired(error)) throw error;
+      }
+    }
+    const commentUrl = assignmentCommentUrl(html, this.baseUrl);
+    if (commentUrl && assignment.submission) {
+      const commentsHtml = await this.getAbsolute(commentUrl);
+      assignment.submission.comments = parseAssignmentHtml(commentsHtml, id, this.baseUrl, labels).submission?.comments ?? [];
+    }
+    return assignment;
+  }
+  async removeAssignmentSubmission(id, dryRun = false) {
+    await this.ensureSession();
+    return removeAssignmentSubmission({
+      baseUrl: this.baseUrl,
+      labels: await this.siteLabels(),
+      request: (url, init, options) => this.requestAbsolute(url, init, options),
+      fail: (message, code) => this.errors.api(message, code),
+      usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint)
+    }, id, dryRun);
   }
   async getQuiz(id) {
     const [html, labels] = await Promise.all([this.getActivityPage(QUIZ_VIEW_PATH, "quiz", id), this.siteLabels()]);
@@ -3047,6 +3738,16 @@ var MoodleClientCore = class {
   async getFolder(id) {
     return parseFolderHtml(await this.getActivityPage(FOLDER_VIEW_PATH, "folder", id), id, this.baseUrl);
   }
+  async getLabel(id, courseId) {
+    const activity = await this.findActivity(id, courseId);
+    const html = await this.get("/mod/label/view.php", { id });
+    const label = parseLabelMedia(html, id, this.baseUrl);
+    if (!label || label.restriction && !label.media.length) {
+      const reason = label?.restriction || parseUnavailableNotice(html);
+      throw this.errors.api(`Activity ${id} is not available to you${reason ? `. ${reason}` : "."}`, "requireloginerror");
+    }
+    return { ...activity, media: label.media };
+  }
   async getActivityPage(pathname, type, id, params = {}) {
     const html = await this.get(pathname, { id, ...params });
     this.assertActivityPage(html, type, id);
@@ -3066,6 +3767,7 @@ var MoodleClientCore = class {
     await this.ensureSession();
     return submitAssignmentFiles({
       baseUrl: this.baseUrl,
+      labels: await this.siteLabels(),
       request: (url, init, options) => this.requestAbsolute(url, init, options),
       fail: (message, moodleErrorCode) => this.errors.api(message, moodleErrorCode),
       usage: (message, hint) => this.errors.usage ? this.errors.usage(message, hint) : new MoodleClientCoreError("usage", message, hint)
@@ -3122,6 +3824,31 @@ var MoodleClientCore = class {
       flags.push(...await Promise.all(candidates.slice(index, index + 4).map((forum) => this.forum.isNewsForum(forum.id))));
     }
     return candidates.filter((_, index) => flags[index]);
+  }
+  async replyForumPost(postId, text, files = []) {
+    const receipt = await replyForumPost(await this.forumWriteDeps(), postId, text, files);
+    this.forum.clearCache();
+    return receipt;
+  }
+  async createForumDiscussion(forumCmid, subject, text) {
+    const receipt = await createForumDiscussion(await this.forumWriteDeps(), forumCmid, subject, text);
+    this.forum.clearCache();
+    return receipt;
+  }
+  async setForumSubscription(forumCmid, subscribed) {
+    const receipt = await setForumSubscription(await this.forumWriteDeps(), forumCmid, subscribed);
+    this.forum.clearCache();
+    return receipt;
+  }
+  async forumWriteDeps() {
+    return {
+      ...await this.quizDeps(),
+      call: (name, args) => this.call(name, args),
+      getDiscussion: (discussionId) => {
+        this.forum.clearCache();
+        return this.forum.getForumDiscussion(discussionId, { group: false });
+      }
+    };
   }
   async getForumDiscussion(discussionId, options = {}) {
     return this.forum.getForumDiscussion(discussionId, options);
@@ -3204,7 +3931,7 @@ var MoodleClientCore = class {
       },
       body: JSON.stringify(payload)
     }, this.baseUrl, this.cookie, this.fetchImpl);
-    if (response.url.includes("/login/")) {
+    if (isSiteLoginUrl(this.baseUrl, response.url)) {
       if (this.onLoginRequired && allowRetry) {
         await this.reauthenticate(sentGeneration);
         return this.callBatchInternal(requests, false);
@@ -3263,7 +3990,7 @@ var MoodleClientCore = class {
   async requestAbsoluteInternal(url, init, allowRetry, allowErrorStatus = false) {
     const sentGeneration = this.authGeneration;
     const response = await fetchWithSession(url, init, this.baseUrl, this.cookie, this.fetchImpl);
-    if (response.url.includes("/login/")) {
+    if (isSiteLoginUrl(this.baseUrl, response.url)) {
       if (this.onLoginRequired && allowRetry) {
         await this.reauthenticate(sentGeneration);
         return this.requestAbsoluteInternal(url, init, false, allowErrorStatus);
@@ -3303,7 +4030,7 @@ var MoodleClientCore = class {
   async findActivity(activityId, courseId) {
     if (courseId !== void 0) {
       const activity = (await this.getActivities(courseId)).find((item) => item.id === activityId);
-      if (activity) return activity;
+      if (activity) return { ...activity, course_id: courseId };
       throw this.errors.notFound(`Activity ${activityId} was not found in course ${courseId}.`);
     }
     let unresolved = (await this.getCourses()).map((course) => course.id);
@@ -3329,7 +4056,7 @@ var MoodleClientCore = class {
         }
         searchedCourses += 1;
         const activity = parseCourseContents(result.data).flatMap((section) => section.activities).find((item) => item.id === activityId);
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       }
     }
     const htmlFallbacks = [];
@@ -3358,7 +4085,7 @@ var MoodleClientCore = class {
         }
         searchedCourses += 1;
         const activity = sections.flatMap((section) => section.activities).find((item) => item.id === activityId);
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       }
     }
     for (const id of htmlFallbacks) {
@@ -3368,7 +4095,7 @@ var MoodleClientCore = class {
           await this.get(COURSE_PATH, { id })
         )).flatMap((section) => section.activities).find((item) => item.id === activityId);
         searchedCourses += 1;
-        if (activity) return activity;
+        if (activity) return { ...activity, course_id: id };
       } catch (error) {
         if (this.errors.isLoginRequired(error)) throw error;
         lastError = error;
